@@ -98,6 +98,8 @@ test('named assistant participant and Chinese evidence stay distinct',async()=>f
 test('concurrent user writes are serialized and remain searchable',async()=>fixture(async app=>{
   await Promise.all(Array.from({length:8},(_,i)=>add(app,`r${i}`,[msg(`I like hobby${i}.`)])));
   assert.equal((await search(app,'hobby')).length,8);
+  await Promise.all(Array.from({length:8},(_,i)=>add(app,'same-id',[msg(`I live in City${i}.`)],`tenant${i}`)));
+  for(let i=0;i<8;i++){const evidence=await search(app,'current city',`tenant${i}`);assert.equal(evidence.length,1);assert.match(evidence[0]!.content,new RegExp(`City${i}`));for(let j=0;j<8;j++)if(i!==j)assert.doesNotMatch(evidence[0]!.content,new RegExp(`City${j}`));}
 }));
 test('committed state survives restart including forgotten content',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'memory-restart-'));const config={...configFromEnv({}),dataDir:dir};
