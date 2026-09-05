@@ -13,6 +13,11 @@ function containsValue(text:string,m:Marker):boolean { const w=valueWords(text),
 const digest = (s:string):string => createHash('sha256').update(s).digest('hex');
 type Row = { body:string };
 type Marker = { subject:string;predicate:string;scope:string;boundary:string;valueHash:string;tokenCount?:number;allowedValueHashes?:string[];revision:number };
+function markerConcerns(m:Marker,f:Fact):boolean{
+  // An unscoped replay remains guarded; an explicitly different subject/context
+  // is not erased merely because it happens to contain the same literal value.
+  return canonical(m.subject)===canonical(f.subject)&&(!f.scope||canonical(m.scope)===canonical(f.scope));
+}
 export class TenantStore {
   readonly db: Database.Database;
   constructor(dir:string, readonly userId:string) {
@@ -48,6 +53,10 @@ export class TenantStore {
     return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null};
   }
   private put(f:Fact):void {
+    // Extraction proposals carry a sources array, but persisted facts have one
+    // canonical source_quotes field. Never preserve an untracked duplicate copy.
+    delete (f as Fact & {sources?:unknown}).sources;
+    if(f.state==='erased')f.time_text='';
     this.db.prepare('INSERT OR REPLACE INTO facts VALUES (?,?)').run(f.id,JSON.stringify(f));
     this.db.prepare('DELETE FROM evidence_fts WHERE id=?').run(f.id);
     if (f.state!=='erased' && f.state!=='retracted') this.db.prepare('INSERT INTO evidence_fts(id,text) VALUES (?,?)').run(f.id,tokens(`${f.subject} ${f.predicate} ${f.scope} ${f.content}`).join(' '));
@@ -65,20 +74,31 @@ export class TenantStore {
       for(const m of inserted)this.db.prepare('INSERT INTO messages VALUES (?,?,?,?)').run(m.id,m.session_id,m.ordinal,JSON.stringify(m));
       this.db.prepare('INSERT INTO sessions(id,anchor) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET anchor=excluded.anchor').run(req.session_id,prepared.anchor);
       let all=this.facts(); const suppressedSources=new Set<string>(); const redactedSources=new Set<string>(); const erasedIds=new Set<string>(all.filter(f=>f.state==='erased').map(f=>f.id));
+      const erasedQuotes=new Map<string,Set<string>>();
+      const rememberErasedQuotes=(f:Fact):void=>{for(const id of f.source_ids){const quotes=erasedQuotes.get(id)??new Set<string>();for(const quote of f.source_quotes)quotes.add(quote);erasedQuotes.set(id,quotes);}};
       for(const operation of prepared.operations){
         const source=prepared.messages[operation.source.index]; if(!source)throw new ServiceError('SOURCE','Missing operation source');
         suppressedSources.add(source.id);
         // New facts may be revoked later in the same HTTP chunk. Bind their
         // validated property/value without inventing externally addressable IDs.
-        const pending=prepared.facts.filter(f=>f.source_ids.some(id=>{const i=prepared.messages.findIndex(m=>m.id===id);return i>=0&&i<=operation.source.index;}));
+        const pending=prepared.facts.filter(f=>f.source_ids.length>0&&f.source_ids.every(id=>{
+          const i=prepared.messages.findIndex(m=>m.id===id);if(i<0||i>operation.source.index)return false;
+          if(i<operation.source.index)return true;
+          const text=prepared.messages[i]!.content,start=text.indexOf(operation.source.quote);
+          const quotes=f.source_quotes.filter(q=>text.includes(q));
+          return start>=0&&quotes.length>0&&quotes.every(q=>text.indexOf(q)===text.lastIndexOf(q)&&text.indexOf(q)+q.length<=start);
+        }));
         const pool=[...all,...pending];
-        let target=operation.target_ids.length ? all.filter(f=>operation.target_ids.includes(f.id)) : pool.filter(f=>slot(f)===slot(operation) && (!operation.value || canonical(f.value)===canonical(operation.value)));
+        let target=operation.target_ids.length ? pool.filter(f=>operation.target_ids.includes(f.id)) : pool.filter(f=>slot(f)===slot(operation) && (!operation.value || canonical(f.value)===canonical(operation.value)));
+        if(operation.target_ids.some(id=>!target.some(f=>f.id===id)))throw new ServiceError('OPERATION_TARGET','Operation target is unavailable at its source position');
+        if(target.some(f=>canonical(f.subject)!==canonical(operation.subject)||(operation.scope&&canonical(f.scope)!==canonical(operation.scope))))throw new ServiceError('OPERATION_SCOPE','Operation target is outside its subject or scope');
+        if(new Set(target.map(f=>canonical(f.scope))).size>1)throw new ServiceError('AMBIGUOUS_OPERATION','Operation spans multiple unresolved scopes');
         const actionFamily=propertyFamily(operation.predicate,target[0]?.content??'');
         // Close duplicate representations of the same scoped value, including harmless
         // predicate wording differences. Do not extend deletion to other people/scopes.
         const families=new Set(target.map(f=>propertyFamily(f.predicate,f.content)));
         const value=operation.value||target.find(f=>f.value&&canonical(source.content).includes(canonical(f.value)))?.value;
-        if(value&&target.length){for(const f of all){if(f.state!=='active'||f.kind==='event'||canonical(f.value)!==canonical(value)||canonical(f.subject)!==canonical(operation.subject)||!families.has(propertyFamily(f.predicate,f.content)))continue;const scopeCompatible=!f.scope||!operation.scope||canonical(f.scope)===canonical(operation.scope);if(scopeCompatible&&!target.some(t=>t.id===f.id))target.push(f);}}
+        if(value&&target.length){for(const f of pool){if(f.state!=='active'||f.kind==='event'||canonical(f.value)!==canonical(value)||canonical(f.subject)!==canonical(operation.subject)||!families.has(propertyFamily(f.predicate,f.content)))continue;const scopeCompatible=target.some(t=>canonical(t.scope)===canonical(f.scope));if(scopeCompatible&&!target.some(t=>t.id===f.id))target.push(f);}}
         if(operation.type==='restore'){
           if(!/remember.*again|store.*again|重新.*记|再次.*记/i.test(operation.source.quote))throw new ServiceError('RESTORE','Explicit reauthorization required');
           const markerRows=this.db.prepare('SELECT id,body FROM markers').all() as {id:number;body:string}[];
@@ -93,6 +113,7 @@ export class TenantStore {
             const marker:Marker={subject:f.subject,predicate:f.predicate,scope:f.scope,boundary:operation.boundary,valueHash:valueDigest(f.value),tokenCount:valueWords(f.value).length,allowedValueHashes:[],revision};
             this.db.prepare('INSERT INTO markers(body) VALUES (?)').run(JSON.stringify(marker));
             erasedIds.add(f.id);for(const id of f.source_ids)redactedSources.add(id);
+            rememberErasedQuotes(f);
             f.state='erased'; f.content='';f.value='';f.vector=null;f.source_quotes=[];f.entities=[];
           }else{
             f.state=operation.type==='correct'?'retracted':'superseded';f.valid_to=source.timestamp;
@@ -116,7 +137,7 @@ export class TenantStore {
         const f={...incoming,revision};
         if(f.state==='erased'||f.state==='retracted'||f.state==='superseded'){this.put(f);all.push(f);for(const id of f.source_ids)suppressedSources.add(id);continue;}
         // An exact old-value replay cannot resurrect forgotten material.
-        if(markers.some(m=>!(m.allowedValueHashes??[]).includes(valueDigest(f.value)) && ((slot(m)===slot(f) && (m.boundary==='property'||m.valueHash===valueDigest(f.value)))||containsValue(f.content,m)))){for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}continue;}
+        if(markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)) && ((slot(m)===slot(f) && (m.boundary==='property'||m.valueHash===valueDigest(f.value)))||containsValue(f.content,m)))){for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}continue;}
         if(f.modality==='hypothetical'||f.modality==='quoted')continue;
         const same=all.filter(old=>(old.state==='active'||old.state==='conflicted')&&slot(old)===slot(f));
         const duplicate=same.find(old=>canonical(old.value)===canonical(f.value)&&old.modality===f.modality&&f.kind!=='event');
@@ -141,12 +162,19 @@ export class TenantStore {
       while(changed){changed=false;for(const f of all){
         if(f.state==='erased')continue;
         const dependent=(f.depends_on??[]).some(id=>erasedIds.has(id)) || (f.modality==='inferred'&&f.source_ids.some(id=>redactedSources.has(id)));
-        const leaked=markers.some(m=>!(m.allowedValueHashes??[]).includes(valueDigest(f.value))&&containsValue(f.content,m));
-        if(dependent||leaked){erasedIds.add(f.id);for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}f.state='erased';f.content='';f.value='';f.vector=null;f.source_quotes=[];f.entities=[];f.revision=revision;this.put(f);changed=true;}
+        const leaked=markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value))&&containsValue(f.content,m));
+        if(dependent||leaked){erasedIds.add(f.id);rememberErasedQuotes(f);for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}f.state='erased';f.content='';f.value='';f.vector=null;f.source_quotes=[];f.entities=[];f.revision=revision;this.put(f);changed=true;}
       }}
       for(const m of inserted){if(markers.some(marker=>containsValue(m.content,marker))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
       // Retained neighbors must not carry a forgotten value inside a mixed quote.
-      for(const f of all){if(f.state==='erased')continue;const quotes=f.source_quotes.filter(q=>!markers.some(m=>containsValue(q,m)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value))));if(quotes.length!==f.source_quotes.length){f.source_quotes=quotes;this.put(f);}}
+      for(const f of all){
+        if(f.state==='erased')continue;
+        const quotes=f.source_quotes.filter(q=>{
+          const sharesErasedSpan=f.source_ids.some(id=>[...(erasedQuotes.get(id)??[])].some(erased=>q.includes(erased)||erased.includes(q)));
+          return !sharesErasedSpan&&!markers.some(m=>markerConcerns(m,f)&&containsValue(q,m)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)));
+        });
+        if(quotes.length!==f.source_quotes.length){f.source_quotes=quotes;this.put(f);}
+      }
       // Mixed source messages become non-searchable; their independent retained facts stay available.
       all=this.facts();
       for(const sourceId of suppressedSources){
