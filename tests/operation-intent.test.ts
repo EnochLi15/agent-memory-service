@@ -96,8 +96,10 @@ test('repeating a completed property deletion is a safe no-op but an unrelated m
  const x=new Extractor({...config,mode:'offline'},{} as any);
  for(const id of ['first','repeat']){
   const req=request('Forget my access code.',id);const p=await x.prepare(req,store.snapshot('s'),AbortSignal.timeout(1000));
+  assert.ok(p.operations.every(o=>o.predicate==='access_code'));
   store.commit(req,hash(JSON.stringify(req)),p,store.revision());
  }
+ assert.equal(store.db.prepare('SELECT count(*) AS n FROM markers').get().n,1);
  assert.equal(store.facts().filter((f:any)=>f.predicate==='access_code'&&f.state==='erased').length,1);
  await assert.rejects(()=>x.prepare(request('Forget my bank account.'),store.snapshot('s'),AbortSignal.timeout(1000)),/bind/);
  await assert.rejects(()=>x.prepare(request('Forget my access code NEW-123.'),store.snapshot('s'),AbortSignal.timeout(1000)),/bind/);

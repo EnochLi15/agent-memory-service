@@ -4,6 +4,7 @@ import { Models } from './models.js';
 import { EXTRACTION_PROMPT } from './prompts.js';
 import { addSchema, extractionSchema, canonical, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation } from './types.js';
 import { entities, overlap, tokens } from './text.js';
+import {preparePassages,sourceSpans} from './passages.js';
 
 export function hash(s: string): string { return createHash('sha256').update(s).digest('hex'); }
 import {realControl,instructionSpans,authorizesForget,missingForgetObligations} from './operation-intent.js';
@@ -29,7 +30,7 @@ export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction 
         continue;
       }
       if (span.intent==='forget' && (message.role === 'user'||named)) {
-        const available=[...snapshot.facts,...result.facts.map((f,i)=>({...f,id:`new:${i}`,state:'active' as const}))];
+        const available=[...snapshot.facts.filter(f=>f.predicate!=='memory_operation'),...result.facts.map((f,i)=>({...f,id:`new:${i}`,state:'active' as const}))];
         const relevant = available.filter(f => f.state !== 'erased' && overlap(quote, `${f.subject} ${f.predicate} ${f.value} ${f.content}`) > .12);
         const valueExact = relevant.filter(f => f.value && canonical(quote).includes(canonical(f.value)));
         const target = valueExact.length ? valueExact : relevant;
@@ -136,7 +137,7 @@ export class Extractor {
     else if (this.config.mode === 'offline') parsed = offlineExtract(req, snapshot);
     else {
       const chunkText = req.messages.map(m => m.content).join('\n');
-      const ordered=snapshot.facts.map(f=>({f,score:overlap(chunkText,`${f.subject} ${f.predicate} ${f.value} ${f.content}`)+(f.state==='active'&&f.cardinality==='single'?.08:0)})).sort((a,b)=>b.score-a.score).slice(0,120).map(x=>x.f);
+      const ordered=snapshot.facts.filter(f=>f.predicate!=='memory_operation').map(f=>({f,score:overlap(chunkText,`${f.subject} ${f.predicate} ${f.value} ${f.content}`)+(f.state==='active'&&f.cardinality==='single'?.08:0)})).sort((a,b)=>b.score-a.score).slice(0,120).map(x=>x.f);
       const aliases=new Map(ordered.map((f,i)=>[`m${i}`,f.id]));
       const knownIds=new Set(snapshot.facts.map(f=>f.id));
       const relevant=ordered.map((f,i)=>({id:`m${i}`,content:f.content,subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,state:f.state,modality:f.modality}));
@@ -198,7 +199,7 @@ export class Extractor {
     if(!this.config.experimental?.rawOnly&&missingForgetObligations(req,parsed).length)throw new ServiceError('OPERATION_INTENT','Unresolved memory operation after bounded recovery');
     const known = new Set([...snapshot.facts.map(f=>f.id),...localIds]);
     if (parsed.operations.some(o=>o.target_ids.some(id=>!known.has(id)))) throw new ServiceError('OPERATION_TARGET','Unknown memory operation target');
-    const messages = req.messages.map((m,i)=>({ ...m,id:hash(`${req.user_id}\0${req.request_id}\0${i}`),session_id:req.session_id,ordinal:i,searchable:true,partial:partialSources.has(i),time_basis:(anchor?.includes('synthetic ordering')?'ordering':'source') as 'ordering'|'source' }));
+    const messages = req.messages.map((m,i)=>({ ...m,id:hash(`${req.user_id}\0${req.request_id}\0${i}`),session_id:req.session_id,ordinal:i,external_id:m.content.match(/\[Source id: ([^\]]+)\]/)?.[1],searchable:true,partial:partialSources.has(i),time_basis:(anchor?.includes('synthetic ordering')?'ordering':'source') as 'ordering'|'source' }));
     const facts: Fact[] = [];
     for (const [i,f] of parsed.facts.entries()) {
       if (f.sources.some(s=>!validSource(s))) throw new ServiceError('FACT_SOURCE','Fact lacks verbatim source evidence');
@@ -206,16 +207,17 @@ export class Extractor {
       const src = f.sources.map(s=>messages[s.index]!);
       const {sources:proposalSources,...attributes}=f;
       if(!this.config.experimental?.rawOnly&&src.every(m=>m.role!=='user'&&!/^([\p{L}][\p{L} .'-]{0,40}):\s*/u.test(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim())))f.modality='quoted';
-      facts.push({ ...attributes,modality:f.modality,time_basis:anchor?.includes('synthetic ordering')?'ordering':'source',id:factId(req,i),source_ids:[...new Set(src.map(m=>m.id))],source_quotes:proposalSources.map(s=>s.quote),created_at:src[0]!.timestamp,observed_at:src[0]!.timestamp,state:'active',vector:null,entities:entities(f.content),revision:snapshot.revision+1 });
+      facts.push({ ...attributes,source_spans:sourceSpans(f,messages),modality:f.modality,time_basis:anchor?.includes('synthetic ordering')?'ordering':'source',id:factId(req,i),source_ids:[...new Set(src.map(m=>m.id))],source_quotes:proposalSources.map(s=>s.quote),created_at:src[0]!.timestamp,observed_at:src[0]!.timestamp,state:'active',vector:null,entities:entities(f.content),revision:snapshot.revision+1 });
     }
-    if (this.config.mode !== 'offline' && facts.length) {
+    const passages=this.config.sourceIndex&&!this.config.experimental?.rawOnly?preparePassages(messages,facts,parsed.operations,snapshot.revision+1):[];
+    if (this.config.mode !== 'offline' && (facts.length||passages.length)) {
       try {
-        const eligible = facts.filter(f=>f.content.length<3500);
+        const eligible = [...facts.filter(f=>f.content.length<3500),...passages];
         const vectors = await this.models.embedBatch(eligible.map(f=>f.content),'add',signal);
         eligible.forEach((f,i)=>{f.vector=vectors[i]!;});
-        if (eligible.length !== facts.length) degraded.push('long_evidence_lexical');
+        if (facts.some(f=>f.content.length>=3500)) degraded.push('long_evidence_lexical');
       } catch(error) { if (signal.aborted) throw error; degraded.push('embedding_lexical'); }
     }
-    return { facts,operations:parsed.operations,messages,anchor,degraded,embeddingSpace:this.config.embeddingSpace };
+    return { facts,operations:parsed.operations,messages,passages,sourceFormat:this.config.sourceIndex&&!this.config.experimental?.rawOnly?'dual-source-v1':'facts-only-v1',anchor,degraded,embeddingSpace:this.config.embeddingSpace };
   }
 }

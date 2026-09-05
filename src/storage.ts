@@ -4,8 +4,9 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { canonical, slot, propertyFamily, ServiceError, type AddRequest, type Fact, type Prepared, type Receipt, type Snapshot, type StoredMessage, type QueryIntent } from './types.js';
+import { canonical, slot, propertyFamily, ServiceError, type AddRequest, type Fact, type Passage, type Prepared, type Receipt, type Snapshot, type StoredMessage, type QueryIntent } from './types.js';
 import { tokens } from './text.js';
+import {redactPassage} from './passages.js';
 
 const valueWords = (s:string):string[] => canonical(s).match(/[\p{L}\p{N}]+/gu) ?? [];
 const valueDigest = (s:string):string => digest(valueWords(s).join(' '));
@@ -33,7 +34,10 @@ export class TenantStore {
       CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, anchor TEXT);
       CREATE TABLE IF NOT EXISTS operations (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS markers (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS passages (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, body TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS passages_source ON passages(source_id);
       CREATE VIRTUAL TABLE IF NOT EXISTS evidence_fts USING fts5(id UNINDEXED,text,tokenize='unicode61');
+      CREATE VIRTUAL TABLE IF NOT EXISTS passage_fts USING fts5(id UNINDEXED,text,tokenize='unicode61');
     `);
     const existing = this.meta('user_id');
     if (existing !== null && existing !== userId) throw new ServiceError('TENANT_ID','Tenant identity mismatch');
@@ -43,6 +47,12 @@ export class TenantStore {
   private setMeta(key:string,value:string):void { this.db.prepare('INSERT OR REPLACE INTO meta VALUES (?,?)').run(key,value); }
   revision():number { return Number(this.meta('revision')??0); }
   facts():Fact[] { return (this.db.prepare('SELECT body FROM facts').all() as Row[]).map(r=>JSON.parse(r.body) as Fact); }
+  passages():Passage[]{return (this.db.prepare('SELECT body FROM passages').all() as Row[]).map(r=>JSON.parse(r.body) as Passage);}
+  private putPassage(p:Passage):void{
+    this.db.prepare('INSERT OR REPLACE INTO passages VALUES (?,?,?)').run(p.id,p.source_id,JSON.stringify(p));
+    this.db.prepare('DELETE FROM passage_fts WHERE id=?').run(p.id);
+    if(p.state==='active'&&p.content)this.db.prepare('INSERT INTO passage_fts(id,text) VALUES (?,?)').run(p.id,tokens(`${p.speaker} ${p.content}`).join(' '));
+  }
   receipt(id:string,hash:string):Receipt|null {
     const row=this.db.prepare('SELECT hash,receipt FROM requests WHERE id=?').get(id) as {hash:string;receipt:string}|undefined;
     if (!row) return null; if (row.hash!==hash) throw new ServiceError('REQUEST_CONFLICT','request_id was already used for another payload',409);
@@ -66,9 +76,15 @@ export class TenantStore {
       const already=this.receipt(req.request_id,payloadHash); if(already)return already;
       if(this.revision()!==expectedRevision)throw new ServiceError('REVISION_CONFLICT','Concurrent mutation; retry request');
       const revision=expectedRevision+1;
+      if(prepared.sourceFormat){
+        const format=this.meta('source_format');
+        if((format===null&&this.facts().length)||(format!==null&&format!==prepared.sourceFormat))throw new ServiceError('SOURCE_FORMAT','Fresh data directory required before changing source representation');
+        this.setMeta('source_format',prepared.sourceFormat);
+      }
       const space=this.meta('embedding_space');
-      if(space && space!==prepared.embeddingSpace && prepared.facts.some(f=>f.vector))throw new ServiceError('EMBEDDING_SPACE','Rebuild required before changing embedding model');
-      if(prepared.facts.some(f=>f.vector))this.setMeta('embedding_space',prepared.embeddingSpace);
+      const hasVectors=prepared.facts.some(f=>f.vector)||prepared.passages?.some(p=>p.vector);
+      if(space && space!==prepared.embeddingSpace && hasVectors)throw new ServiceError('EMBEDDING_SPACE','Rebuild required before changing embedding model');
+      if(hasVectors)this.setMeta('embedding_space',prepared.embeddingSpace);
       const offset=(this.db.prepare('SELECT COALESCE(MAX(ordinal),-1)+1 AS n FROM messages').get() as {n:number}).n;
       const inserted=prepared.messages.map(m=>({...m,ordinal:m.ordinal+offset}));
       for(const m of inserted)this.db.prepare('INSERT INTO messages VALUES (?,?,?,?)').run(m.id,m.session_id,m.ordinal,JSON.stringify(m));
@@ -91,8 +107,16 @@ export class TenantStore {
         const pool=[...all,...pending];
         let target=operation.target_ids.length ? pool.filter(f=>operation.target_ids.includes(f.id)) : pool.filter(f=>slot(f)===slot(operation) && (!operation.value || canonical(f.value)===canonical(operation.value)));
         if(operation.target_ids.some(id=>!target.some(f=>f.id===id)))throw new ServiceError('OPERATION_TARGET','Operation target is unavailable at its source position');
+        if(target.some(f=>f.predicate==='memory_operation'))throw new ServiceError('OPERATION_TARGET','An operation trace is not the underlying property');
         if(target.some(f=>canonical(f.subject)!==canonical(operation.subject)||(operation.scope&&canonical(f.scope)!==canonical(operation.scope))))throw new ServiceError('OPERATION_SCOPE','Operation target is outside its subject or scope');
         if(new Set(target.map(f=>canonical(f.scope))).size>1)throw new ServiceError('AMBIGUOUS_OPERATION','Operation spans multiple unresolved scopes');
+        if(operation.type==='forget'&&target.some(f=>f.state==='erased')){
+          const priorMarkers=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
+          for(const f of target.filter(f=>f.state==='erased')){
+            const satisfied=priorMarkers.some(m=>slot(m)===slot(f)&&(operation.value?m.valueHash===valueDigest(operation.value):operation.boundary==='property'&&m.boundary==='property'));
+            if(!satisfied)throw new ServiceError('OPERATION_TARGET','Already erased target does not prove the requested deletion boundary');
+          }
+        }
         const actionFamily=propertyFamily(operation.predicate,target[0]?.content??'');
         // Close duplicate representations of the same scoped value, including harmless
         // predicate wording differences. Do not extend deletion to other people/scopes.
@@ -133,6 +157,7 @@ export class TenantStore {
       }
       if(failAt==='operations')throw new ServiceError('INJECTED_FAILURE','Fault injection before fact commit');
       const markers=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
+      const mergedIds=new Map<string,string>();
       for(const incoming of prepared.facts){
         const f={...incoming,revision};
         if(f.state==='erased'||f.state==='retracted'||f.state==='superseded'){this.put(f);all.push(f);for(const id of f.source_ids)suppressedSources.add(id);continue;}
@@ -142,6 +167,8 @@ export class TenantStore {
         const same=all.filter(old=>(old.state==='active'||old.state==='conflicted')&&slot(old)===slot(f));
         const duplicate=same.find(old=>canonical(old.value)===canonical(f.value)&&old.modality===f.modality&&f.kind!=='event');
         if(duplicate){
+          mergedIds.set(f.id,duplicate.id);
+          duplicate.source_spans=[...(duplicate.source_spans??[]),...(f.source_spans??[])];
           duplicate.source_ids=[...new Set([...duplicate.source_ids,...f.source_ids])];duplicate.source_quotes=[...new Set([...duplicate.source_quotes,...f.source_quotes])];duplicate.revision=revision;
           this.put(duplicate);for(const id of f.source_ids)suppressedSources.add(id);continue;
         }
@@ -177,6 +204,26 @@ export class TenantStore {
       }
       // Mixed source messages become non-searchable; their independent retained facts stay available.
       all=this.facts();
+      const byId=new Map(all.map(f=>[f.id,f]));
+      const newPassageIds=new Set((prepared.passages??[]).map(p=>p.id));
+      for(const p of [...this.passages(),...(prepared.passages??[])]){
+        if(p.state==='erased')continue;
+        const previous=JSON.stringify(p);
+        p.fact_ids=[...new Set(p.fact_ids.map(id=>mergedIds.get(id)??id))];
+        const erased=p.fact_ids.map(id=>byId.get(id)).filter((f):f is Fact=>!!f&&f.state==='erased');
+        for(const f of erased){
+          const spans=f.source_spans?.filter(s=>s.source_id===p.source_id)??[];
+          if(spans.length)redactPassage(p,spans);else{p.fragments=[];p.content='';p.vector=null;p.state='erased';}
+        }
+        p.fact_ids=p.fact_ids.filter(id=>!erased.some(f=>f.id===id));
+        // Even unextracted echoes must not reintroduce a forgotten literal. A
+        // different scoped record needs positively linked surviving facts.
+        const linked=p.fact_ids.map(id=>byId.get(id)).filter((f):f is Fact=>!!f);
+        if(markers.some(m=>containsValue(p.content,m)&&(!linked.length||linked.some(f=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)))))){
+          p.fragments=[];p.content='';p.vector=null;p.state='erased';
+        }
+        if(newPassageIds.has(p.id)||JSON.stringify(p)!==previous){p.revision=revision;this.putPassage(p);}
+      }
       for(const sourceId of suppressedSources){
         const row=this.db.prepare('SELECT body FROM messages WHERE id=?').get(sourceId) as Row|undefined;if(!row)continue;
         const m=JSON.parse(row.body) as StoredMessage;
@@ -192,9 +239,13 @@ export class TenantStore {
     })();
   }
   lexical(query:string,limit:number):{id:string;score:number}[]{
+    return this.lexicalTable(query,limit,'evidence_fts');
+  }
+  lexicalPassages(query:string,limit:number):{id:string;score:number}[]{return this.lexicalTable(query,limit,'passage_fts');}
+  private lexicalTable(query:string,limit:number,table:'evidence_fts'|'passage_fts'):{id:string;score:number}[]{
     const terms=[...new Set(tokens(query))].slice(0,64);if(!terms.length)return [];
     const expression=terms.map(t=>`"${t.replace(/"/g,'""')}"`).join(' OR ');
-    const rows=this.db.prepare('SELECT id,bm25(evidence_fts) AS rank FROM evidence_fts WHERE evidence_fts MATCH ? ORDER BY rank LIMIT ?').all(expression,limit) as {id:string;rank:number}[];
+    const rows=this.db.prepare(`SELECT id,bm25(${table}) AS rank FROM ${table} WHERE ${table} MATCH ? ORDER BY rank LIMIT ?`).all(expression,limit) as {id:string;rank:number}[];
     return rows.map(r=>({id:r.id,score:-r.rank}));
   }
   source(id:string):StoredMessage|null{const row=this.db.prepare('SELECT body FROM messages WHERE id=?').get(id) as Row|undefined;return row?JSON.parse(row.body) as StoredMessage:null;}

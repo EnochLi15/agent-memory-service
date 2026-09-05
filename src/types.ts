@@ -29,12 +29,14 @@ export type ExtractedFact = z.infer<typeof factSchema>;
 export type Operation = z.infer<typeof operationSchema>;
 export type Extraction = z.infer<typeof extractionSchema>;
 export type Fact = Omit<ExtractedFact, 'sources'> & {
+  source_spans?: {source_id:string;start:number;end:number}[];
   time_basis?: 'source' | 'ordering'; id: string; source_ids: string[]; source_quotes: string[]; created_at: string; observed_at: string;
   state: 'active' | 'conflicted' | 'superseded' | 'retracted' | 'erased'; vector: number[] | null; entities: string[]; revision: number;
 };
-export type StoredMessage = Message & { id: string; session_id: string; ordinal: number; searchable: boolean; partial?: boolean; time_basis?: 'source' | 'ordering'; redacted?: boolean };
+export type StoredMessage = Message & { id: string; session_id: string; ordinal: number; searchable: boolean; partial?: boolean; time_basis?: 'source' | 'ordering'; redacted?: boolean; external_id?:string };
+export type Passage = {id:string;source_id:string;speaker:string;external_id?:string;fragments:{start:number;end:number;text:string}[];fact_ids:string[];content:string;vector:number[]|null;observed_at:string;time_basis:'source'|'ordering';revision:number;state:'active'|'erased'};
 export type Snapshot = { revision: number; facts: Fact[]; tail: StoredMessage[]; anchor: string | null };
-export type Prepared = { facts: Fact[]; operations: Operation[]; messages: StoredMessage[]; anchor: string | null; degraded: string[]; embeddingSpace: string };
+export type Prepared = { facts: Fact[]; operations: Operation[]; messages: StoredMessage[]; passages?:Passage[]; sourceFormat?:'dual-source-v1'|'facts-only-v1'; anchor: string | null; degraded: string[]; embeddingSpace: string };
 export type Candidate = { fact: Fact; score: number; signals: string[] };
 export type QueryIntent = { historical: boolean; trajectory: boolean; list: boolean; asOf: string | null; entities: string[] };
 
@@ -54,4 +56,3 @@ export function propertyFamily(predicate:string,content=''):string {
   return p;
 }
 export function slot(f: Pick<Fact, 'subject' | 'predicate' | 'scope'>): string { return [canonical(f.subject),propertyFamily(f.predicate),canonical(f.scope)].join('\u001f'); }
-
