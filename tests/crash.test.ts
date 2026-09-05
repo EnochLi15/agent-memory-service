@@ -1,0 +1,21 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';import {join} from 'node:path';import {tmpdir} from 'node:os';import {spawn} from 'node:child_process';
+import {TenantStore} from '../dist/storage.js';import {Extractor,hash} from '../dist/extraction.js';import {Models} from '../dist/models.js';import {configFromEnv} from '../dist/config.js';
+test('SIGKILL during a real SQLite transaction rolls back erasure, vectors, source, FTS and receipt',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'memory-crash-'));const config={...configFromEnv({}),dataDir:dir};let store=new TenantStore(dir,'u');const extractor=new Extractor(config,new Models(config));
+ const initial={request_id:'initial',user_id:'u',session_id:'s',messages:[{role:'user',content:'My access code is ZX-482. My manager is Clara.',timestamp:'2026-01-01T00:00:00Z'}]};
+ const next={request_id:'interrupted',user_id:'u',session_id:'s',messages:[{role:'user',content:'Forget my access code.',timestamp:'2026-02-01T00:00:00Z'},{role:'user',content:'I live in Bergen.',timestamp:'2026-02-01T00:00:01Z'}]};
+ store.commit(initial,hash(JSON.stringify(initial)),await extractor.prepare(initial,store.snapshot('s'),AbortSignal.timeout(1000)),0);store.close();
+ const storage=new URL('../dist/storage.js',import.meta.url).href;const extraction=new URL('../dist/extraction.js',import.meta.url).href;const models=new URL('../dist/models.js',import.meta.url).href;const configuration=new URL('../dist/config.js',import.meta.url).href;
+ const code=`import {TenantStore} from ${JSON.stringify(storage)};import {Extractor,hash} from ${JSON.stringify(extraction)};import {Models} from ${JSON.stringify(models)};import {configFromEnv} from ${JSON.stringify(configuration)};
+ const dir=${JSON.stringify(dir)},req=${JSON.stringify(next)};const c={...configFromEnv({}),dataDir:dir};const s=new TenantStore(dir,'u');const x=new Extractor(c,new Models(c));const p=await x.prepare(req,s.snapshot('s'),AbortSignal.timeout(1000));p.facts.forEach(f=>f.vector=[1,0]);p.embeddingSpace='crash-test:2';
+ s.db.function('crash_gate',()=>{process.send({phase:'inside-transaction-before-receipt'});Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,60000);return 1;});s.db.exec("CREATE TRIGGER crash_test BEFORE INSERT ON requests WHEN NEW.id='interrupted' BEGIN SELECT crash_gate(); END");s.commit(req,hash(JSON.stringify(req)),p,s.revision());`;
+ const child=spawn(process.execPath,['--input-type=module','-e',code],{stdio:['ignore','ignore','pipe','ipc']});let stderr='';child.stderr?.on('data',chunk=>stderr+=String(chunk));
+ try{
+  await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Crash gate not reached: '+stderr)),10000);child.once('message',()=>{clearTimeout(timer);resolve();});child.once('error',reject);child.once('exit',code=>{clearTimeout(timer);reject(Error('Child exited before crash gate: '+code+' '+stderr));});});
+  const exited=new Promise<void>(resolve=>child.once('exit',()=>resolve()));child.kill('SIGKILL');await exited;
+  store=new TenantStore(dir,'u');assert.equal(store.revision(),1);assert.equal(store.receipt(next.request_id,hash(JSON.stringify(next))),null);assert.equal(store.meta('embedding_space'),null);assert.equal(store.db.prepare('SELECT count(*) AS n FROM markers').get().n,0);
+  assert.ok(store.facts().some(f=>f.value==='ZX-482'&&f.state==='active'));assert.ok(store.facts().every(f=>!f.content.includes('Bergen')));assert.ok(store.snapshot('s').tail.every(m=>!m.content.includes('Bergen')));assert.equal(store.lexical('Bergen',10).length,0);assert.ok(store.lexical('ZX-482',10).length>0);
+  store.db.exec('DROP TRIGGER crash_test');const prepared=await extractor.prepare(next,store.snapshot('s'),AbortSignal.timeout(1000));store.commit(next,hash(JSON.stringify(next)),prepared,store.revision());assert.equal(store.revision(),2);assert.ok(store.facts().some(f=>f.content.includes('Bergen')));assert.ok(store.facts().filter(f=>f.state!=='erased').every(f=>!f.content.includes('ZX-482')));
+ }finally{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');store.close();rmSync(dir,{recursive:true,force:true});}
+});
