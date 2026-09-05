@@ -5,6 +5,8 @@ import { scoreAndRank, normalizeBm25, getBm25Params } from './mem0/scoring.js';
 import type { Fact, SearchRequest, SearchResponse, Candidate, QueryIntent, Passage } from './types.js';
 import {createHash} from 'node:crypto';
 import {appendFileSync} from 'node:fs';
+import {projectEvents} from './events.js';
+import {temporalEvidenceText} from './temporal.js';
 
 // Cosine computation derived from mem0 MemoryVectorStore; vectors are normalized at ingress.
 export function cosine(a:number[],b:number[]):number {if(a.length!==b.length)return -1;let sum=0,aa=0,bb=0;for(let i=0;i<a.length;i++){sum+=a[i]!*b[i]!;aa+=a[i]!**2;bb+=b[i]!**2;}return aa&&bb?sum/Math.sqrt(aa*bb):-1;}
@@ -37,11 +39,14 @@ export function collectCandidates(store:TenantStore,req:SearchRequest,vector:num
     lexicalAll.forEach((x,i)=>add(x.id,1/(60+i+1),'lexical'));
     entity.forEach((x,i)=>add(x.id,.5/(60+i+1),'entity'));
   }
-  // An operation trace deliberately has no secret-bearing quote or vector. Give
-  // its safe property label a candidate route for questions about a prior edit.
-  if(/\b(?:removed?|forgot|forget|forgotten|change|affected|take .{0,60} off|took .{0,60} off)\b|删除|忘记|移除|更改|影响/i.test(req.query)){
-    for(const f of facts.filter(f=>f.predicate==='memory_operation').slice(-40)){
-      if(overlap(req.query,f.content.replace(/_/g,' '))>0)add(f.id,.055,'operation-trace');
+  if(config.eventView&&!config.experimental?.rawOnly&&(qi.operation||qi.trajectory||qi.historical)){
+    let history=allFacts.filter(f=>allowed(f,{...qi,historical:true}));
+    while(true){const ids=new Set(history.map(f=>f.id));const next=history.filter(f=>f.depends_on.every(id=>ids.has(id)));if(next.length===history.length)break;history=next;}
+    const events=store.events().filter(e=>!qi.asOf||e.time_basis==='ordering'||Date.parse(e.observed_at)<=Date.parse(qi.asOf+'T23:59:59.999Z'));
+    const projected=projectEvents(events,allFacts,new Set(history.map(f=>f.id)));
+    for(const f of projected){
+      const relevance=overlap(req.query,f.content.replace(/_/g,' '));
+      if(relevance>0)candidates.set(f.id,{fact:f,score:.04+relevance*.03,signals:['operation-event']});
     }
   }
   // Bounded two-hop entity expansion, always from eligible facts and backed by sources.
@@ -88,10 +93,10 @@ export function collectCandidates(store:TenantStore,req:SearchRequest,vector:num
   }
   const ranked=[...candidates.values()].filter(c=>c.score>0).sort((a,b)=>b.score-a.score||a.fact.id.localeCompare(b.fact.id)).slice(0,config.candidateLimit);
   const routes:Record<string,string[]>={};for(const c of candidates.values())for(const route of c.signals)(routes[route]??=[]).push(c.fact.id);
-  return {ranked,allFacts,visibleIds,qi,allPassages,trace:{eligible:[...visibleIds],filtered:allFacts.filter(f=>!visibleIds.has(f.id)).map(f=>f.id),routes,candidate_ids:ranked.map(c=>c.fact.id),source_indexed_ids:allPassages.map(p=>p.id),source_filtered_ids:allPassages.filter(p=>p.state!=='active'||!p.content||p.fact_ids.some(id=>!visibleIds.has(id))).map(p=>p.id)}};
+  return {ranked,allFacts,visibleIds,qi,allPassages,trace:{eligible:[...visibleIds,...[...candidates.values()].filter(c=>c.signals.includes('operation-event')).map(c=>c.fact.id)],filtered:allFacts.filter(f=>!visibleIds.has(f.id)).map(f=>f.id),routes,candidate_ids:ranked.map(c=>c.fact.id),source_indexed_ids:allPassages.map(p=>p.id),source_filtered_ids:allPassages.filter(p=>p.state!=='active'||!p.content||p.fact_ids.some(id=>!visibleIds.has(id))).map(p=>p.id)}};
 }
 export function compactCandidates(frame:RetrievalFrame,limit:number):SearchResponse{
-  return {data:frame.ranked.slice(0,limit).map(c=>({id:c.fact.id,content:`${c.fact.content.slice(0,1200)}\n[subject: ${c.fact.subject}; scope: ${c.fact.scope}; status: ${c.fact.predicate==='raw_evidence'?'original source, verify speaker, negation and plans':c.fact.state+'/'+c.fact.modality}; ${c.fact.time_basis==='ordering'?'synthetic order':'observed'}: ${c.fact.observed_at}; original time: ${c.fact.time_text}; valid from: ${c.fact.valid_from??'unspecified'}; valid until: ${c.fact.valid_to??'unspecified'}]`,score:c.score,created_at:c.fact.created_at}))};
+  return {data:frame.ranked.slice(0,limit).map(c=>({id:c.fact.id,content:`${c.fact.content.slice(0,1200)}\n${temporalEvidenceText(c.fact.event_time)}\n[subject: ${c.fact.subject}; scope: ${c.fact.scope}; status: ${c.fact.predicate==='raw_evidence'?'original source, verify speaker, negation and plans':c.fact.state+'/'+c.fact.modality}; ${c.fact.time_basis==='ordering'?'synthetic order':'observed'}: ${c.fact.observed_at}; original time: ${c.fact.time_text}; valid from: ${c.fact.valid_from??'unspecified'}; valid until: ${c.fact.valid_to??'unspecified'}]`,score:c.score,created_at:c.fact.created_at}))};
 }
 function evidenceKey(f:Fact):string{return f.subject.toLowerCase()+'|'+f.scope.toLowerCase()+'|'+f.content.replace(/\[(?:Session time|Source id):[^\]]*\]/g,'').replace(/^[\p{L}][\p{L} .'-]{0,40}:\s*/u,'').toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');}
 export function packEvidence(store:TenantStore,req:SearchRequest,config:Config,frame:RetrievalFrame,scores?:RankedEvidence[]):SearchResponse{
@@ -112,14 +117,17 @@ export function packEvidence(store:TenantStore,req:SearchRequest,config:Config,f
     const c=ranked.splice(index,1)[0]!;
     const f=c.fact;const key=evidenceKey(f);if(seen.has(key)){discarded.push({id:f.id,reason:'duplicate'});continue;}
     const state=f.predicate==='raw_evidence'?'original source; interpret its speaker, negation and conditional wording':f.state==='conflicted'?'conflicting confirmed claims; do not choose without clarification':f.state==='superseded'?`historical; valid until ${f.valid_to??'later update'}`:f.modality;
-    const originals=f.source_ids.slice(0,2).flatMap(id=>{const m=store.source(id);if(f.id.startsWith('source-')||!m||m.redacted||(f.predicate==='memory_operation'&&!qi.historical)||seenSources.has(id)||allFacts.some(x=>x.source_ids.includes(id)&&!visibleIds.has(x.id)))return [];const q=f.source_quotes.find(q=>m.content.includes(q))??'';const position=q?m.content.indexOf(q):0;const start=Math.max(0,position-100);const excerpt=m.content.length<=600?m.content:m.content.slice(0,100)+' … '+m.content.slice(start,start+400);return [`${m.role}: ${excerpt}`];});
+    const originals=f.source_ids.slice(0,2).flatMap(id=>{const m=store.source(id);if(f.id.startsWith('source-')||f.id.startsWith('event-')||!m||m.redacted||(f.predicate==='memory_operation'&&!qi.historical)||seenSources.has(id)||allFacts.some(x=>x.source_ids.includes(id)&&!visibleIds.has(x.id)))return [];const q=f.source_quotes.find(q=>m.content.includes(q))??'';const position=q?m.content.indexOf(q):0;const start=Math.max(0,position-100);const excerpt=m.content.length<=600?m.content:m.content.slice(0,100)+' … '+m.content.slice(start,start+400);return [`${m.role}: ${excerpt}`];});
     const invalidValues=allFacts.filter(x=>!visibleIds.has(x.id)&&x.value&&x.source_ids.some(id=>f.source_ids.includes(id))).map(x=>x.value.toLowerCase());
     const safeQuotes=f.source_quotes.filter(q=>!invalidValues.some(v=>q.toLowerCase().includes(v)));
     const support=f.source_ids.every(id=>seenSources.has(id))?'':originals.length?`\nVerbatim source context (use this to verify actor and negation):\n${originals.join('\n')}`:safeQuotes.length?`\nVerbatim support: ${safeQuotes.slice(0,2).join(' | ')}`:'';
     const external=f.source_ids.flatMap(id=>{const m=store.source(id);const label=m?.external_id??m?.content.match(/\[Source id: ([^\]]+)\]/)?.[1];return label?[label]:[];});
-    const suffix=`${external.length?`\n[Original source ids: ${external.join(',')}]`:''}\n[status: ${state}; subject/speaker: ${f.subject}; scope: ${f.scope||'unspecified'}; ${f.time_basis==='ordering'?'synthetic order marker, not an event date':'observed'}: ${f.observed_at};${f.time_text?` original time: ${f.time_text};`:''}${f.valid_from?` valid from: ${f.valid_from};`:''}${f.valid_to?` valid until: ${f.valid_to};`:''} source: ${f.source_ids.map(id=>id.slice(0,12)).join(',')}]`;
-    let content=`${f.content}${support}${suffix}`;
-    if(budget+estimateTokens(content)>config.tokenBudget&&support)content=`${f.content}${safeQuotes[0]?`\nVerbatim support: ${safeQuotes[0].slice(0,200)}`:''}${suffix}`;
+    const timeText=temporalEvidenceText(f.event_time);
+    const body=f.content+(timeText?`\n${timeText}`:'');
+    const transition=f.transition_time?` transition window: ${f.transition_time.start} to ${f.transition_time.end_exclusive} (${f.transition_time.precision} precision; exact boundary unknown);`:'';
+    const suffix=`${external.length?`\n[Original source ids: ${external.join(',')}]`:''}\n[status: ${state}; subject/speaker: ${f.subject}; scope: ${f.scope||'unspecified'};${transition} ${f.time_basis==='ordering'?'synthetic order marker, not an event date':'observed'}: ${f.observed_at};${f.time_text?` original time: ${f.time_text};`:''}${f.valid_from?` valid from: ${f.valid_from};`:''}${f.valid_to?` valid until: ${f.valid_to};`:''} source: ${f.source_ids.map(id=>id.slice(0,12)).join(',')}]`;
+    let content=`${body}${support}${suffix}`;
+    if(budget+estimateTokens(content)>config.tokenBudget&&support)content=`${body}${safeQuotes[0]?`\nVerbatim support: ${safeQuotes[0].slice(0,200)}`:''}${suffix}`;
     const cost=estimateTokens(content);if(budget+cost>config.tokenBudget){discarded.push({id:f.id,reason:'budget'});continue;}
     data.push({id:f.id,content,score:Number(c.score.toFixed(8)),created_at:f.created_at});budget+=cost;seen.add(key);seenItems.add(`${f.subject}|${f.predicate}|${f.value||evidenceKey(f)}`);for(const id of f.source_ids)seenSources.add(id);if(data.length>=top)break;
   }
@@ -128,7 +136,7 @@ export function packEvidence(store:TenantStore,req:SearchRequest,config:Config,f
   data.sort((a,b)=>b.score-a.score);
   if(process.env.MEMORY_RETRIEVAL_AUDIT){
     const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
-    const catalog=[...frame.allFacts.map(f=>({id:f.id,source_ids:f.source_ids})),...frame.allPassages.map(p=>({id:p.id,source_ids:[p.source_id]}))];
+    const catalog=[...frame.allFacts.map(f=>({id:f.id,source_ids:f.source_ids})),...frame.allPassages.map(p=>({id:p.id,source_ids:[p.source_id]})),...frame.ranked.filter(c=>c.signals.includes('operation-event')).map(c=>({id:c.fact.id,source_ids:c.fact.source_ids}))];
     const sources=catalog.map(c=>({id:c.id,source_ids:c.source_ids,external_ids_sha256:c.source_ids.flatMap(id=>{const m=store.source(id);const label=m?.external_id??m?.content.match(/\[Source id: ([^\]]+)\]/)?.[1];return label?[hash(label)]:[];})}));
     appendFileSync(process.env.MEMORY_RETRIEVAL_AUDIT,JSON.stringify({event:'retrieval_stages',query_sha256:hash(req.query),tenant_sha256:hash(req.user_id),revision:store.revision(),...frame.trace,sources,reranked:scores?.map(s=>({id:s.id,score:s.score}))??null,discarded,selected:data.map(x=>x.id),tokens:budget})+'\n');
   }

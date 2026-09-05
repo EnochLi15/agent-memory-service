@@ -1,4 +1,5 @@
 import type {AddRequest, Extraction, Operation} from './types.js';
+import {speakerPrefix} from './text.js';
 
 export type InstructionSpan = {start:number;end:number;quote:string;intent:'forget'|'blocked'|'none'};
 const verb=String.raw`(?:forget|delete|erase|remove|stop remembering)`;
@@ -26,7 +27,7 @@ export function instructionSpans(text:string):InstructionSpan[]{
   const start=match.index!,end=start+match[0].length;
   const clause=match[0].replace(/\[Session time:[^\]]*\]|\[Source id:[^\]]*\]/g,'').trim();
   if(!clause)continue;
-  const body=clause.replace(/^[\p{L}][\p{L} .'-]{0,40}:\s*/u,'');
+  const prefix=speakerPrefix(clause);const body=prefix?clause.slice(prefix[0].length):clause;
   const blocked=reported.test(clause)||negative.test(body)||/\bforget it\b/iu.test(body);
   const direct=!blocked&&(retirement.test(body)||request.test(body));
   spans.push({start,end,quote:text.slice(start,end).trim(),intent:direct?'forget':blocked&&mention.test(body)?'blocked':'none'});
@@ -37,7 +38,7 @@ export const realControl=(text:string):boolean=>instructionSpans(text).some(s=>s
 
 export function forgetObligations(req:AddRequest):{index:number;span:InstructionSpan}[]{
  return req.messages.flatMap((m,index)=>{
-  const named=/^[\p{L}][\p{L} .'-]{0,40}:\s*/u.test(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim());
+  const named=!!speakerPrefix(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim());
   return m.role==='user'||named?instructionSpans(m.content).filter(s=>s.intent==='forget').map(span=>({index,span})):[];
  });
 }

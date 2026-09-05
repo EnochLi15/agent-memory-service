@@ -4,9 +4,10 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { canonical, slot, propertyFamily, ServiceError, type AddRequest, type Fact, type Passage, type Prepared, type Receipt, type Snapshot, type StoredMessage, type QueryIntent } from './types.js';
+import { canonical, slot, propertyFamily, ServiceError, type AddRequest, type MemoryEvent, type Operation, type Fact, type Passage, type Prepared, type Receipt, type Snapshot, type StoredMessage, type QueryIntent } from './types.js';
 import { tokens } from './text.js';
 import {redactPassage} from './passages.js';
+import {eventCategory} from './events.js';
 
 const valueWords = (s:string):string[] => canonical(s).match(/[\p{L}\p{N}]+/gu) ?? [];
 const valueDigest = (s:string):string => digest(valueWords(s).join(' '));
@@ -33,6 +34,7 @@ export class TenantStore {
       CREATE INDEX IF NOT EXISTS messages_session ON messages(session_id,ordinal);
       CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, anchor TEXT);
       CREATE TABLE IF NOT EXISTS operations (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS memory_events (id TEXT PRIMARY KEY, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS markers (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS passages (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, body TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS passages_source ON passages(source_id);
@@ -47,6 +49,7 @@ export class TenantStore {
   private setMeta(key:string,value:string):void { this.db.prepare('INSERT OR REPLACE INTO meta VALUES (?,?)').run(key,value); }
   revision():number { return Number(this.meta('revision')??0); }
   facts():Fact[] { return (this.db.prepare('SELECT body FROM facts').all() as Row[]).map(r=>JSON.parse(r.body) as Fact); }
+  events():MemoryEvent[]{return (this.db.prepare('SELECT body FROM memory_events').all() as Row[]).map(r=>JSON.parse(r.body) as MemoryEvent).sort((a,b)=>a.ordinal-b.ordinal||a.id.localeCompare(b.id));}
   passages():Passage[]{return (this.db.prepare('SELECT body FROM passages').all() as Row[]).map(r=>JSON.parse(r.body) as Passage);}
   private putPassage(p:Passage):void{
     this.db.prepare('INSERT OR REPLACE INTO passages VALUES (?,?,?)').run(p.id,p.source_id,JSON.stringify(p));
@@ -66,7 +69,7 @@ export class TenantStore {
     // Extraction proposals carry a sources array, but persisted facts have one
     // canonical source_quotes field. Never preserve an untracked duplicate copy.
     delete (f as Fact & {sources?:unknown}).sources;
-    if(f.state==='erased')f.time_text='';
+    if(f.state==='erased'){f.time_text='';delete f.event_time;delete f.transition_time;}
     this.db.prepare('INSERT OR REPLACE INTO facts VALUES (?,?)').run(f.id,JSON.stringify(f));
     this.db.prepare('DELETE FROM evidence_fts WHERE id=?').run(f.id);
     if (f.state!=='erased' && f.state!=='retracted') this.db.prepare('INSERT INTO evidence_fts(id,text) VALUES (?,?)').run(f.id,tokens(`${f.subject} ${f.predicate} ${f.scope} ${f.content}`).join(' '));
@@ -89,7 +92,8 @@ export class TenantStore {
       const inserted=prepared.messages.map(m=>({...m,ordinal:m.ordinal+offset}));
       for(const m of inserted)this.db.prepare('INSERT INTO messages VALUES (?,?,?,?)').run(m.id,m.session_id,m.ordinal,JSON.stringify(m));
       this.db.prepare('INSERT INTO sessions(id,anchor) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET anchor=excluded.anchor').run(req.session_id,prepared.anchor);
-      let all=this.facts(); const suppressedSources=new Set<string>(); const redactedSources=new Set<string>(); const erasedIds=new Set<string>(all.filter(f=>f.state==='erased').map(f=>f.id));
+      const originalFacts=this.facts();const operationTargets=new Map<Operation,string[]>();
+      let all=structuredClone(originalFacts); const suppressedSources=new Set<string>(); const redactedSources=new Set<string>(); const erasedIds=new Set<string>(all.filter(f=>f.state==='erased').map(f=>f.id));
       const erasedQuotes=new Map<string,Set<string>>();
       const rememberErasedQuotes=(f:Fact):void=>{for(const id of f.source_ids){const quotes=erasedQuotes.get(id)??new Set<string>();for(const quote of f.source_quotes)quotes.add(quote);erasedQuotes.set(id,quotes);}};
       for(const operation of prepared.operations){
@@ -123,6 +127,7 @@ export class TenantStore {
         const families=new Set(target.map(f=>propertyFamily(f.predicate,f.content)));
         const value=operation.value||target.find(f=>f.value&&canonical(source.content).includes(canonical(f.value)))?.value;
         if(value&&target.length){for(const f of pool){if(f.state!=='active'||f.kind==='event'||canonical(f.value)!==canonical(value)||canonical(f.subject)!==canonical(operation.subject)||!families.has(propertyFamily(f.predicate,f.content)))continue;const scopeCompatible=target.some(t=>canonical(t.scope)===canonical(f.scope));if(scopeCompatible&&!target.some(t=>t.id===f.id))target.push(f);}}
+        operationTargets.set(operation,target.map(f=>f.id));
         if(operation.type==='restore'){
           if(!/remember.*again|store.*again|重新.*记|再次.*记/i.test(operation.source.quote))throw new ServiceError('RESTORE','Explicit reauthorization required');
           const markerRows=this.db.prepare('SELECT id,body FROM markers').all() as {id:number;body:string}[];
@@ -144,16 +149,6 @@ export class TenantStore {
           }
           f.revision=revision;this.put(f);
         }
-        if(operation.type==='forget'||operation.type==='retract'){
-          const predicate=actionFamily;
-          const content=`${operation.subject}: the ${predicate.replace(/_/g,' ')} entry ${operation.type==='forget'?'was explicitly removed from memory (forgotten); its value is not retained':'was removed from the current set; prior context is historical'}. Other properties are separate records.`;
-          if(!target.some(f=>f.value&&content.includes(f.value))){
-            const event:Fact={id:digest(`${req.user_id}\0${req.request_id}\0operation\0${source.id}\0${predicate}\0${revision}`),content,subject:operation.subject,predicate:'memory_operation',value:'',scope:operation.scope,kind:'event',modality:'confirmed',cardinality:'multiple',time_text:'',valid_from:null,valid_to:null,supersedes:[],depends_on:[],source_ids:[source.id],source_quotes:[],created_at:source.timestamp,observed_at:source.timestamp,time_basis:source.time_basis,state:'active',vector:null,entities:[],revision};
-            this.put(event);
-          }
-        }
-        // Audit keeps target IDs and a category, never a forgotten raw value or source quote.
-        this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:operation.type,target_ids:target.map(f=>f.id),subject:operation.subject,predicate:operation.predicate,scope:operation.scope,boundary:operation.boundary,source_id:source.id,revision}));
       }
       if(failAt==='operations')throw new ServiceError('INJECTED_FAILURE','Fault injection before fact commit');
       const markers=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
@@ -176,8 +171,10 @@ export class TenantStore {
           const date=f.valid_from??f.observed_at;
           for(const old of same.filter(old=>old.modality==='confirmed')){
             const oldDate=old.valid_from??old.observed_at;
-            if(Date.parse(oldDate)===Date.parse(date)){old.state='conflicted';f.state='conflicted';old.revision=revision;this.put(old);}
-            else if(oldDate<date){old.state='superseded';old.valid_to=date;old.revision=revision;this.put(old);for(const id of old.source_ids)suppressedSources.add(id);}
+            const bounds=(fact:Fact):[number,number]=>{const start=Date.parse(fact.event_time?.start??fact.valid_from??fact.observed_at);return [start,fact.event_time?.end_exclusive?Date.parse(fact.event_time.end_exclusive):start+1];};
+            const [a,b]=bounds(old),[c,d]=bounds(f);
+            if(a<d&&c<b){old.state='conflicted';f.state='conflicted';old.revision=revision;this.put(old);}
+            else if(a<c){old.state='superseded';old.valid_to=date;if(f.event_time?.resolution==='resolved')old.transition_time={start:f.event_time.start,end_exclusive:f.event_time.end_exclusive,precision:f.event_time.precision};old.revision=revision;this.put(old);for(const id of old.source_ids)suppressedSources.add(id);}
             else {f.state='superseded';f.valid_to=oldDate;}
           }
         }
@@ -233,6 +230,28 @@ export class TenantStore {
         }
         this.db.prepare('UPDATE messages SET body=? WHERE id=?').run(JSON.stringify(m),sourceId);
       }
+      // Event records refer to state IDs; they never copy before/after values.
+      const events:MemoryEvent[]=[];
+      const current=new Map(this.facts().map(f=>[f.id,f]));
+      const event=(type:MemoryEvent['type'],f:Pick<Fact,'subject'|'predicate'|'scope'|'content'>,sourceIds:string[],beforeIds:string[],afterIds:string[],position=0,actor:MemoryEvent['actor']='observation'):void=>{
+        const source=inserted.filter(m=>sourceIds.includes(m.id)).sort((a,b)=>a.ordinal-b.ordinal)[0];if(!source)return;
+        events.push({id:'event-'+digest(`${req.user_id}\0${req.request_id}\0${events.length}`),type,actor,category:eventCategory(f),slot_hash:digest(slot(f)),source_ids:sourceIds,before_ids:beforeIds,after_ids:afterIds,ordinal:source.ordinal*10000000+position,observed_at:source.timestamp,time_basis:source.time_basis??'source',revision});
+      };
+      for(const f of prepared.facts){
+        const id=mergedIds.get(f.id)??f.id;if(!current.has(id))continue;
+        const explicit=prepared.operations.some(o=>['update','correct','restore'].includes(o.type)&&slot(o)===slot(f)&&f.source_ids.includes(prepared.messages[o.source.index]!.id));
+        if(explicit)continue;
+        const previous=originalFacts.filter(old=>slot(old)===slot(f)&&old.id!==id&&old.state!=='superseded'&&current.get(old.id)?.state==='superseded'&&current.get(old.id)?.revision===revision);
+        event(f.kind==='reflection'||f.modality==='inferred'?'reflection':previous.length?'update':'remember',f,f.source_ids,previous.map(f=>f.id),[id],f.source_spans?.[0]?.start??0);
+      }
+      for(const o of prepared.operations){
+        const source=prepared.messages[o.source.index]!;const ids=operationTargets.get(o)??[];
+        const after=['forget','retract'].includes(o.type)?[]:prepared.facts.filter(f=>slot(f)===slot(o)&&f.source_ids.includes(source.id)).map(f=>mergedIds.get(f.id)??f.id).filter(id=>current.has(id));
+        const original=originalFacts.find(f=>ids.includes(f.id))??prepared.facts.find(f=>ids.includes(f.id));
+        event(o.type,{...o,content:original?.content??''},[source.id],ids,after,source.content.indexOf(o.source.quote),source.role==='user'?'user':'participant');
+        this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:o.type,target_ids:ids,subject:o.subject,predicate:o.predicate,scope:o.scope,boundary:o.boundary,source_id:source.id,revision}));
+      }
+      for(const e of events)this.db.prepare('INSERT INTO memory_events VALUES (?,?)').run(e.id,JSON.stringify(e));
       if(failAt==='indexes')throw new ServiceError('INJECTED_FAILURE','Fault injection after index writes');
       const receipt:Receipt={success:true,request_id:req.request_id,user_id:req.user_id,session_id:req.session_id};
       this.db.prepare('INSERT INTO requests VALUES (?,?,?)').run(req.request_id,payloadHash,JSON.stringify(receipt));this.setMeta('revision',String(revision));return receipt;
@@ -256,6 +275,13 @@ export class TenantStore {
 export function allowed(f:Fact,i:QueryIntent):boolean {
   if(f.state==='erased'||f.state==='retracted'||f.modality==='hypothetical'||f.modality==='quoted')return false;
   if(f.state==='superseded'&&!i.historical&&!i.asOf)return false;
-  if(i.asOf){const at=Date.parse(i.asOf+'T23:59:59.999Z');if(Date.parse(f.valid_from??f.observed_at)>at)return false;if(f.valid_to&&Date.parse(f.valid_to)<=at)return false;}
+  if(i.asOf){
+    const at=Date.parse(i.asOf+'T23:59:59.999Z');
+    if(f.time_basis!=='ordering'||f.event_time?.resolution==='resolved'){
+      if(Date.parse(f.event_time?.start??f.valid_from??f.observed_at)>at)return false;
+      const end=f.transition_time?.precision&&f.transition_time.precision!=='day'?f.transition_time.end_exclusive:f.valid_to;
+      if(end&&Date.parse(end)<=at)return false;
+    }
+  }
   return true;
 }

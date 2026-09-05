@@ -4,7 +4,7 @@ export interface Config {
   embeddingBase: string; embeddingModel: string; embeddingDigest: string | null; embeddingDimensions: number; embeddingSpace: string;
   addTimeout: number; searchTimeout: number; maxEvidence: number; tokenBudget: number; retrieval: 'hybrid' | 'lexical' | 'mem0';
   rerank: boolean; rawFallback: boolean;
-  candidateLimit:number;rerankCandidates:number;coveragePacking:boolean;sourceIndex:boolean;
+  candidateLimit:number;rerankCandidates:number;coveragePacking:boolean;sourceIndex:boolean;eventView:boolean;
   experimental: {rawOnly:boolean;lifecycle:boolean;temporal:boolean;multiHop:boolean;reflection:boolean};
 }
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
@@ -24,6 +24,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     candidateLimit:Math.min(500,Math.max(1,Math.floor(num('MEMORY_CANDIDATE_LIMIT',200)))),
     rerankCandidates:Math.min(200,Math.max(1,Math.floor(num('MEMORY_RERANK_CANDIDATES',80)))),
     coveragePacking:env.MEMORY_COVERAGE_PACKING!=='false',sourceIndex:env.MEMORY_SOURCE_INDEX!=='false',
+    eventView:env.MEMORY_EVENT_VIEW!=='false',
     experimental:{rawOnly:env.MEMORY_EXPERIMENT_RAW_ONLY==='true',lifecycle:env.MEMORY_EXPERIMENT_LIFECYCLE!=='false',temporal:env.MEMORY_EXPERIMENT_TEMPORAL!=='false',multiHop:env.MEMORY_EXPERIMENT_MULTI_HOP!=='false',reflection:env.MEMORY_EXPERIMENT_REFLECTION!=='false'},
   };
 }

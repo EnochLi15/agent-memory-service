@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import type {Fact,StoredMessage,Passage,Operation} from './types.js';
 import {instructionSpans} from './operation-intent.js';
+import {speakerPrefix} from './text.js';
 
 const digest=(s:string):string=>createHash('sha256').update(s).digest('hex');
 export function sourceSpans(f:{sources:{index:number;quote:string}[]},messages:StoredMessage[]):NonNullable<Fact['source_spans']>{
@@ -18,7 +19,7 @@ export function preparePassages(messages:StoredMessage[],facts:Fact[],operations
  const result:Passage[]=[];const segmenter=new Intl.Segmenter('en',{granularity:'sentence'});
  for(const m of messages){
   const cleaned=m.content.replace(/\[(?:Session time|Source id):[^\]]*\]/g,'').trim();
-  const named=cleaned.match(/^([\p{L}][\p{L} .'-]{0,40}):\s*/u)?.[1];
+  const named=speakerPrefix(cleaned)?.[1];
   if(m.role!=='user'&&!named)continue;
   const controls=instructionSpans(m.content).filter(s=>s.intent!=='none');
   const operationSpans=operations.filter(o=>messages[o.source.index]?.id===m.id).map(o=>({start:m.content.indexOf(o.source.quote),end:m.content.indexOf(o.source.quote)+o.source.quote.length}));

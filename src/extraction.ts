@@ -3,8 +3,9 @@ import type { Config } from './config.js';
 import { Models } from './models.js';
 import { EXTRACTION_PROMPT } from './prompts.js';
 import { addSchema, extractionSchema, canonical, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation } from './types.js';
-import { entities, overlap, tokens } from './text.js';
+import { entities, overlap, tokens, speakerPrefix } from './text.js';
 import {preparePassages,sourceSpans} from './passages.js';
+import {messageAnchors,normalizeFactTime} from './temporal.js';
 
 export function hash(s: string): string { return createHash('sha256').update(s).digest('hex'); }
 import {realControl,instructionSpans,authorizesForget,missingForgetObligations} from './operation-intent.js';
@@ -13,7 +14,7 @@ export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction 
   const result: Extraction = { facts: [], operations: [] };
   for (const [index, message] of req.messages.entries()) {
     const clean = message.content.replace(/\[Session time:[^\]]*\]/g, '').trim();
-    const named = /\b(?:said|says|quoted)\b/i.test(clean.split(':',1)[0]??'')?null:clean.match(/^([\p{L}][\p{L} .'-]{0,40}):\s*/u);
+    const named = speakerPrefix(clean);
     const subject = named?.[1]?.trim() ?? (message.role === 'user' ? 'user' : message.role);
     const body = named ? clean.slice(named[0].length) : clean;
     for (const span of instructionSpans(body)) {
@@ -86,7 +87,7 @@ function groundedOperation(o:Operation,req:AddRequest,facts:Fact[]):boolean {
 }
 function humanOperation(o:Operation,req:AddRequest):boolean {
   const m=req.messages[o.source.index];if(!m)return false;if(m.role==='user')return true;
-  const name=m.content.replace(/\[Session time:[^\]]*\]/g,'').trim().match(/^([\p{L}][\p{L} .'-]{0,40}):\s*/u)?.[1];
+  const name=speakerPrefix(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim())?.[1];
   return !!name && (canonical(o.subject)===canonical(name)||canonical(o.subject).startsWith(canonical(name)+"'s "));
 }
 function resolveSource(source:{index:number;quote:string},req:AddRequest):void {
@@ -129,7 +130,7 @@ export class Extractor {
   async prepare(req: AddRequest, snapshot: Snapshot, signal: AbortSignal): Promise<Prepared> {
     addSchema.parse(req);
     const degraded: string[] = [];const partialSources=new Set<number>();
-    const anchor = req.messages.map(m => m.content.match(/\[Session time:\s*([^\]]+)\]/i)?.[1]).find(Boolean) ?? snapshot.anchor ?? req.messages[0]?.timestamp ?? null;
+    const chronology=messageAnchors(req,snapshot.anchor);const anchor=chronology.last;
     let parsed: Extraction;
     if(this.config.experimental?.rawOnly){
       parsed={operations:[],facts:req.messages.flatMap((m,index)=>m.content.match(/[\s\S]{1,2000}/g)?.map(quote=>({content:`${m.role}: ${quote}`,subject:m.role,predicate:'raw_evidence',value:quote,scope:'',kind:'event' as const,modality:'confirmed' as const,cardinality:'multiple' as const,time_text:'',valid_from:null,valid_to:null,sources:[{index,quote}],supersedes:[],depends_on:[]}))??[])};
@@ -199,15 +200,16 @@ export class Extractor {
     if(!this.config.experimental?.rawOnly&&missingForgetObligations(req,parsed).length)throw new ServiceError('OPERATION_INTENT','Unresolved memory operation after bounded recovery');
     const known = new Set([...snapshot.facts.map(f=>f.id),...localIds]);
     if (parsed.operations.some(o=>o.target_ids.some(id=>!known.has(id)))) throw new ServiceError('OPERATION_TARGET','Unknown memory operation target');
-    const messages = req.messages.map((m,i)=>({ ...m,id:hash(`${req.user_id}\0${req.request_id}\0${i}`),session_id:req.session_id,ordinal:i,external_id:m.content.match(/\[Source id: ([^\]]+)\]/)?.[1],searchable:true,partial:partialSources.has(i),time_basis:(anchor?.includes('synthetic ordering')?'ordering':'source') as 'ordering'|'source' }));
+    const messages = req.messages.map((m,i)=>({ ...m,id:hash(`${req.user_id}\0${req.request_id}\0${i}`),session_id:req.session_id,ordinal:i,external_id:m.content.match(/\[Source id: ([^\]]+)\]/)?.[1],searchable:true,partial:partialSources.has(i),time_basis:(chronology.anchors[i]?.includes('synthetic ordering')?'ordering':'source') as 'ordering'|'source' }));
     const facts: Fact[] = [];
     for (const [i,f] of parsed.facts.entries()) {
       if (f.sources.some(s=>!validSource(s))) throw new ServiceError('FACT_SOURCE','Fact lacks verbatim source evidence');
       if ([...f.supersedes,...f.depends_on].some(id=>!known.has(id))) throw new ServiceError('FACT_TARGET','Unknown superseded fact');
       const src = f.sources.map(s=>messages[s.index]!);
+      const eventTime=normalizeFactTime(f,req,chronology.anchors);
       const {sources:proposalSources,...attributes}=f;
-      if(!this.config.experimental?.rawOnly&&src.every(m=>m.role!=='user'&&!/^([\p{L}][\p{L} .'-]{0,40}):\s*/u.test(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim())))f.modality='quoted';
-      facts.push({ ...attributes,source_spans:sourceSpans(f,messages),modality:f.modality,time_basis:anchor?.includes('synthetic ordering')?'ordering':'source',id:factId(req,i),source_ids:[...new Set(src.map(m=>m.id))],source_quotes:proposalSources.map(s=>s.quote),created_at:src[0]!.timestamp,observed_at:src[0]!.timestamp,state:'active',vector:null,entities:entities(f.content),revision:snapshot.revision+1 });
+      if(!this.config.experimental?.rawOnly&&src.every(m=>m.role!=='user'&&!speakerPrefix(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim())))f.modality='quoted';
+      facts.push({ ...attributes,event_time:eventTime,source_spans:sourceSpans(f,messages),modality:f.modality,time_basis:src[0]!.time_basis,id:factId(req,i),source_ids:[...new Set(src.map(m=>m.id))],source_quotes:proposalSources.map(s=>s.quote),created_at:src[0]!.timestamp,observed_at:src[0]!.timestamp,state:'active',vector:null,entities:entities(f.content),revision:snapshot.revision+1 });
     }
     const passages=this.config.sourceIndex&&!this.config.experimental?.rawOnly?preparePassages(messages,facts,parsed.operations,snapshot.revision+1):[];
     if (this.config.mode !== 'offline' && (facts.length||passages.length)) {
@@ -218,6 +220,6 @@ export class Extractor {
         if (facts.some(f=>f.content.length>=3500)) degraded.push('long_evidence_lexical');
       } catch(error) { if (signal.aborted) throw error; degraded.push('embedding_lexical'); }
     }
-    return { facts,operations:parsed.operations,messages,passages,sourceFormat:this.config.sourceIndex&&!this.config.experimental?.rawOnly?'dual-source-v1':'facts-only-v1',anchor,degraded,embeddingSpace:this.config.embeddingSpace };
+    return { facts,operations:parsed.operations,messages,passages,sourceFormat:this.config.sourceIndex&&!this.config.experimental?.rawOnly?'dual-source-v2':'facts-only-v2',anchor,degraded,embeddingSpace:this.config.embeddingSpace };
   }
 }
