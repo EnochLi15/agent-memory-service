@@ -75,11 +75,18 @@ export class Extractor {
       const relevant = snapshot.facts.map(f => ({ f, score: overlap(chunkText, f.content) })).sort((a,b)=>b.score-a.score).slice(0,100).map(({f}) => ({ id:f.id, content:f.content, subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,state:f.state,modality:f.modality }));
       const user = JSON.stringify({ OBSERVATION_DATE: anchor, EXISTING_FACTS: relevant, CONTEXT_ONLY: snapshot.tail.map(m => ({role:m.role,content:m.content})), NEW_MESSAGES: req.messages.map((m,index)=>({index,...m})) });
       try {
-        let raw = await this.models.json(EXTRACTION_PROMPT, user, signal);
-        let valid = extractionSchema.safeParse(raw);
-        if (!valid.success) { raw = await this.models.json(EXTRACTION_PROMPT, user + '\nPrevious output failed schema validation. Every fact requires sources [{index,quote}], subject, predicate, value, content. Return all required fields.', signal); valid = extractionSchema.safeParse(raw); }
-        if (!valid.success) throw new ServiceError('EXTRACTION_SCHEMA','Invalid structured extraction');
-        parsed = valid.data;
+        let issue='';let accepted:Extraction|undefined;
+        for(let attempt=0;attempt<2;attempt++){
+          const raw=await this.models.json(EXTRACTION_PROMPT,user+(issue?'\nREPAIR: '+issue:''),signal);
+          const valid=extractionSchema.safeParse(raw);
+          if(!valid.success){issue='Return the complete schema. '+valid.error.issues.slice(0,4).map(x=>x.path.join('.')+': '+x.message).join('; ');continue;}
+          const invalid=valid.data.facts.flatMap((f,i)=>f.sources.filter(s=>!req.messages[s.index]?.content.includes(s.quote)).map(s=>({fact:i,index:s.index,quote:s.quote})));
+          const badOps=valid.data.operations.filter(o=>!req.messages[o.source.index]?.content.includes(o.source.quote));
+          if(invalid.length||badOps.length){issue='Every source quote must be an exact substring of the indicated NEW_MESSAGES content. Never copy CONTEXT_ONLY as a new source. Fix all facts/operations and return the full object. Invalid fact spans: '+JSON.stringify(invalid.slice(0,8));continue;}
+          accepted=valid.data;break;
+        }
+        if(!accepted)throw new ServiceError('EXTRACTION_SCHEMA','Could not validate structured evidence and exact sources');
+        parsed=accepted;
       } catch (error) {
         if (signal.aborted) throw error;
         degraded.push('extraction_offline'); parsed = offlineExtract(req,snapshot);

@@ -11,14 +11,24 @@ export class Models {
     this.client = new OpenAI({ apiKey: config.llmKey || 'local', baseURL: config.llmBase, maxRetries: 0, timeout: config.addTimeout });
   }
   async json(system: string, user: string, signal: AbortSignal): Promise<unknown> {
-    const completion = await this.client.chat.completions.create({
-      model: this.config.llmModel, messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-      response_format: { type: 'json_object' }, max_completion_tokens: 6500,
-    }, { signal });
-    const content = completion.choices[0]?.message.content;
-    if (!content || completion.choices[0]?.finish_reason === 'length') throw new ServiceError('MODEL_OUTPUT', 'Incomplete model output');
-    return JSON.parse(content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')) as unknown;
+    // Streaming prevents idle gateway disconnects during long structured generations.
+    // Nothing is published until the entire JSON object is validated and committed.
+    let last:unknown;
+    for(let attempt=0;attempt<2;attempt++){
+      try{
+        const stream=await this.client.chat.completions.create({
+          model:this.config.llmModel,messages:[{role:'system',content:system},{role:'user',content:user}],
+          response_format:{type:'json_object'},max_completion_tokens:10000,stream:true,
+        },{signal});
+        let content='',finish:string|null=null;
+        for await(const chunk of stream){content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
+        if(!content||finish!=='stop')throw new ServiceError('MODEL_OUTPUT','Incomplete model output');
+        return JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
+      }catch(error){last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
+    }
+    throw last;
   }
+
   async embedBatch(texts: string[], action: 'add' | 'search', signal: AbortSignal): Promise<number[][]> {
     if (!texts.length) return [];
     const prefix = this.config.embeddingModel.startsWith('nomic-embed-text') ? (action === 'search' ? 'search_query: ' : 'search_document: ') : '';

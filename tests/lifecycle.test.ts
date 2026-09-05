@@ -50,8 +50,9 @@ test('invalid extraction schema and wrong vector dimensions degrade without fabr
  let calls=0;const models={json:async()=>{calls++;return {bad:true};},embedBatch:async()=>{throw new Error('dimension');}};
  const x=new Extractor({...c,mode:'enhanced'},models as any);const p=await x.prepare({request_id:'a',user_id:'u',session_id:'s',messages:[{role:'user',content:'I like hiking.',timestamp:'2026-01-01T00:00:00Z'}]},s.snapshot('s'),AbortSignal.timeout(1000));assert.equal(calls,2);assert.deepEqual(p.degraded,['extraction_offline','embedding_lexical']);assert.ok(p.facts.every(f=>f.vector===null));
 }));
-test('fabricated source or cross-tenant operation target is rejected before commit',()=>fixture(async({s,c}:any)=>{
+test('fabricated source falls back to grounded extraction; unknown operation ID is rejected',()=>fixture(async({s,c}:any)=>{
  const req={request_id:'a',user_id:'u',session_id:'s',messages:[{role:'user',content:'I like hiking.',timestamp:'2026-01-01T00:00:00Z'}]};
  const x=new Extractor({...c,mode:'enhanced'},{json:async()=>({facts:[{content:'I like swimming.',subject:'user',predicate:'hobby',value:'swimming',sources:[{index:0,quote:'swimming'}]}],operations:[]})} as any);
- await assert.rejects(()=>x.prepare(req,s.snapshot('s'),AbortSignal.timeout(1000)),/verbatim source/);assert.equal(s.revision(),0);
+ const p=await x.prepare(req,s.snapshot('s'),AbortSignal.timeout(1000));assert.ok(p.degraded.includes('extraction_offline'));assert.ok(p.facts.every(f=>!f.content.includes('swimming')));assert.ok(p.facts.some(f=>f.content.includes('hiking')));
+ const bad=new Extractor({...c,mode:'enhanced'},{json:async()=>({facts:[],operations:[{type:'forget',target_ids:['other-tenant-id'],subject:'user',predicate:'hobby',source:{index:0,quote:'I like hiking.'}}]})} as any);await assert.rejects(()=>bad.prepare(req,s.snapshot('s'),AbortSignal.timeout(1000)),/Unknown memory operation target/);assert.equal(s.revision(),0);
 }));
