@@ -32,6 +32,13 @@ test('strict tenant separation including names and path-like identities',async()
   assert.ok((await search(app,'city','../u')).every(x=>!x.content.includes('Portland')));
   assert.ok((await search(app,'city','u')).every(x=>!x.content.includes('Seattle')));
 }));
+test('query options neither become evidence nor cross the tenant boundary',async()=>fixture(async app=>{
+ await add(app,'a',[msg('I live in Oslo.')],'alpha');await add(app,'b',[msg('I live in Bergen.')],'beta');
+ const response=await app.inject({method:'POST',url:'/search',payload:{query:'current city',user_id:'alpha',top_k:100,options:['Bergen','Invented-City-ZZ764']}});
+ assert.equal(response.statusCode,200);assert.match(response.body,/Oslo/);assert.doesNotMatch(response.body,/Bergen|Invented-City-ZZ764/);
+ assert.ok((await search(app,'Invented-City-ZZ764 current city','alpha')).every(m=>!m.content.includes('Invented-City-ZZ764')&&!m.content.includes('Bergen')));
+ const unknown=await app.inject({method:'POST',url:'/search',payload:{query:'city',user_id:'unknown',top_k:100,options:['Oslo','Bergen']}});assert.deepEqual(unknown.json(),{data:[]});
+}));
 test('idempotency and payload conflict',async()=>fixture(async app=>{
   const messages=[msg('I live in Seattle.')];await add(app,'a',messages);const before=await search(app,'city');await add(app,'a',messages);assert.deepEqual(await search(app,'city'),before);
   const r=await app.inject({method:'POST',url:'/add',payload:{request_id:'a',user_id:'u',session_id:'s',messages:[msg('I live in Boston.')]}});assert.equal(r.statusCode,409);assert.deepEqual(await search(app,'city'),before);
