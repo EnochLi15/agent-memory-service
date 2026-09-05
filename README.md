@@ -1,0 +1,23 @@
+# Agent Memory Service
+
+基于固定版本 mem0 TypeScript 源码改造的独立记忆服务。只开放 `POST /add`、`POST /search`、`GET /health`。运行时不导入评测器，不读取问题答案或 rubric。
+
+## 本地运行
+
+需要 Node 24.18.0；`npm ci && npm run build && npm test`。
+
+```sh
+MEMORY_MODE=offline MEMORY_DATA_DIR=.data HOST=127.0.0.1 PORT=8088 npm start
+```
+
+增强模式设置 `.env.example` 中的模型变量，再用 `node --env-file=.env dist/server.js` 启动。默认离线模式不会下载模型或调用网络。数据库存储在指定目录，每个 user_id 使用 SHA-256 分区；同用户写入串行，SQLite Worker 中一次事务提交来源、事实、FTS、向量、操作与幂等回执。`/add` 的成功响应代表已提交。
+
+增强模式使用远端结构化抽取、本地 Ollama 批量 embedding；异常可回退到保守规则和词法检索。离线模式能演示记忆生命周期，不能代表增强模式问答质量。无法可靠绑定的破坏性操作返回失败。
+
+当前及历史检索、同时间冲突、显式纠错、作用域移除、值/属性遗忘、显式重新授权均有区分。遗忘清除可检索内容并传播到依赖的推断；保留不可逆值摘要与来源 ID 以抵抗重放。这是服务检索层的遗忘语义，磁盘备份及已交付给调用方的历史响应不在服务控制范围内。
+
+## 契约和来源
+
+静态契约位于 `contracts/`，权威版本由独立 eval 仓库维护。来源与改动见 [UPSTREAM.md](UPSTREAM.md)；实际复用代码位于 `src/mem0/`。本项目不是对 mem0 SDK 的 HTTP 包装。
+
+测试：`npm run build && npm test`。运行参数见 `.env.example`。容器、黑盒验收和完整实验结果由 workspace 编排，service 本身可独立构建部署。
