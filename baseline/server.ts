@@ -3,12 +3,13 @@ import Fastify from 'fastify';
 import {createHash} from 'node:crypto';
 import {mkdirSync} from 'node:fs';
 import {resolve,join} from 'node:path';
+import {IngestionGuard} from './ingestion-guard';
 import {Memory as UpstreamMemory} from './upstream/src/oss/src/memory/index';
 const variant=process.env.BASELINE_VARIANT??'U0';
 const Memory:typeof UpstreamMemory=variant==='U1'?require('./.data/u1/src/oss/src/memory/index').Memory:UpstreamMemory;
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 const root=resolve(process.env.BASELINE_DATA_DIR??'.data/u0');mkdirSync(root,{recursive:true});
-const instances=new Map<string,UpstreamMemory>();const receipts=new Map<string,string>();
+const instances=new Map<string,UpstreamMemory>();const ingestion=new IngestionGuard();
 function memory(user:string){
  let m=instances.get(user);if(m)return m;
  const folder=join(root,hash(user));mkdirSync(folder,{recursive:true});
@@ -18,9 +19,8 @@ async function main(){
  const app=Fastify({exposeHeadRoutes:false,bodyLimit:8*1024*1024});
  app.get('/health',async()=>({status:'ok',baseline:variant}));
  app.post('/add',async(req,reply)=>{
-  const r=req.body as any;const key=r.user_id+'\0'+r.request_id;const signature=hash(JSON.stringify(r));
-  if(receipts.has(key)&&receipts.get(key)!==signature)return reply.code(409).send({error:'conflict'});
-  if(!receipts.has(key)){if(r.messages.length)await memory(r.user_id).add(r.messages.map((m:any)=>({role:m.role,content:m.content})),{userId:r.user_id,metadata:{session_id:r.session_id}});receipts.set(key,signature);}
+  const r=req.body as any;const signature=hash(JSON.stringify(r));
+  await ingestion.run(r.user_id,r.request_id,signature,async()=>{if(r.messages.length)await memory(r.user_id).add(r.messages.map((m:any)=>({role:m.role,content:m.content})),{userId:r.user_id,metadata:{session_id:r.session_id}});});
   return {success:true,request_id:r.request_id,user_id:r.user_id,session_id:r.session_id};
  });
  app.post('/search',async req=>{
