@@ -87,4 +87,10 @@ test('forget closes alternate representations and leaves a value-free operation 
  const a=await prepare('My backup first name is Iris.');const original=a.p.facts[0];a.p.facts.push({...original,id:original.id+'-atomic',kind:'fact',predicate:'backup_first_name',value:'Iris',scope:''});commit(a);await add('My manager is Clara.');
  const b=await prepare('Remove Iris from the list entirely.','2026-02-01T00:00:00Z');b.p.facts=[];b.p.operations=[{type:'forget',target_ids:[original.id],subject:'user',predicate:'experience',scope:'',value:'Iris',boundary:'value',source:{index:0,quote:b.req.messages[0].content},reason:'Complete removal'}];commit(b);
  assert.doesNotMatch(find('previous backup first name Iris'),/Iris/);assert.match(find('backup name removed'),/forgotten/);assert.match(find('manager'),/Clara/);
+ assert.match(find('Which piece of name information was affected by taking it off the list?'),/backup name.*removed/);
+}));
+test('a model plan alias becomes a tentative event without a second inference',()=>fixture(async({s,c}:any)=>{
+ let calls=0;const x=new Extractor({...c,mode:'enhanced'},{json:async()=>{calls++;return {facts:[{content:'I plan to move to Paris.',subject:'user',predicate:'move',value:'Paris',kind:'plan',sources:[{index:0,quote:'plan to move to Paris'}]}],operations:[]};},embedBatch:async()=>{throw Error('offline');}} as any);
+ const p=await x.prepare({request_id:'plan',user_id:'u',session_id:'s',messages:[{role:'user',content:'I plan to move to Paris.',timestamp:'2026-01-01T00:00:00Z'}]},s.snapshot('s'),AbortSignal.timeout(1000));
+ assert.equal(calls,1);assert.equal(p.facts[0].kind,'event');assert.equal(p.facts[0].modality,'tentative');
 }));

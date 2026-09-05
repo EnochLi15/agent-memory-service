@@ -9,7 +9,13 @@ export function hash(s: string): string { return createHash('sha256').update(s).
 const controlPattern = /\b(forget|delete|erase|remove|stop remembering|no longer want you to remember)\b|忘掉|忘记|删除|移除|不要再记/iu;
 function realControl(text: string): boolean {
   if(/\b(?:said|says|quoted|example|hypothetical|suppose|what if|if I|should I|how do I)\b|假如|假设|举例|引用|他说|她说/i.test(text))return false;
-  return controlPattern.test(text)&&!/\bforget it\b|\b(?:don't|do not|never)(?: want to)? forget\b|别忘|不要忘/.test(text.toLowerCase());
+  // A verb occurrence is not authorization: "I sometimes forget a dose" is
+  // autobiographical evidence. Require a request addressed to the memory keeper.
+  const clauses=text.split(/(?<=[.!?。！？;；])\s*|\n/u);
+  return clauses.some(clause=>{
+    if(!controlPattern.test(clause)||/\bforget it\b|\b(?:don't|do not|never)(?: want to)? forget\b|别忘|不要忘/i.test(clause))return false;
+    return /(?:^|,\s*|\b(?:please|kindly|can you|could you|would you|want you to|need you to|you should|you must|let's)\s+)(?:forget|delete|erase|remove|stop remembering)\b|\bno longer want you to remember\b|(?:^|[，,]|请|帮我|麻烦你|你可以|你应该)(?:忘掉|忘记|删除|移除|不要再记)/iu.test(clause.trim());
+  });
 }
 
 export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction {
@@ -92,7 +98,10 @@ export class Extractor {
     const degraded: string[] = [];const partialSources=new Set<number>();
     const anchor = req.messages.map(m => m.content.match(/\[Session time:\s*([^\]]+)\]/i)?.[1]).find(Boolean) ?? snapshot.anchor ?? req.messages[0]?.timestamp ?? null;
     let parsed: Extraction;
-    if (this.config.mode === 'offline') parsed = offlineExtract(req, snapshot);
+    if(this.config.experimental?.rawOnly){
+      parsed={operations:[],facts:req.messages.flatMap((m,index)=>m.content.match(/[\s\S]{1,2000}/g)?.map(quote=>({content:`${m.role}: ${quote}`,subject:m.role,predicate:'raw_evidence',value:quote,scope:'',kind:'event' as const,modality:'confirmed' as const,cardinality:'multiple' as const,time_text:'',valid_from:null,valid_to:null,sources:[{index,quote}],supersedes:[],depends_on:[]}))??[])};
+    }
+    else if (this.config.mode === 'offline') parsed = offlineExtract(req, snapshot);
     else {
       const chunkText = req.messages.map(m => m.content).join('\n');
       const ordered=snapshot.facts.map(f=>({f,score:overlap(chunkText,`${f.subject} ${f.predicate} ${f.value} ${f.content}`)+(f.state==='active'&&f.cardinality==='single'?.08:0)})).sort((a,b)=>b.score-a.score).slice(0,120).map(x=>x.f);
@@ -100,10 +109,18 @@ export class Extractor {
       const knownIds=new Set(snapshot.facts.map(f=>f.id));
       const relevant=ordered.map((f,i)=>({id:`m${i}`,content:f.content,subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,state:f.state,modality:f.modality}));
       const user=JSON.stringify({OBSERVATION_DATE:anchor,EXISTING_FACTS:relevant,CONTEXT_ONLY:snapshot.tail.map(m=>({role:m.role,content:m.content})),NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))});
+      // Reserve time for grounded fallback, local embedding and atomic commit.
+      // This inner budget never extends the caller's absolute request deadline.
+      const modelSignal=AbortSignal.any([signal,AbortSignal.timeout(Math.min(80000,Math.max(500,this.config.addTimeout-25000)))]);
       try {
         let issue='';let accepted:Extraction|undefined;
         for(let attempt=0;attempt<2;attempt++){
-          const raw=await this.models.json(EXTRACTION_PROMPT,user+(issue?'\nREPAIR: '+issue:''),signal);
+          const raw=await this.models.json(EXTRACTION_PROMPT,user+(issue?'\nREPAIR: '+issue:''),modelSignal);
+          // Normalize an unambiguous model spelling without weakening the runtime
+          // schema: a plan is a tentative event, never confirmed current state.
+          if(raw&&typeof raw==='object'&&Array.isArray((raw as {facts?:unknown}).facts)){
+            for(const f of (raw as {facts:unknown[]}).facts)if(f&&typeof f==='object'&&(f as {kind?:unknown}).kind==='plan')Object.assign(f,{kind:'event',modality:'tentative'});
+          }
           const valid=extractionSchema.safeParse(raw);
           if(!valid.success){issue='Return the complete schema. '+valid.error.issues.slice(0,4).map(x=>x.path.join('.')+': '+x.message).join('; ');continue;}
           for(const f of valid.data.facts)for(const source of f.sources)resolveSource(source,req);
@@ -150,7 +167,7 @@ export class Extractor {
       if (f.sources.some(s=>!validSource(s))) throw new ServiceError('FACT_SOURCE','Fact lacks verbatim source evidence');
       if ([...f.supersedes,...f.depends_on].some(id=>!known.has(id))) throw new ServiceError('FACT_TARGET','Unknown superseded fact');
       const src = f.sources.map(s=>messages[s.index]!);
-      if(src.every(m=>m.role!=='user'&&!/^([\p{L}][\p{L} .'-]{0,40}):\s*/u.test(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim())))f.modality='quoted';
+      if(!this.config.experimental?.rawOnly&&src.every(m=>m.role!=='user'&&!/^([\p{L}][\p{L} .'-]{0,40}):\s*/u.test(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim())))f.modality='quoted';
       facts.push({ ...f,time_basis:anchor?.includes('synthetic ordering')?'ordering':'source',id:hash(`${req.user_id}\0${req.request_id}\0fact\0${i}`),source_ids:[...new Set(src.map(m=>m.id))],source_quotes:f.sources.map(s=>s.quote),created_at:src[0]!.timestamp,observed_at:src[0]!.timestamp,state:'active',vector:null,entities:entities(f.content),revision:snapshot.revision+1 });
     }
     if (this.config.mode !== 'offline' && facts.length) {

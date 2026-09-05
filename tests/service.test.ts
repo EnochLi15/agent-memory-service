@@ -63,6 +63,15 @@ test('forget it and do not forget are not destructive',async()=>fixture(async ap
   await add(app,'a',[msg('My access code is ZX-482.')]);await add(app,'b',[msg('Forget it. Do not forget my access code.')]);
   assert.match((await search(app,'access code')).map(x=>x.content).join('\n'),/ZX-482/);
 }));
+test('descriptions of human forgetfulness are evidence, not memory deletion commands',async()=>fixture(async app=>{
+  await add(app,'a',[msg('My access code is ZX-482. My manager is Alice.')]);
+  await add(app,'b',[msg("I'm on sertraline 50mg daily. I sometimes forget a dose but most days I remember. Just want that on record."),msg('I forget my access code sometimes.'),msg('我有时忘记吃药。请记住这个情况。')]);
+  assert.match((await search(app,'access code')).map(x=>x.content).join('\n'),/ZX-482/);
+  assert.match((await search(app,'sertraline dose')).map(x=>x.content).join('\n'),/50mg/);
+  await add(app,'c',[msg('Please forget my access code.')]);
+  assert.ok((await search(app,'access code ZX-482')).every(x=>!x.content.includes('ZX-482')));
+  assert.match((await search(app,'manager')).map(x=>x.content).join('\n'),/Alice/);
+}));
 test('named assistant participant and Chinese evidence stay distinct',async()=>fixture(async app=>{
   await add(app,'a',[msg('Alice: I like painting.'),msg('Beth: I like hiking.','2026-01-01T00:00:01Z','assistant'),msg('我喜欢喝茶。我喜欢画画。')]);
   assert.match((await search(app,'Beth hiking')).map(x=>x.content).join('\n'),/Beth/);

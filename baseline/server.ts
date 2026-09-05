@@ -3,10 +3,12 @@ import Fastify from 'fastify';
 import {createHash} from 'node:crypto';
 import {mkdirSync} from 'node:fs';
 import {resolve,join} from 'node:path';
-import {Memory} from './upstream/src/oss/src/memory/index';
+import {Memory as UpstreamMemory} from './upstream/src/oss/src/memory/index';
+const variant=process.env.BASELINE_VARIANT??'U0';
+const Memory:typeof UpstreamMemory=variant==='U1'?require('./.data/u1/src/oss/src/memory/index').Memory:UpstreamMemory;
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 const root=resolve(process.env.BASELINE_DATA_DIR??'.data/u0');mkdirSync(root,{recursive:true});
-const instances=new Map<string,Memory>();const receipts=new Map<string,string>();
+const instances=new Map<string,UpstreamMemory>();const receipts=new Map<string,string>();
 function memory(user:string){
  let m=instances.get(user);if(m)return m;
  const folder=join(root,hash(user));mkdirSync(folder,{recursive:true});
@@ -14,7 +16,7 @@ function memory(user:string){
 }
 async function main(){
  const app=Fastify({exposeHeadRoutes:false,bodyLimit:8*1024*1024});
- app.get('/health',async()=>({status:'ok',baseline:'U0'}));
+ app.get('/health',async()=>({status:'ok',baseline:variant}));
  app.post('/add',async(req,reply)=>{
   const r=req.body as any;const key=r.user_id+'\0'+r.request_id;const signature=hash(JSON.stringify(r));
   if(receipts.has(key)&&receipts.get(key)!==signature)return reply.code(409).send({error:'conflict'});
@@ -27,6 +29,6 @@ async function main(){
   const data=results.results.map((m:any)=>({id:m.id,content:m.memory??m.content??'',score:m.score??0,created_at:m.createdAt??m.created_at??'1970-01-01T00:00:00Z'})).sort((a:any,b:any)=>b.score-a.score).filter((m:any)=>{budget+=Math.ceil(m.content.length/3);return budget<=6000;}).slice(0,32);
   return {data};
  });
- await app.listen({host:'127.0.0.1',port:Number(process.env.PORT??8091)});console.log('U0 baseline ready');
+ await app.listen({host:'127.0.0.1',port:Number(process.env.PORT??8091)});console.log(variant+' baseline ready');
 }
 void main();

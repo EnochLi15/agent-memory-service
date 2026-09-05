@@ -97,7 +97,7 @@ export class TenantStore {
         }
         if(operation.type==='forget'||operation.type==='retract'){
           const predicate=actionFamily;
-          const content=`${operation.subject}: the ${predicate} entry ${operation.type==='forget'?'was explicitly forgotten; its value is not retained':'was removed from the current set; prior context is historical'}. Other properties are separate records.`;
+          const content=`${operation.subject}: the ${predicate.replace(/_/g,' ')} entry ${operation.type==='forget'?'was explicitly removed from memory (forgotten); its value is not retained':'was removed from the current set; prior context is historical'}. Other properties are separate records.`;
           if(!target.some(f=>f.value&&content.includes(f.value))){
             const event:Fact={id:digest(`${req.user_id}\0${req.request_id}\0operation\0${source.id}\0${predicate}\0${revision}`),content,subject:operation.subject,predicate:'memory_operation',value:'',scope:operation.scope,kind:'event',modality:'confirmed',cardinality:'multiple',time_text:'',valid_from:null,valid_to:null,supersedes:[],depends_on:[],source_ids:[source.id],source_quotes:[],created_at:source.timestamp,observed_at:source.timestamp,time_basis:source.time_basis,state:'active',vector:null,entities:[],revision};
             this.put(event);

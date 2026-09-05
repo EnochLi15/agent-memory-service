@@ -2,8 +2,12 @@
 // Changes: bounded cancellation, explicit model, no automatic downloads, true batch embed,
 // strict vector validation, no tool calls or SDK retry hidden outside the request deadline.
 import OpenAI from 'openai';
+import { appendFileSync } from 'node:fs';
 import type { Config } from './config.js';
 import { ServiceError } from './types.js';
+function audit(record:Record<string,unknown>):void {
+  if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
+}
 
 export class Models {
   private client: OpenAI;
@@ -15,22 +19,25 @@ export class Models {
     // Nothing is published until the entire JSON object is validated and committed.
     let last:unknown;
     for(let attempt=0;attempt<2;attempt++){
+      const started=performance.now();let usage:unknown=null;
       try{
         const stream=await this.client.chat.completions.create({
           model:this.config.llmModel,messages:[{role:'system',content:system},{role:'user',content:user}],
-          response_format:{type:'json_object'},max_completion_tokens:10000,stream:true,
+          response_format:{type:'json_object'},max_completion_tokens:10000,stream:true,stream_options:{include_usage:true},
         },{signal});
         let content='',finish:string|null=null;
-        for await(const chunk of stream){content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
+        for await(const chunk of stream){content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
         if(!content||finish!=='stop')throw new ServiceError('MODEL_OUTPUT','Incomplete model output');
-        return JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
-      }catch(error){last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
+        const parsed=JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
+        audit({kind:'generation',purpose:system.startsWith('Rank evidence')?'rerank':'extraction',model:this.config.llmModel,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage});return parsed;
+      }catch(error){audit({kind:'generation',model:this.config.llmModel,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,error_type:error instanceof Error?error.name:'unknown'});last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
     }
     throw last;
   }
 
   async embedBatch(texts: string[], action: 'add' | 'search', signal: AbortSignal): Promise<number[][]> {
     if (!texts.length) return [];
+    const started=performance.now();
     if(this.config.embeddingDigest){
       const tags=await fetch(`${this.config.embeddingBase}/api/tags`,{signal:AbortSignal.any([signal,AbortSignal.timeout(5000)])});
       if(!tags.ok)throw new ServiceError('EMBEDDING_IDENTITY','Could not verify local model digest');
@@ -46,13 +53,14 @@ export class Models {
       signal: AbortSignal.any([signal, AbortSignal.timeout(20000)]),
     });
     if (!response.ok) throw new ServiceError('EMBEDDING_HTTP', `Embedding HTTP ${response.status}`);
-    const data = await response.json() as { embeddings?: unknown };
+    const data = await response.json() as { embeddings?: unknown; prompt_eval_count?:number };
     if (!Array.isArray(data.embeddings) || data.embeddings.length !== texts.length) throw new ServiceError('EMBEDDING_SHAPE', 'Invalid embedding batch');
-    return data.embeddings.map((v: unknown) => {
+    const vectors=data.embeddings.map((v: unknown) => {
       if (!Array.isArray(v) || v.length !== this.config.embeddingDimensions || !v.every(x => typeof x === 'number' && Number.isFinite(x))) throw new ServiceError('EMBEDDING_DIMENSION', 'Embedding dimension or values invalid');
       const vector = v as number[]; const norm = Math.hypot(...vector);
       if (!norm) throw new ServiceError('EMBEDDING_ZERO', 'Zero vector');
       return vector.map(x => x / norm);
     });
+    audit({kind:'embedding',action,model:this.config.embeddingModel,count:texts.length,elapsed_ms:performance.now()-started,prompt_eval_count:data.prompt_eval_count??null,outcome:'ok'});return vectors;
   }
 }

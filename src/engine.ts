@@ -27,6 +27,8 @@ export class Engine {
     const run=prior.catch(()=>{}).then(async()=>{
       signal.throwIfAborted();const payloadHash=hash(JSON.stringify(req));const existing=await this.call<Receipt|null>('receipt',req.user_id,[req.request_id,payloadHash]);if(existing)return existing;
       const snapshot=await this.call<Snapshot>('snapshot',req.user_id,[req.session_id]);const prepared=await this.extractor.prepare(req,snapshot,signal);signal.throwIfAborted();
+      // Explicit experiment only. The production default always applies lifecycle.
+      if(this.config.experimental?.lifecycle===false){prepared.operations=[];for(const f of prepared.facts){f.cardinality='multiple';f.supersedes=[];f.depends_on=[];}}
       const receipt=await this.call<Receipt>('commit',req.user_id,[req,payloadHash,prepared,snapshot.revision],deadline);
       if(prepared.degraded.length)process.stdout.write(JSON.stringify({event:'degraded',request_id:req.request_id,reasons:prepared.degraded})+'\n');return receipt;
     });

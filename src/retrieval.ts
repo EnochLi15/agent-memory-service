@@ -8,7 +8,8 @@ import type { Fact, SearchRequest, SearchResponse, Candidate } from './types.js'
 export function cosine(a:number[],b:number[]):number {if(a.length!==b.length)return -1;let sum=0,aa=0,bb=0;for(let i=0;i<a.length;i++){sum+=a[i]!*b[i]!;aa+=a[i]!**2;bb+=b[i]!**2;}return aa&&bb?sum/Math.sqrt(aa*bb):-1;}
 export function retrieve(store:TenantStore,req:SearchRequest,vector:number[]|null,config:Config):SearchResponse {
   const top=Math.min(100,Math.floor(req.top_k),config.maxEvidence);if(!top)return {data:[]};
-  const qi=intent(req.query);const allFacts=store.facts();const facts=allFacts.filter(f=>allowed(f,qi));const byId=new Map(facts.map(f=>[f.id,f]));
+  const qi=intent(req.query);if(config.experimental?.temporal===false){qi.historical=false;qi.trajectory=false;qi.asOf=null;}
+  const allFacts=store.facts();const facts=allFacts.filter(f=>allowed(f,qi)&&(config.experimental?.reflection!==false||(f.kind!=='reflection'&&f.modality!=='inferred')));const byId=new Map(facts.map(f=>[f.id,f]));
   const compatibleVector=vector&&store.meta('embedding_space')===config.embeddingSpace?vector:null;
   const semantic=compatibleVector ? facts.filter(f=>f.vector).map(f=>({id:f.id,score:cosine(compatibleVector,f.vector!)})).filter(x=>x.score>.15).sort((a,b)=>b.score-a.score).slice(0,150):[];
   const lexical=store.lexical(req.query,180).filter(x=>byId.has(x.id));
@@ -28,8 +29,15 @@ export function retrieve(store:TenantStore,req:SearchRequest,vector:number[]|nul
     lexicalAll.forEach((x,i)=>add(x.id,1/(60+i+1),'lexical'));
     entity.forEach((x,i)=>add(x.id,.5/(60+i+1),'entity'));
   }
+  // An operation trace deliberately has no secret-bearing quote or vector. Give
+  // its safe property label a candidate route for questions about a prior edit.
+  if(/\b(?:removed?|forgot|forget|forgotten|change|affected|take .{0,60} off|took .{0,60} off)\b|删除|忘记|移除|更改|影响/i.test(req.query)){
+    for(const f of facts.filter(f=>f.predicate==='memory_operation').slice(-40)){
+      if(overlap(req.query,f.content.replace(/_/g,' '))>0)add(f.id,.055,'operation-trace');
+    }
+  }
   // Bounded two-hop entity expansion, always from eligible facts and backed by sources.
-  if(config.retrieval==='hybrid'){
+  if(config.retrieval==='hybrid'&&config.experimental?.multiHop!==false){
     const seeds=[...candidates.values()].sort((a,b)=>b.score-a.score).slice(0,6);
     let frontier=new Set([...qi.entities,...seeds.flatMap(c=>c.fact.entities)]);const visited=new Set<string>();let count=0;
     for(let depth=0;depth<2&&frontier.size;depth++){
