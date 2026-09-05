@@ -29,10 +29,10 @@ export type ExtractedFact = z.infer<typeof factSchema>;
 export type Operation = z.infer<typeof operationSchema>;
 export type Extraction = z.infer<typeof extractionSchema>;
 export type Fact = Omit<ExtractedFact, 'sources'> & {
-  id: string; source_ids: string[]; source_quotes: string[]; created_at: string; observed_at: string;
+  time_basis?: 'source' | 'ordering'; id: string; source_ids: string[]; source_quotes: string[]; created_at: string; observed_at: string;
   state: 'active' | 'conflicted' | 'superseded' | 'retracted' | 'erased'; vector: number[] | null; entities: string[]; revision: number;
 };
-export type StoredMessage = Message & { id: string; session_id: string; ordinal: number; searchable: boolean };
+export type StoredMessage = Message & { id: string; session_id: string; ordinal: number; searchable: boolean; partial?: boolean; time_basis?: 'source' | 'ordering'; redacted?: boolean };
 export type Snapshot = { revision: number; facts: Fact[]; tail: StoredMessage[]; anchor: string | null };
 export type Prepared = { facts: Fact[]; operations: Operation[]; messages: StoredMessage[]; anchor: string | null; degraded: string[]; embeddingSpace: string };
 export type Candidate = { fact: Fact; score: number; signals: string[] };
@@ -42,5 +42,16 @@ export class ServiceError extends Error {
   constructor(public code: string, message: string, public status = 503) { super(message); }
 }
 export function canonical(s: string): string { return s.normalize('NFKC').toLowerCase().trim().replace(/[\s_\-]+/g, ' '); }
-export function slot(f: Pick<Fact, 'subject' | 'predicate' | 'scope'>): string { return [f.subject, f.predicate, f.scope].map(canonical).join('\u001f'); }
+export function propertyFamily(predicate:string,content=''):string {
+  const p=canonical(predicate);
+  if(/^(?:current )?(?:home |residence )?city$|^city of residence$/.test(p))return 'current city';
+  if(/^(?:current )?(?:job )?(?:title|position|role)$/.test(p))return 'job title';
+  if(/^(?:current )?(?:manager|supervisor|boss)$/.test(p))return 'manager';
+  if(/^(?:backup|alternate|secondary)(?: first| baby)? name$/.test(p))return 'backup name';
+  if(/^(?:selected|primary|first choice|top)(?: first| baby)? name(?: choice)?$/.test(p))return 'primary name';
+  if(/^(?:current )?(?:(?:therapy|treatment) )?(?:session |appointment )?(?:cadence|frequency)$/.test(p))return 'session cadence';
+  if(p==='experience'&&/\bbackup (?:first )?name\b/i.test(content))return 'backup name';
+  return p;
+}
+export function slot(f: Pick<Fact, 'subject' | 'predicate' | 'scope'>): string { return [canonical(f.subject),propertyFamily(f.predicate),canonical(f.scope)].join('\u001f'); }
 

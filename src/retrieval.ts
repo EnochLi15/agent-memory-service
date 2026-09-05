@@ -8,7 +8,7 @@ import type { Fact, SearchRequest, SearchResponse, Candidate } from './types.js'
 export function cosine(a:number[],b:number[]):number {if(a.length!==b.length)return -1;let sum=0,aa=0,bb=0;for(let i=0;i<a.length;i++){sum+=a[i]!*b[i]!;aa+=a[i]!**2;bb+=b[i]!**2;}return aa&&bb?sum/Math.sqrt(aa*bb):-1;}
 export function retrieve(store:TenantStore,req:SearchRequest,vector:number[]|null,config:Config):SearchResponse {
   const top=Math.min(100,Math.floor(req.top_k),config.maxEvidence);if(!top)return {data:[]};
-  const qi=intent(req.query);const facts=store.facts().filter(f=>allowed(f,qi));const byId=new Map(facts.map(f=>[f.id,f]));
+  const qi=intent(req.query);const allFacts=store.facts();const facts=allFacts.filter(f=>allowed(f,qi));const byId=new Map(facts.map(f=>[f.id,f]));
   const compatibleVector=vector&&store.meta('embedding_space')===config.embeddingSpace?vector:null;
   const semantic=compatibleVector ? facts.filter(f=>f.vector).map(f=>({id:f.id,score:cosine(compatibleVector,f.vector!)})).filter(x=>x.score>.15).sort((a,b)=>b.score-a.score).slice(0,150):[];
   const lexical=store.lexical(req.query,180).filter(x=>byId.has(x.id));
@@ -47,20 +47,26 @@ export function retrieve(store:TenantStore,req:SearchRequest,vector:number[]|nul
   }
   if(config.rawFallback){
     for(const m of store.raw()){
+      if(m.role!=='user'&&!/^([\p{L}][\p{L} .'-]{0,40}):\s*/u.test(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim()))continue;
       if(!/\b(I|my|we|our)\b|我|^[\p{L} .'-]+:/iu.test(m.content))continue;
       const relevance=overlap(req.query,m.content);if(relevance<.2||m.content.length>2500)continue;
-      const f:Fact={id:`raw-${m.id}`,content:m.content,subject:m.role,predicate:'raw_evidence',value:'',scope:'',kind:'event',modality:'confirmed',cardinality:'multiple',time_text:'',valid_from:null,valid_to:null,supersedes:[],depends_on:[],source_ids:[m.id],source_quotes:[],created_at:m.timestamp,observed_at:m.timestamp,state:'active',vector:null,entities:[],revision:store.revision()};
+      const f:Fact={time_basis:m.time_basis,id:`raw-${m.id}`,content:m.content,subject:m.role,predicate:'raw_evidence',value:'',scope:'',kind:'event',modality:'confirmed',cardinality:'multiple',time_text:'',valid_from:null,valid_to:null,supersedes:[],depends_on:[],source_ids:[m.id],source_quotes:[],created_at:m.timestamp,observed_at:m.timestamp,state:'active',vector:null,entities:[],revision:store.revision()};
       candidates.set(f.id,{fact:f,score:.006*relevance,signals:['raw']});
     }
   }
   const ranked=[...candidates.values()].filter(c=>c.score>0).sort((a,b)=>b.score-a.score||a.fact.id.localeCompare(b.fact.id));
-  const data:SearchResponse['data']=[];let budget=0;const seen=new Set<string>();
+  const data:SearchResponse['data']=[];let budget=0;const seen=new Set<string>();const seenSources=new Set<string>();
   for(const c of ranked){
     const f=c.fact;const key=f.content.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');if(seen.has(key))continue;
-    const state=f.state==='conflicted'?'conflicting confirmed claims; do not choose without clarification':f.state==='superseded'?`historical; valid until ${f.valid_to??'later update'}`:f.modality;
-    const content=`${f.content}\n[status: ${state}; observed: ${f.observed_at};${f.time_text?` original time: ${f.time_text};`:''} source: ${f.source_ids.join(',')}]`;
+    const state=f.predicate==='raw_evidence'?'original source; interpret its speaker, negation and conditional wording':f.state==='conflicted'?'conflicting confirmed claims; do not choose without clarification':f.state==='superseded'?`historical; valid until ${f.valid_to??'later update'}`:f.modality;
+    const originals=f.source_ids.slice(0,2).flatMap(id=>{const m=store.source(id);if(!m||m.redacted||(f.predicate==='memory_operation'&&!qi.historical)||seenSources.has(id)||allFacts.some(x=>x.source_ids.includes(id)&&!allowed(x,qi)))return [];const q=f.source_quotes.find(q=>m.content.includes(q))??'';const position=q?m.content.indexOf(q):0;const start=Math.max(0,position-100);const excerpt=m.content.length<=600?m.content:m.content.slice(0,100)+' … '+m.content.slice(start,start+400);return [`${m.role}: ${excerpt}`];});
+    const invalidValues=allFacts.filter(x=>!allowed(x,qi)&&x.value&&x.source_ids.some(id=>f.source_ids.includes(id))).map(x=>x.value.toLowerCase());
+    const safeQuotes=f.source_quotes.filter(q=>!invalidValues.some(v=>q.toLowerCase().includes(v)));
+    const support=f.source_ids.every(id=>seenSources.has(id))?'':originals.length?`\nVerbatim source context (use this to verify actor and negation):\n${originals.join('\n')}`:safeQuotes.length?`\nVerbatim support: ${safeQuotes.slice(0,2).join(' | ')}`:'';
+    const external=f.source_ids.flatMap(id=>{const m=store.source(id);const label=m?.content.match(/\[Source id: ([^\]]+)\]/)?.[1];return label?[label]:[];});
+    const content=`${f.content}${support}${external.length?`\n[Original source ids: ${external.join(',')}]`:''}\n[status: ${state}; ${f.time_basis==='ordering'?'synthetic order marker, not an event date':'observed'}: ${f.observed_at};${f.time_text?` original time: ${f.time_text};`:''} source: ${f.source_ids.map(id=>id.slice(0,12)).join(',')}]`;
     const cost=estimateTokens(content);if(budget+cost>config.tokenBudget)continue;
-    data.push({id:f.id,content,score:Number(c.score.toFixed(8)),created_at:f.created_at});budget+=cost;seen.add(key);if(data.length>=top)break;
+    data.push({id:f.id,content,score:Number(c.score.toFixed(8)),created_at:f.created_at});budget+=cost;seen.add(key);for(const id of f.source_ids)seenSources.add(id);if(data.length>=top)break;
   }
   return {data};
 }

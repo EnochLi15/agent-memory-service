@@ -40,6 +40,10 @@ export class Engine {
     });
   }
   async search(req:SearchRequest,signal:AbortSignal):Promise<SearchResponse>{
+    signal.throwIfAborted();const task=this.searchImpl(req,signal);
+    return new Promise<SearchResponse>((resolve,reject)=>{const abort=()=>reject(new ServiceError('DEADLINE','Search deadline exceeded'));signal.addEventListener('abort',abort,{once:true});void task.then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));});
+  }
+  private async searchImpl(req:SearchRequest,signal:AbortSignal):Promise<SearchResponse>{
     signal.throwIfAborted();if(req.top_k<1)return {data:[]};let vector:number[]|null=null;
     if(this.config.mode==='enhanced'&&this.config.retrieval!=='lexical'){
       try{vector=(await this.models.embedBatch([req.query],'search',signal))[0]??null;}catch(error){if(signal.aborted)throw error;}

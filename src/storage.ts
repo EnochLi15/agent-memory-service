@@ -4,7 +4,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { canonical, slot, ServiceError, type AddRequest, type Fact, type Prepared, type Receipt, type Snapshot, type StoredMessage, type QueryIntent } from './types.js';
+import { canonical, slot, propertyFamily, ServiceError, type AddRequest, type Fact, type Prepared, type Receipt, type Snapshot, type StoredMessage, type QueryIntent } from './types.js';
 import { tokens } from './text.js';
 
 const valueWords = (s:string):string[] => canonical(s).match(/[\p{L}\p{N}]+/gu) ?? [];
@@ -68,7 +68,13 @@ export class TenantStore {
       for(const operation of prepared.operations){
         const source=prepared.messages[operation.source.index]; if(!source)throw new ServiceError('SOURCE','Missing operation source');
         suppressedSources.add(source.id);
-        const target=operation.target_ids.length ? all.filter(f=>operation.target_ids.includes(f.id)) : all.filter(f=>slot(f)===slot(operation) && (!operation.value || canonical(f.value)===canonical(operation.value)));
+        let target=operation.target_ids.length ? all.filter(f=>operation.target_ids.includes(f.id)) : all.filter(f=>slot(f)===slot(operation) && (!operation.value || canonical(f.value)===canonical(operation.value)));
+        const actionFamily=propertyFamily(operation.predicate,target[0]?.content??'');
+        // Close duplicate representations of the same scoped value, including harmless
+        // predicate wording differences. Do not extend deletion to other people/scopes.
+        const families=new Set(target.map(f=>propertyFamily(f.predicate,f.content)));
+        const value=operation.value||target.find(f=>f.value&&canonical(source.content).includes(canonical(f.value)))?.value;
+        if(value&&target.length){for(const f of all){if(f.state!=='active'||f.kind==='event'||canonical(f.value)!==canonical(value)||canonical(f.subject)!==canonical(operation.subject)||!families.has(propertyFamily(f.predicate,f.content)))continue;const scopeCompatible=!f.scope||!operation.scope||canonical(f.scope)===canonical(operation.scope);if(scopeCompatible&&!target.some(t=>t.id===f.id))target.push(f);}}
         if(operation.type==='restore'){
           if(!/remember.*again|store.*again|重新.*记|再次.*记/i.test(operation.source.quote))throw new ServiceError('RESTORE','Explicit reauthorization required');
           const markerRows=this.db.prepare('SELECT id,body FROM markers').all() as {id:number;body:string}[];
@@ -88,6 +94,14 @@ export class TenantStore {
             f.state=operation.type==='correct'?'retracted':'superseded';f.valid_to=source.timestamp;
           }
           f.revision=revision;this.put(f);
+        }
+        if(operation.type==='forget'||operation.type==='retract'){
+          const predicate=actionFamily;
+          const content=`${operation.subject}: the ${predicate} entry ${operation.type==='forget'?'was explicitly forgotten; its value is not retained':'was removed from the current set; prior context is historical'}. Other properties are separate records.`;
+          if(!target.some(f=>f.value&&content.includes(f.value))){
+            const event:Fact={id:digest(`${req.user_id}\0${req.request_id}\0operation\0${source.id}\0${predicate}\0${revision}`),content,subject:operation.subject,predicate:'memory_operation',value:'',scope:operation.scope,kind:'event',modality:'confirmed',cardinality:'multiple',time_text:'',valid_from:null,valid_to:null,supersedes:[],depends_on:[],source_ids:[source.id],source_quotes:[],created_at:source.timestamp,observed_at:source.timestamp,time_basis:source.time_basis,state:'active',vector:null,entities:[],revision};
+            this.put(event);
+          }
         }
         // Audit keeps target IDs and a category, never a forgotten raw value or source quote.
         this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:operation.type,target_ids:target.map(f=>f.id),subject:operation.subject,predicate:operation.predicate,scope:operation.scope,boundary:operation.boundary,source_id:source.id,revision}));
@@ -126,13 +140,16 @@ export class TenantStore {
         if(dependent||leaked){erasedIds.add(f.id);for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}f.state='erased';f.content='';f.value='';f.vector=null;f.source_quotes=[];f.entities=[];f.revision=revision;this.put(f);changed=true;}
       }}
       for(const m of inserted){if(markers.some(marker=>containsValue(m.content,marker))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
+      // Retained neighbors must not carry a forgotten value inside a mixed quote.
+      for(const f of all){if(f.state==='erased')continue;const quotes=f.source_quotes.filter(q=>!markers.some(m=>containsValue(q,m)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value))));if(quotes.length!==f.source_quotes.length){f.source_quotes=quotes;this.put(f);}}
       // Mixed source messages become non-searchable; their independent retained facts stay available.
       all=this.facts();
       for(const sourceId of suppressedSources){
         const row=this.db.prepare('SELECT body FROM messages WHERE id=?').get(sourceId) as Row|undefined;if(!row)continue;
-        const m=JSON.parse(row.body) as StoredMessage;m.searchable=false;
+        const m=JSON.parse(row.body) as StoredMessage;
+        m.searchable=!!m.partial&&all.filter(f=>f.source_ids.includes(sourceId)).every(f=>f.state==='active'||f.state==='conflicted')&&!prepared.operations.some(o=>prepared.messages[o.source.index]?.id===sourceId);
         if(redactedSources.has(sourceId) || all.some(f=>f.state==='erased'&&f.source_ids.includes(sourceId)) || prepared.operations.some(o=>o.type==='forget'&&prepared.messages[o.source.index]?.id===sourceId)){
-          m.content=all.filter(f=>(f.state==='active'||f.state==='conflicted')&&f.source_ids.includes(sourceId)).map(f=>f.content).join('\n') || '[Memory content removed]';
+          m.redacted=true;m.searchable=false;m.content=all.filter(f=>(f.state==='active'||f.state==='conflicted')&&f.source_ids.includes(sourceId)).map(f=>f.content).join('\n') || '[Memory content removed]';
         }
         this.db.prepare('UPDATE messages SET body=? WHERE id=?').run(JSON.stringify(m),sourceId);
       }
@@ -147,6 +164,7 @@ export class TenantStore {
     const rows=this.db.prepare('SELECT id,bm25(evidence_fts) AS rank FROM evidence_fts WHERE evidence_fts MATCH ? ORDER BY rank LIMIT ?').all(expression,limit) as {id:string;rank:number}[];
     return rows.map(r=>({id:r.id,score:-r.rank}));
   }
+  source(id:string):StoredMessage|null{const row=this.db.prepare('SELECT body FROM messages WHERE id=?').get(id) as Row|undefined;return row?JSON.parse(row.body) as StoredMessage:null;}
   raw():StoredMessage[]{return (this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage).filter(m=>m.searchable);}
   close():void{this.db.close();}
 }

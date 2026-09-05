@@ -77,3 +77,9 @@ test('committed state survives restart including forgotten content',async()=>{
   let app=await buildServer(config);
   try{await add(app,'a',[msg('My access code is X123. My manager is Alice.')]);await add(app,'b',[msg('Forget my access code.')]);await app.close();app=await buildServer(config);assert.ok((await search(app,'old access code')).every(x=>!x.content.includes('X123')));assert.match((await search(app,'manager')).map(x=>x.content).join('\n'),/Alice/);}finally{await app.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('quoted and hypothetical forgetting never mutates real memory',async()=>fixture(async app=>{
+ await add(app,'a',[msg('My access code is ZX-482.')]);
+ await add(app,'b',[msg('Alice said "forget my access code" as an example.'),msg('What if I ask you to forget my access code?')]);
+ assert.match((await search(app,'access code')).map(x=>x.content).join('\n'),/ZX-482/);
+}));

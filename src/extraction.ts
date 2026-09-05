@@ -6,8 +6,11 @@ import { addSchema, extractionSchema, canonical, ServiceError, type AddRequest, 
 import { entities, overlap, tokens } from './text.js';
 
 export function hash(s: string): string { return createHash('sha256').update(s).digest('hex'); }
-const controlPattern = /\b(forget|delete|erase|remove|stop remembering)\b|忘掉|忘记|删除|移除|不要再记/iu;
-function realControl(text: string): boolean { return controlPattern.test(text) && !/\bforget it\b|\b(?:don't|do not|never) forget\b|别忘|不要忘/.test(text.toLowerCase()); }
+const controlPattern = /\b(forget|delete|erase|remove|stop remembering|no longer want you to remember)\b|忘掉|忘记|删除|移除|不要再记/iu;
+function realControl(text: string): boolean {
+  if(/\b(?:said|says|quoted|example|hypothetical|suppose|what if|if I|should I|how do I)\b|假如|假设|举例|引用|他说|她说/i.test(text))return false;
+  return controlPattern.test(text)&&!/\bforget it\b|\b(?:don't|do not|never)(?: want to)? forget\b|别忘|不要忘/.test(text.toLowerCase());
+}
 
 export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction {
   const result: Extraction = { facts: [], operations: [] };
@@ -69,11 +72,24 @@ function groundedOperation(o:Operation,req:AddRequest,facts:Fact[]):boolean {
   const source=new Set(tokens(context).filter(t=>t.length>2&&!operationStop.has(t)));
   return o.target_ids.every(id=>{const f=facts.find(x=>x.id===id);if(!f)return false;const target=tokens(`${f.subject} ${f.predicate} ${f.value} ${f.content}`).filter(t=>t.length>2&&!operationStop.has(t));return target.some(t=>source.has(t));});
 }
+function humanOperation(o:Operation,req:AddRequest):boolean {
+  const m=req.messages[o.source.index];if(!m)return false;if(m.role==='user')return true;
+  const name=m.content.replace(/\[Session time:[^\]]*\]/g,'').trim().match(/^([\p{L}][\p{L} .'-]{0,40}):\s*/u)?.[1];
+  return !!name && (canonical(o.subject)===canonical(name)||canonical(o.subject).startsWith(canonical(name)+"'s "));
+}
+function resolveSource(source:{index:number;quote:string},req:AddRequest):void {
+  // Correct unambiguous index/copying mistakes without accepting paraphrased evidence.
+  if(req.messages[source.index]?.content.includes(source.quote))return;
+  const escaped=source.quote.trim().split(/\s+/).map(x=>x.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('\\s+');
+  if(!escaped)return;
+  const matches=req.messages.flatMap((m,index)=>{const match=m.content.match(new RegExp(escaped,'u'));return match?[{index,quote:match[0]}]:[];});
+  if(matches.length===1){source.index=matches[0]!.index;source.quote=matches[0]!.quote;}
+}
 export class Extractor {
   constructor(private config: Config, private models: Models) {}
   async prepare(req: AddRequest, snapshot: Snapshot, signal: AbortSignal): Promise<Prepared> {
     addSchema.parse(req);
-    const degraded: string[] = [];
+    const degraded: string[] = [];const partialSources=new Set<number>();
     const anchor = req.messages.map(m => m.content.match(/\[Session time:\s*([^\]]+)\]/i)?.[1]).find(Boolean) ?? snapshot.anchor ?? req.messages[0]?.timestamp ?? null;
     let parsed: Extraction;
     if (this.config.mode === 'offline') parsed = offlineExtract(req, snapshot);
@@ -90,14 +106,29 @@ export class Extractor {
           const raw=await this.models.json(EXTRACTION_PROMPT,user+(issue?'\nREPAIR: '+issue:''),signal);
           const valid=extractionSchema.safeParse(raw);
           if(!valid.success){issue='Return the complete schema. '+valid.error.issues.slice(0,4).map(x=>x.path.join('.')+': '+x.message).join('; ');continue;}
+          for(const f of valid.data.facts)for(const source of f.sources)resolveSource(source,req);
+          for(const o of valid.data.operations){resolveSource(o.source,req);const statement=req.messages[o.source.index]?.content??'';if(o.type==='retract'&&realControl(statement)&&/\b(?:forget|erase|delete)\b|remove .{0,100} entirely|彻底删除|完全移除/i.test(o.source.quote)&&!/current (?:colleague|contact)|当前同事|当前联系人/i.test(statement))o.type='forget';}
           for(const f of valid.data.facts){f.supersedes=f.supersedes.map(id=>aliases.get(id)??id);f.depends_on=f.depends_on.map(id=>aliases.get(id)??id);}
           for(const o of valid.data.operations)o.target_ids=o.target_ids.map(id=>aliases.get(id)??id);
           const unknown=[...valid.data.facts.flatMap(f=>[...f.supersedes,...f.depends_on]),...valid.data.operations.flatMap(o=>o.target_ids)].filter(id=>!knownIds.has(id));
           if(unknown.length){issue='Unknown target IDs. Use ONLY short IDs from EXISTING_FACTS, never invent IDs. If a rejected assistant claim was not in existing memories, emit no delete/correct operation for it. Return the whole corrected object. Unknown IDs: '+JSON.stringify(unknown.slice(0,8));continue;}
+          if(valid.data.operations.some(o=>o.type==='forget'&&!realControl(req.messages[o.source.index]?.content??''))){issue='The proposed forget is quoted, hypothetical, negated, or lacks an actual user deletion instruction. Remove that operation; preserve existing facts. Return the whole object.';continue;}
           if(valid.data.operations.some(o=>!groundedOperation(o,req,snapshot.facts))){issue='An operation targets a fact with no matching topic in the new user request or preceding context. Do not delete unrelated memories. If the user rejects a never-stored assistant claim, return no operation. Recheck targets and return full JSON.';continue;}
           const invalid=valid.data.facts.flatMap((f,i)=>f.sources.filter(s=>!req.messages[s.index]?.content.includes(s.quote)).map(s=>({fact:i,index:s.index,quote:s.quote})));
-          const badOps=valid.data.operations.filter(o=>!req.messages[o.source.index]?.content.includes(o.source.quote));
-          if(invalid.length||badOps.length){issue='Every source quote must be an exact substring of the indicated NEW_MESSAGES content. Never copy CONTEXT_ONLY as a new source. Fix all facts/operations and return the full object. Invalid fact spans: '+JSON.stringify(invalid.slice(0,8));continue;}
+          const badOps=valid.data.operations.filter(o=>!req.messages[o.source.index]?.content.includes(o.source.quote)||!humanOperation(o,req));
+          if(attempt===1&&invalid.length&&!badOps.length){
+            // Preserve valid operations and facts; an unsupported paraphrased quote must
+            // not invalidate an entire chronological sample. Recover only what rules can
+            // ground, and retain the remaining original text under lifecycle visibility.
+            const badIndexes=new Set(invalid.map(x=>x.index).filter(i=>!!req.messages[i]));
+            const good=valid.data.facts.filter(f=>f.sources.every(s=>req.messages[s.index]?.content.includes(s.quote)));
+            for(const index of badIndexes){
+              partialSources.add(index);
+              try{const recovered=offlineExtract({...req,messages:[req.messages[index]!]},snapshot);if(!recovered.operations.length)for(const f of recovered.facts){f.sources=f.sources.map(s=>({...s,index}));good.push(f);}}catch{ /* original evidence remains available */ }
+            }
+            valid.data.facts=good;accepted=valid.data;degraded.push('source_span_partial');break;
+          }
+          if(invalid.length||badOps.length){issue='Every source quote must be an exact substring of the indicated NEW_MESSAGES content. Operations must cite a USER message, or a named real participant changing their own facts. An unlabelled assistant reply never authorizes changes. Never copy CONTEXT_ONLY as a new source. Fix all facts/operations and return the full object. Invalid fact spans: '+JSON.stringify(invalid.slice(0,8));continue;}
           accepted=valid.data;break;
         }
         if(!accepted&&issue.startsWith('Unknown target'))throw new ServiceError('OPERATION_TARGET','Unknown memory operation target after repair');
@@ -109,18 +140,18 @@ export class Extractor {
       }
     }
     const validSource = (s:{index:number;quote:string}): boolean => !!req.messages[s.index]?.content.includes(s.quote);
-    if (parsed.operations.some(o => !validSource(o.source) || req.messages[o.source.index]?.role !== 'user')) throw new ServiceError('OPERATION_SOURCE','Operation lacks valid user evidence');
+    if (parsed.operations.some(o => !validSource(o.source) || !humanOperation(o,req))) throw new ServiceError('OPERATION_SOURCE','Operation lacks valid user evidence');
     // Reject nonexistent operation targets; the model may only bind tenant-local evidence.
     const known = new Set(snapshot.facts.map(f=>f.id));
     if (parsed.operations.some(o=>o.target_ids.some(id=>!known.has(id)))) throw new ServiceError('OPERATION_TARGET','Unknown memory operation target');
-    const messages = req.messages.map((m,i)=>({ ...m,id:hash(`${req.user_id}\0${req.request_id}\0${i}`),session_id:req.session_id,ordinal:i,searchable:true }));
+    const messages = req.messages.map((m,i)=>({ ...m,id:hash(`${req.user_id}\0${req.request_id}\0${i}`),session_id:req.session_id,ordinal:i,searchable:true,partial:partialSources.has(i),time_basis:(anchor?.includes('synthetic ordering')?'ordering':'source') as 'ordering'|'source' }));
     const facts: Fact[] = [];
     for (const [i,f] of parsed.facts.entries()) {
       if (f.sources.some(s=>!validSource(s))) throw new ServiceError('FACT_SOURCE','Fact lacks verbatim source evidence');
       if ([...f.supersedes,...f.depends_on].some(id=>!known.has(id))) throw new ServiceError('FACT_TARGET','Unknown superseded fact');
       const src = f.sources.map(s=>messages[s.index]!);
       if(src.every(m=>m.role!=='user'&&!/^([\p{L}][\p{L} .'-]{0,40}):\s*/u.test(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim())))f.modality='quoted';
-      facts.push({ ...f,id:hash(`${req.user_id}\0${req.request_id}\0fact\0${i}`),source_ids:[...new Set(src.map(m=>m.id))],source_quotes:f.sources.map(s=>s.quote),created_at:src[0]!.timestamp,observed_at:src[0]!.timestamp,state:'active',vector:null,entities:entities(f.content),revision:snapshot.revision+1 });
+      facts.push({ ...f,time_basis:anchor?.includes('synthetic ordering')?'ordering':'source',id:hash(`${req.user_id}\0${req.request_id}\0fact\0${i}`),source_ids:[...new Set(src.map(m=>m.id))],source_quotes:f.sources.map(s=>s.quote),created_at:src[0]!.timestamp,observed_at:src[0]!.timestamp,state:'active',vector:null,entities:entities(f.content),revision:snapshot.revision+1 });
     }
     if (this.config.mode !== 'offline' && facts.length) {
       try {
