@@ -31,6 +31,13 @@ export class Models {
 
   async embedBatch(texts: string[], action: 'add' | 'search', signal: AbortSignal): Promise<number[][]> {
     if (!texts.length) return [];
+    if(this.config.embeddingDigest){
+      const tags=await fetch(`${this.config.embeddingBase}/api/tags`,{signal:AbortSignal.any([signal,AbortSignal.timeout(5000)])});
+      if(!tags.ok)throw new ServiceError('EMBEDDING_IDENTITY','Could not verify local model digest');
+      const body=await tags.json() as {models?:{name:string;model:string;digest:string}[]};
+      const model=body.models?.find(m=>m.name===this.config.embeddingModel||m.model===this.config.embeddingModel);
+      if(model?.digest!==this.config.embeddingDigest)throw new ServiceError('EMBEDDING_IDENTITY','Configured embedding digest differs from loaded model');
+    }
     const prefix = this.config.embeddingModel.startsWith('nomic-embed-text') ? (action === 'search' ? 'search_query: ' : 'search_document: ') : '';
     // Evidence units are bounded during preparation. Do not silently truncate at the model.
     const response = await fetch(`${this.config.embeddingBase}/api/embed`, {

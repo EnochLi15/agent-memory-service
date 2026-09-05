@@ -3,7 +3,7 @@ import type { Config } from './config.js';
 import { Models } from './models.js';
 import { EXTRACTION_PROMPT } from './prompts.js';
 import { addSchema, extractionSchema, canonical, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation } from './types.js';
-import { entities, overlap } from './text.js';
+import { entities, overlap, tokens } from './text.js';
 
 export function hash(s: string): string { return createHash('sha256').update(s).digest('hex'); }
 const controlPattern = /\b(forget|delete|erase|remove|stop remembering)\b|忘掉|忘记|删除|移除|不要再记/iu;
@@ -54,7 +54,7 @@ export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction 
       for (const [regex, key] of patterns) { const m = quote.match(regex); if (m) { predicate = key; value = m[1]!.trim(); cardinality = key === 'hobby' ? 'multiple' : 'single'; break; } }
       const tentative = /\b(plan|might|maybe|possibly|tentative|next month|next quarter|not finalized)\b|计划|可能|打算|未确定|没确定/.test(quote.toLowerCase());
       // Generic question/tutorial text is not evidence of a personal state.
-      if (predicate === 'experience' && !/\b(I|my|we|our)\b|我|我们/.test(quote)) continue;
+      if (predicate === 'experience' && !/\b(I|my|we|our)\b|我|我们/iu.test(quote)) continue;
       if (predicate === 'experience' && /^(?:Can |Could |How |What |Why |Please explain)|[?？]$/i.test(quote)) continue;
       result.facts.push({ content: `${subject}: ${quote}`, subject, predicate, value, scope: '', kind: predicate === 'experience' ? 'event' : predicate === 'hobby' ? 'preference' : 'fact', modality: tentative ? 'tentative' : 'confirmed', cardinality, depends_on: [], time_text: quote.match(/yesterday|last \w+|next \w+|昨天|下个月|去年/i)?.[0] ?? '', valid_from: null, valid_to: null, sources: [{ index, quote }], supersedes: [] });
     }
@@ -62,6 +62,13 @@ export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction 
   return result;
 }
 
+const operationStop=new Set('i my me we our you your user assistant the a an is are was were be been it that this those these to of for from with on in at and or but not no do does did have has had please remember forget delete remove store memory information fact previous current actual old new value need want told say said again really completely'.split(' '));
+function groundedOperation(o:Operation,req:AddRequest,facts:Fact[]):boolean {
+  if(!o.target_ids.length)return true;
+  const context=req.messages.slice(Math.max(0,o.source.index-3),o.source.index+1).map(m=>m.content).join(' ');
+  const source=new Set(tokens(context).filter(t=>t.length>2&&!operationStop.has(t)));
+  return o.target_ids.every(id=>{const f=facts.find(x=>x.id===id);if(!f)return false;const target=tokens(`${f.subject} ${f.predicate} ${f.value} ${f.content}`).filter(t=>t.length>2&&!operationStop.has(t));return target.some(t=>source.has(t));});
+}
 export class Extractor {
   constructor(private config: Config, private models: Models) {}
   async prepare(req: AddRequest, snapshot: Snapshot, signal: AbortSignal): Promise<Prepared> {
@@ -72,23 +79,32 @@ export class Extractor {
     if (this.config.mode === 'offline') parsed = offlineExtract(req, snapshot);
     else {
       const chunkText = req.messages.map(m => m.content).join('\n');
-      const relevant = snapshot.facts.map(f => ({ f, score: overlap(chunkText, f.content) })).sort((a,b)=>b.score-a.score).slice(0,100).map(({f}) => ({ id:f.id, content:f.content, subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,state:f.state,modality:f.modality }));
-      const user = JSON.stringify({ OBSERVATION_DATE: anchor, EXISTING_FACTS: relevant, CONTEXT_ONLY: snapshot.tail.map(m => ({role:m.role,content:m.content})), NEW_MESSAGES: req.messages.map((m,index)=>({index,...m})) });
+      const ordered=snapshot.facts.map(f=>({f,score:overlap(chunkText,`${f.subject} ${f.predicate} ${f.value} ${f.content}`)+(f.state==='active'&&f.cardinality==='single'?.08:0)})).sort((a,b)=>b.score-a.score).slice(0,120).map(x=>x.f);
+      const aliases=new Map(ordered.map((f,i)=>[`m${i}`,f.id]));
+      const knownIds=new Set(snapshot.facts.map(f=>f.id));
+      const relevant=ordered.map((f,i)=>({id:`m${i}`,content:f.content,subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,state:f.state,modality:f.modality}));
+      const user=JSON.stringify({OBSERVATION_DATE:anchor,EXISTING_FACTS:relevant,CONTEXT_ONLY:snapshot.tail.map(m=>({role:m.role,content:m.content})),NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))});
       try {
         let issue='';let accepted:Extraction|undefined;
         for(let attempt=0;attempt<2;attempt++){
           const raw=await this.models.json(EXTRACTION_PROMPT,user+(issue?'\nREPAIR: '+issue:''),signal);
           const valid=extractionSchema.safeParse(raw);
           if(!valid.success){issue='Return the complete schema. '+valid.error.issues.slice(0,4).map(x=>x.path.join('.')+': '+x.message).join('; ');continue;}
+          for(const f of valid.data.facts){f.supersedes=f.supersedes.map(id=>aliases.get(id)??id);f.depends_on=f.depends_on.map(id=>aliases.get(id)??id);}
+          for(const o of valid.data.operations)o.target_ids=o.target_ids.map(id=>aliases.get(id)??id);
+          const unknown=[...valid.data.facts.flatMap(f=>[...f.supersedes,...f.depends_on]),...valid.data.operations.flatMap(o=>o.target_ids)].filter(id=>!knownIds.has(id));
+          if(unknown.length){issue='Unknown target IDs. Use ONLY short IDs from EXISTING_FACTS, never invent IDs. If a rejected assistant claim was not in existing memories, emit no delete/correct operation for it. Return the whole corrected object. Unknown IDs: '+JSON.stringify(unknown.slice(0,8));continue;}
+          if(valid.data.operations.some(o=>!groundedOperation(o,req,snapshot.facts))){issue='An operation targets a fact with no matching topic in the new user request or preceding context. Do not delete unrelated memories. If the user rejects a never-stored assistant claim, return no operation. Recheck targets and return full JSON.';continue;}
           const invalid=valid.data.facts.flatMap((f,i)=>f.sources.filter(s=>!req.messages[s.index]?.content.includes(s.quote)).map(s=>({fact:i,index:s.index,quote:s.quote})));
           const badOps=valid.data.operations.filter(o=>!req.messages[o.source.index]?.content.includes(o.source.quote));
           if(invalid.length||badOps.length){issue='Every source quote must be an exact substring of the indicated NEW_MESSAGES content. Never copy CONTEXT_ONLY as a new source. Fix all facts/operations and return the full object. Invalid fact spans: '+JSON.stringify(invalid.slice(0,8));continue;}
           accepted=valid.data;break;
         }
+        if(!accepted&&issue.startsWith('Unknown target'))throw new ServiceError('OPERATION_TARGET','Unknown memory operation target after repair');
         if(!accepted)throw new ServiceError('EXTRACTION_SCHEMA','Could not validate structured evidence and exact sources');
         parsed=accepted;
       } catch (error) {
-        if (signal.aborted) throw error;
+        if (signal.aborted || (error instanceof ServiceError && error.code==='OPERATION_TARGET')) throw error;
         degraded.push('extraction_offline'); parsed = offlineExtract(req,snapshot);
       }
     }

@@ -12,7 +12,10 @@ export function tokens(text: string): string[] {
   return [...english, ...chinese];
 }
 export function entities(text: string): string[] {
-  return [...new Set(extractEntities(text).map(e => e.text).concat(text.match(/[A-Z]{2,}[-\d][A-Z\d-]+/g) ?? []))];
+  const ignored=new Set(['I','My','We','Our','The','What','Who','Which','Where','When','How','Does','Can','Do','Is','It','That','This','User','Assistant']);
+  const named=text.match(/\b[A-Z][a-z]+(?: [A-Z][a-z]+)*\b/g)??[];
+  const upstream=extractEntities(text).map(e=>e.text).filter(e=>/[A-Z]/.test(e));
+  return [...new Set([...named,...upstream,...(text.match(/[A-Z]{2,}[-\d][A-Z\d-]+/g)??[])])].filter(e=>e.length>=2&&!ignored.has(e));
 }
 export function intent(query: string): QueryIntent {
   const trajectory = /\b(history|progress|evolved|changed over|over (?:our|the) conversation|sequence|trajectory|initially)\b|变化|变迁|历程|最初|先后/.test(query.toLowerCase());

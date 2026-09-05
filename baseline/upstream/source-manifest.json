@@ -1,0 +1,915 @@
+{
+  "repository": "https://github.com/mem0ai/mem0",
+  "commit": "dae67f74f5cc7bf138c7d7d6f9cec5ce4b4373b3",
+  "verified_identical_files": 227,
+  "files": [
+    {
+      "path": "client/config.ts",
+      "sha256": "4f1a2034009ace5b07f6c1a90b9d1f60f4dc506860281d41fe07e20624ebd619"
+    },
+    {
+      "path": "client/index.ts",
+      "sha256": "8064f2120d701b18bfccb1ea8bcc813189b0b8bc14b396faed834df1b3da2b18"
+    },
+    {
+      "path": "client/mem0.ts",
+      "sha256": "03b21333de11be7dde94c76cd38cef47b2a482e068829d15f755578046593225"
+    },
+    {
+      "path": "client/mem0.types.ts",
+      "sha256": "518c3f9256c6844f1fcaf023a94fb097300d2c8349692b37ea6b925017138206"
+    },
+    {
+      "path": "client/telemetry.ts",
+      "sha256": "3396ba544032e9191416a80cda8099e25e9d5a0025763cfc0837f3d9382e57c4"
+    },
+    {
+      "path": "client/telemetry.types.ts",
+      "sha256": "bdca401eb43ed23067327cd3cb8e07486cf3934189591673ae35a01ddd791487"
+    },
+    {
+      "path": "client/tests/helpers.ts",
+      "sha256": "bbd18c27bbdb0b301feaadaedfd59ae1fbb4a33075916e7b12af0ae68c015424"
+    },
+    {
+      "path": "client/tests/integration/batch.test.ts",
+      "sha256": "36074e690f9e7b97f7ec713eed0b274f27728695f95be36fea1a4491a01df073"
+    },
+    {
+      "path": "client/tests/integration/crud.test.ts",
+      "sha256": "ece1fcf09cb9db8a42dbd846b30b33fb60322aa39a7b9dc08c7639eadf830d8d"
+    },
+    {
+      "path": "client/tests/integration/global-setup.ts",
+      "sha256": "45f1a44cd309ede6ed1b6f7195aaeedd88c763e05b6aa5e55a953f6e581a58af"
+    },
+    {
+      "path": "client/tests/integration/global-teardown.ts",
+      "sha256": "15021530b79e95b36f87cad833b2d97a8cd82c18448145f340e181e4b2c1b673"
+    },
+    {
+      "path": "client/tests/integration/helpers.ts",
+      "sha256": "b5187796e9db85bd88b76685e4584662fd0811bdc6dc0271fdca4adb4edb19cd"
+    },
+    {
+      "path": "client/tests/integration/initialization.test.ts",
+      "sha256": "6ca315473b794f825df4fe43f499ffc5b3f04276e2a72f74e3196e471218dcca"
+    },
+    {
+      "path": "client/tests/integration/management.test.ts",
+      "sha256": "294d1412bd09bd23be8c96b4e81a925bdbd6e08aa44a1d10f72e32df24f39d65"
+    },
+    {
+      "path": "client/tests/integration/search.test.ts",
+      "sha256": "ae72fa7a6cad317d8988a3957e1a6b92e25268d647955de49728e7c179730a29"
+    },
+    {
+      "path": "client/tests/memoryClient.batch.test.ts",
+      "sha256": "4b3618f68e87d9a8ecedea9e33623a023474f12283cab60a06cca04bb2204caa"
+    },
+    {
+      "path": "client/tests/memoryClient.crud.test.ts",
+      "sha256": "6a8c24861a22e93f59e60ea99d42c1633e50ad866633699b27135211fc596208"
+    },
+    {
+      "path": "client/tests/memoryClient.exports.test.ts",
+      "sha256": "3d7d82d6cbdeda3f670fb612c4729dbc45e4157a83acedfbe72a7ef8b9196038"
+    },
+    {
+      "path": "client/tests/memoryClient.identity.test.ts",
+      "sha256": "1835c87f21530d66c1eec0c07c5a98c0f118b0863168365eee1fcca08aa92755"
+    },
+    {
+      "path": "client/tests/memoryClient.init.test.ts",
+      "sha256": "4075a866793efb898d15a24a90267843bad97744c68d8d6394dfc29df3f0e539"
+    },
+    {
+      "path": "client/tests/memoryClient.project.test.ts",
+      "sha256": "6472b7ab7a7fbd65460c33431466e0bf16c5811e81bb2061e5f056e6b29cf683"
+    },
+    {
+      "path": "client/tests/memoryClient.search.test.ts",
+      "sha256": "1407d3a65dc3d69395962b1a6beb484793f8716734b8b74c8a54729eadee7b18"
+    },
+    {
+      "path": "client/tests/memoryClient.users.test.ts",
+      "sha256": "bd1e1b53fb1344e8a2a026653e6701251084f1d93731ba812578e1560440cbe1"
+    },
+    {
+      "path": "client/tests/memoryClient.webhooks.test.ts",
+      "sha256": "6541a13223808ada3506bd27583e635241fa8d3781e0c17ca5b6035e4dc2c735"
+    },
+    {
+      "path": "client/tests/setup.ts",
+      "sha256": "c33fc7cfeb58e41f8a47f7290b4a4d2d1310c7051c7dc0a5a819137a5ee5201e"
+    },
+    {
+      "path": "client/tests/telemetry-aliasing.test.ts",
+      "sha256": "bd0a3010e1f312679565ef5616ef809e1f9320e80023e73c3160249cba26688c"
+    },
+    {
+      "path": "client/tests/utils.test.ts",
+      "sha256": "257ed02575c5ce63b3ab6cfe7832909240334d3b434efd9ea6c059dd8f8a75be"
+    },
+    {
+      "path": "client/utils.ts",
+      "sha256": "8afaaa728764e5c2dc10201fa6472f70629f4e4e9c5d28c7109322326fbdbd51"
+    },
+    {
+      "path": "common/exceptions.test.ts",
+      "sha256": "311509c6a42fe74d40a4698e6de64d8db5922b17e652552a7c04ecc5580e1300"
+    },
+    {
+      "path": "common/exceptions.ts",
+      "sha256": "403371473962101aba0cd9c940080db2cd9b86d42b20cd562de4be6eda364c12"
+    },
+    {
+      "path": "community/.prettierignore",
+      "sha256": "7ff9127fb00ac3c86062f1f3564c09880e6a8f09f7ac2b70225765b1ea6b388d"
+    },
+    {
+      "path": "community/package.json",
+      "sha256": "ee202a21b4daf0fcef1c6527d748938b24c04fcce3729c5a46050a982bec4939"
+    },
+    {
+      "path": "community/src/index.ts",
+      "sha256": "47c8ee451f11cab65abb62ee08e1b9b1ec45afa05199299de0c5c5676cd5f0c3"
+    },
+    {
+      "path": "community/src/integrations/langchain/index.ts",
+      "sha256": "3d4537f367701326e4f0595bf6b7398cf6d484b932a1c38e705aef10ba2896e5"
+    },
+    {
+      "path": "community/src/integrations/langchain/mem0.ts",
+      "sha256": "fa6b4d0f6c9c5d6b796e543d48396892cd916843642bd6b674f2400383c9495d"
+    },
+    {
+      "path": "community/tsconfig.json",
+      "sha256": "fb31e45e631e2da9e78fed340799c603e7e0b228aafb26ce475cb49ba28149c9"
+    },
+    {
+      "path": "global.d.ts",
+      "sha256": "78974c4aa5234fb32c0f5f92b177c0d1d181a4d7066d79b091207ee63b51c2a7"
+    },
+    {
+      "path": "oss/.env.example",
+      "sha256": "efd9278c80a9ba47f054067a3fa182bc4482ff5911fe06a5d7a84bb8ef5ada43"
+    },
+    {
+      "path": "oss/.gitignore",
+      "sha256": "1f12d7ca22f6546601f2008ec013edc6126f1e8ca6cc5ee2a28d61a3ffde5429"
+    },
+    {
+      "path": "oss/README.md",
+      "sha256": "a775647ab2d5cf0b7ef15d9ea2845a91d71938c8fa36ab24c6e4e19e9c2ad9f1"
+    },
+    {
+      "path": "oss/examples/basic.ts",
+      "sha256": "43323e4ade7a111f4822a225d19a8a3ace58030bd63acf1463af3ff0b121904d"
+    },
+    {
+      "path": "oss/examples/llms/mistral-example.ts",
+      "sha256": "75e2fd7b0568c4419a6405463a2e160fb96924985e427905f1abcad46dd7f5eb"
+    },
+    {
+      "path": "oss/examples/local-llms.ts",
+      "sha256": "72c775582eb5286c77e2af2e978d02ba464088566708a03334b7154ff79b11dd"
+    },
+    {
+      "path": "oss/examples/utils/test-utils.ts",
+      "sha256": "e61b237d5da6737185411c3412c2602524f6d4e6474a11a1536c8b5187054032"
+    },
+    {
+      "path": "oss/examples/vector-stores/azure-ai-search.ts",
+      "sha256": "bb5dc139a368259aba08997b8f2db1d648bc916db6ef6bfef0d45b1cb1442940"
+    },
+    {
+      "path": "oss/examples/vector-stores/index.ts",
+      "sha256": "90e4f8bb8e525549da930668e92243e6272f8e4adcd89b748fdba816fa325f1e"
+    },
+    {
+      "path": "oss/examples/vector-stores/memory.ts",
+      "sha256": "687244c446284cb5993007bea4f1d9fbf3d9a9c9e8878bf696e1cb1cb30e7cf9"
+    },
+    {
+      "path": "oss/examples/vector-stores/pgvector.ts",
+      "sha256": "b13b95bd3fc903277ef17e72c030410dc14ec21797ec481cc9133c30d6f4ac05"
+    },
+    {
+      "path": "oss/examples/vector-stores/qdrant.ts",
+      "sha256": "bff6eaefd50451eda492daaf6728c4a1bb55f4faa8f642ef6902d14c0488e2d6"
+    },
+    {
+      "path": "oss/examples/vector-stores/redis.ts",
+      "sha256": "19337d1e64cbb81b3b5c2e26285cb392db05929978e86e30dbadf202ad2e5945"
+    },
+    {
+      "path": "oss/examples/vector-stores/supabase.ts",
+      "sha256": "dfe501b76bd896b8aeb01bf21041b83d221f44d023679e4f1d838c391ef9267c"
+    },
+    {
+      "path": "oss/package.json",
+      "sha256": "e9e1dbf5cbdbbc0bff21d28b058c59bb371f7e32efa071fd7f1284f7622b4b3b"
+    },
+    {
+      "path": "oss/src/config/defaults.ts",
+      "sha256": "8a156c6f355f990ec2d547c65ad1cc641e83b7c1a878f6918916011b8193be3c"
+    },
+    {
+      "path": "oss/src/config/manager.ts",
+      "sha256": "4b89465be53f8bc658ebf8cafd40bbf93087c1d8ce6b945ef656ca7dca1a4a67"
+    },
+    {
+      "path": "oss/src/embeddings/aws_bedrock.ts",
+      "sha256": "63b12e2b18bd6bde362adedb6e00ff3f98131b8fbe17052d81775e78d6fe4a64"
+    },
+    {
+      "path": "oss/src/embeddings/azure.ts",
+      "sha256": "8b5d3d8c60f38a7c83ac5f574bfca964547097cd31fc667e67d971491ed3bc2e"
+    },
+    {
+      "path": "oss/src/embeddings/base.ts",
+      "sha256": "1eecf3f070d1c5fcfbf7d1ddab4aebeb44fc439a2635f95e6bbd60e1a3bc9777"
+    },
+    {
+      "path": "oss/src/embeddings/fastembed.ts",
+      "sha256": "d64ceb8e6efc25a8b234f84a212cc84868ad74c6b2596c22291330c927322723"
+    },
+    {
+      "path": "oss/src/embeddings/google.ts",
+      "sha256": "7745776e9dfae6e8ff929029951f998dc2964f6b9d09a4cbfab6460f1258d29c"
+    },
+    {
+      "path": "oss/src/embeddings/huggingface.ts",
+      "sha256": "6d00fffe6a43e78de58aa1b1a16882757833f151a2b13d231656a0a964b04f2f"
+    },
+    {
+      "path": "oss/src/embeddings/langchain.ts",
+      "sha256": "6ff1d17db382bf87271b3840eba398f68255e839efb5b20974fae0365b0bee46"
+    },
+    {
+      "path": "oss/src/embeddings/lmstudio.ts",
+      "sha256": "573dde65410eddd3a4564119e16d21d9d9430e847475402d58ead459e026cb2b"
+    },
+    {
+      "path": "oss/src/embeddings/ollama.ts",
+      "sha256": "6cb8eac9f36388e62c65a5c60d63d094f0d8d462e71a75d6a1444cce65a1824f"
+    },
+    {
+      "path": "oss/src/embeddings/openai.ts",
+      "sha256": "2372a42196a27c961bce14cbdeb8bee690f8148094af6174a54b34863f7bcae7"
+    },
+    {
+      "path": "oss/src/embeddings/together.ts",
+      "sha256": "86f23c2769917c2d8cafd344ebba14c18025a273e2a57ba14140599fd55d391d"
+    },
+    {
+      "path": "oss/src/embeddings/vertexai.ts",
+      "sha256": "c2cb1adca2cf763b2010188d3f538a68c5f46e4ac7ea77d988b18129bece792b"
+    },
+    {
+      "path": "oss/src/index.ts",
+      "sha256": "c33272741b63eb8076dcfd85cf096863bec6f0a094503a43bfd63c1ade0183bd"
+    },
+    {
+      "path": "oss/src/llms/anthropic.ts",
+      "sha256": "56b606b3620da4d650b500fc1b6ca1ebea2dc8e33d8d2998ae658777fa897dc9"
+    },
+    {
+      "path": "oss/src/llms/aws_bedrock.ts",
+      "sha256": "30fbe08ad10934c9e0d1d29c488fc4e50945ff1ab154f95c35c12b568bb7ff79"
+    },
+    {
+      "path": "oss/src/llms/azure.ts",
+      "sha256": "dda89173e523b5cec394ada0b3e1ceb3c78268ef372e4bd5e4ee9774e3ed26a9"
+    },
+    {
+      "path": "oss/src/llms/base.ts",
+      "sha256": "8697b9185e8e4507ceed77ee7ba0f89450d6d289093ee787f41d13b3509c6f92"
+    },
+    {
+      "path": "oss/src/llms/deepseek.ts",
+      "sha256": "2e23aa95d5a9671fd58a3ac8d8d8e1f824998312519b0829bf2dd355dcd4ebbb"
+    },
+    {
+      "path": "oss/src/llms/google.ts",
+      "sha256": "e1efe0e40278fe97b69863b9bd009bfe581a00392a741320f3bcdebd779fefbb"
+    },
+    {
+      "path": "oss/src/llms/groq.ts",
+      "sha256": "ae741cb4491f1d9642a90676f85936238854466f6922d5a220926c2d969c6193"
+    },
+    {
+      "path": "oss/src/llms/langchain.ts",
+      "sha256": "e944fb0ddeb742db482fd2dbecdcfa82688cb22c9e13e954cdb045817edcd8dc"
+    },
+    {
+      "path": "oss/src/llms/litellm.ts",
+      "sha256": "1b86ff130aceda8f7ad15812b365f8b584e5aceb5fd2498a95794f0abfe8595b"
+    },
+    {
+      "path": "oss/src/llms/lmstudio.ts",
+      "sha256": "1c25ddf77aa949c62397bd1d666a7a3cafb730523b8594a5cdeba905267c9aaf"
+    },
+    {
+      "path": "oss/src/llms/minimax.ts",
+      "sha256": "423c90ef78d812dd19015f38c73eb9e5e687a3f241c8a3029f23433df15d1b2b"
+    },
+    {
+      "path": "oss/src/llms/mistral.ts",
+      "sha256": "3c97a11671db23a9e1ae28ea60d2be74f8ac2c9bd8388f85e1ce56c3abd6c4f5"
+    },
+    {
+      "path": "oss/src/llms/ollama.ts",
+      "sha256": "84d46b4d0e1fc0e376a64a789742099c4e29596d7e62687f0bf3257d6412f029"
+    },
+    {
+      "path": "oss/src/llms/openai.ts",
+      "sha256": "2a5607833cabd09d2716e5ff1cedb572f86c61d1028080317b39eb2bc0ec38a4"
+    },
+    {
+      "path": "oss/src/llms/openai_structured.ts",
+      "sha256": "8cb6929325f95db485b41bea11f8d3433a5eaea79533f7248d61b45ef4473c93"
+    },
+    {
+      "path": "oss/src/llms/sarvam.ts",
+      "sha256": "b69d8c6ba03cb642c0a04a03a9cb96de53c65aaab8441b0a7850d091576e230e"
+    },
+    {
+      "path": "oss/src/llms/together.ts",
+      "sha256": "e3a44c400bede703ba1f0a3b1f228ed252621d8d65d7d8590e4b4549bde0a225"
+    },
+    {
+      "path": "oss/src/llms/vllm.ts",
+      "sha256": "c3c4a7d91c6885905115acd47f580c9e113fe3d9e8efbb9663d0e0041800c919"
+    },
+    {
+      "path": "oss/src/llms/xai.ts",
+      "sha256": "897aaedc80c4ef13a9f82f98e60682060395e66ebe5ca44a00dc845c3a77728d"
+    },
+    {
+      "path": "oss/src/memory/index.ts",
+      "sha256": "dfdf890b3c1f4bf3d9288e45ff58603b4322634ecf6e788708ebe6a4f06df662"
+    },
+    {
+      "path": "oss/src/memory/memory.types.ts",
+      "sha256": "ddfb5f55c4b2be17f39a24354885f0f6f236cf5c660fc9c7cdfe6875b4960f0e"
+    },
+    {
+      "path": "oss/src/prompts/index.ts",
+      "sha256": "d9f526f5975559c5a8fde264e5b996579350ed651cb429c0d55b3611842206d4"
+    },
+    {
+      "path": "oss/src/rerankers/base.ts",
+      "sha256": "2b582811780263e82ec9df5334430b66ada88479ae8104f976785df316c6ac9b"
+    },
+    {
+      "path": "oss/src/rerankers/cohere.test.ts",
+      "sha256": "8979db5bac65bb3cd2c7aafe86e2628921010d970247d6f6425464da40dd954a"
+    },
+    {
+      "path": "oss/src/rerankers/cohere.ts",
+      "sha256": "2744d2a80f32ce4f1f015f6cb12c9f2ab86feaf43e6ce5fdf2f978a4c1078a33"
+    },
+    {
+      "path": "oss/src/rerankers/cross_encoder.test.ts",
+      "sha256": "eba4acec21da60b8fa40e4008030788d2533c8cd675ac30e4f4486088201641c"
+    },
+    {
+      "path": "oss/src/rerankers/cross_encoder.ts",
+      "sha256": "d20f13a7ed9fb0bb6971c689a10e4634016ca6b327d0f0d663571b1a7291eee0"
+    },
+    {
+      "path": "oss/src/rerankers/llm.test.ts",
+      "sha256": "98527352377a475e245305976bac292f9587884249356faa86fc16d6f38bc64d"
+    },
+    {
+      "path": "oss/src/rerankers/llm.ts",
+      "sha256": "e0b289d0a421f675e5e9b84cbb76a05e43bd15dd9362d46e221925de6d7091bc"
+    },
+    {
+      "path": "oss/src/rerankers/zeroentropy.test.ts",
+      "sha256": "dda18ac358b6cc87e400f62dc1eaaa94e6facf742f80ba4b5cebf3e9cc7c3029"
+    },
+    {
+      "path": "oss/src/rerankers/zeroentropy.ts",
+      "sha256": "98e35d820c976dab97b4868afa2ecfc5e5ce57fb3e9de730c1b4bf4f08cdf01a"
+    },
+    {
+      "path": "oss/src/storage/DummyHistoryManager.ts",
+      "sha256": "298e836601e77b793046de2b51d20ab18c269bfde9194416116966164327e1f7"
+    },
+    {
+      "path": "oss/src/storage/MemoryHistoryManager.ts",
+      "sha256": "99273318e853d72470157182b281363fe6ae33a2c859832aff0cf9cd7816c413"
+    },
+    {
+      "path": "oss/src/storage/SQLiteManager.ts",
+      "sha256": "9e18733f478acd2d62979a8925cf07b0bed4c61ed5a48f074f7820fccb98c0c3"
+    },
+    {
+      "path": "oss/src/storage/SupabaseHistoryManager.ts",
+      "sha256": "104e0c393f1db0ab8291eafff9e258ee901af449ca60b8d1ab166827a5aca357"
+    },
+    {
+      "path": "oss/src/storage/base.ts",
+      "sha256": "8477e0f3dc2be4dd324ff2c8d4a92e73bc617ac3fa3556d277637737239be3ff"
+    },
+    {
+      "path": "oss/src/storage/index.ts",
+      "sha256": "821701386ce415b6f310e24b9581574b711a1ab853ab2c8386daa1f9d5a13bc2"
+    },
+    {
+      "path": "oss/src/tests/aws_bedrock.test.ts",
+      "sha256": "163927b38bd50a0e450b844161d99265b6513b56ab32d9ea55158127660a1acc"
+    },
+    {
+      "path": "oss/src/tests/better-sqlite3-migration.test.ts",
+      "sha256": "2ba5006fee53315719fe69d69b874455a081f5fa78f0a34e6c22b737e426760e"
+    },
+    {
+      "path": "oss/src/tests/chroma.test.ts",
+      "sha256": "004e5a3929c8f32d5e3e6957ae8d323a5b7d65db5ddbaa2bb552e51d73d04ac3"
+    },
+    {
+      "path": "oss/src/tests/milvus.test.ts",
+      "sha256": "731ca83b1fadfb61e34692e266fafe5299a7b779a3c1e2348b1eef7326858dd1"
+    },
+    {
+      "path": "oss/src/tests/mongodb.test.ts",
+      "sha256": "6d4d2d4216fd3a6ac3d38bc46e39be3c38b799c610b292e536127ccbf44d058b"
+    },
+    {
+      "path": "oss/src/tests/pinecone.test.ts",
+      "sha256": "e505981ad5b44a97ae30499dd172212ed7791240e05b1e930174f6d269c1980e"
+    },
+    {
+      "path": "oss/src/tests/sqlite-backward-compat.test.ts",
+      "sha256": "f3b24e99b51fdba4d54d21a0d12b0a535391d9f7d61c1bff9075ed1860b275fa"
+    },
+    {
+      "path": "oss/src/tests/sqlite-path-resolution.test.ts",
+      "sha256": "8188c6289b7d9ee00a74a8d7f65eeed62370cbe1b6d07705097253c78ebf33de"
+    },
+    {
+      "path": "oss/src/tests/vector_stores/turbopuffer.test.ts",
+      "sha256": "b1bb4576ad9da6371e745562a67e81aea27c878e5d2706a2b90d306d16973702"
+    },
+    {
+      "path": "oss/src/tests/vllm.test.ts",
+      "sha256": "dd2d49e374f55727a18376354516dbe63c492ec4c260a7bd545f57036d52364c"
+    },
+    {
+      "path": "oss/src/types/index.ts",
+      "sha256": "dcd0f33c0108ee05518b4123aced6894e32f952cf9d979fddbdecccad1e7cf02"
+    },
+    {
+      "path": "oss/src/types/valkey.ts",
+      "sha256": "9fa5802fd08b72d7eabca5294c24798c6c0a50364ecbbec27a08079e6e673af3"
+    },
+    {
+      "path": "oss/src/utils/bm25.ts",
+      "sha256": "007c3040318fddd1b6183d6d13595b0b05058808af602ac79cb6adce738e341d"
+    },
+    {
+      "path": "oss/src/utils/casing.ts",
+      "sha256": "9599e354b86d84b0018947c61e2bff865899564e85947183c8cc837c90d19f97"
+    },
+    {
+      "path": "oss/src/utils/entity_extraction.ts",
+      "sha256": "05029afde477a934a6bade880780efe0ff7c4f30fa8fbc9c8227b2680bf96dfb"
+    },
+    {
+      "path": "oss/src/utils/expiration.ts",
+      "sha256": "29a6e3949c3eaa88918c5106cc49650e18129e4d141d79e47ba586cb2bd18ee0"
+    },
+    {
+      "path": "oss/src/utils/factory.test.ts",
+      "sha256": "457fb1c57934f1b23b0b343f733cec0f4560e7b90a7fc183f92452ba5ca01a3b"
+    },
+    {
+      "path": "oss/src/utils/factory.ts",
+      "sha256": "d4beed95d340a666a8f4a23adaacdf0c754b203b5c3475af2186662f83568c4c"
+    },
+    {
+      "path": "oss/src/utils/lemmatization.ts",
+      "sha256": "fadcf1037665227f25d2898c10a331468dba5341ae56ea6ef61c3183107c1dfa"
+    },
+    {
+      "path": "oss/src/utils/load_peer.ts",
+      "sha256": "d7bbec23984247fca007efd5209775b52b2737b37ebe399ecbff745f5110935e"
+    },
+    {
+      "path": "oss/src/utils/logger.ts",
+      "sha256": "57f0535b74ecbb00495720009a36584aa395f62aa0a69553015e8ca397fbb5cc"
+    },
+    {
+      "path": "oss/src/utils/memory.ts",
+      "sha256": "0ddf06a1f7f82adb74ff3457e053fd9b494041ec5f6369c3f741a1b56f968e55"
+    },
+    {
+      "path": "oss/src/utils/notices.ts",
+      "sha256": "466925539f2b4813e6937562be2409f840653169c98d623b50fb5edb8977d877"
+    },
+    {
+      "path": "oss/src/utils/oss_notices_config.json",
+      "sha256": "2ba311f6bd217360ff7a3a35374af53899d44287c8a2a24da1d0247a16f6bf73"
+    },
+    {
+      "path": "oss/src/utils/scoring.ts",
+      "sha256": "213931081b967a199f7bae9459cbbd6b4115c186fc5ddf6e76f65dee1b3ad96b"
+    },
+    {
+      "path": "oss/src/utils/sqlite.ts",
+      "sha256": "cd71a477119d0cde5ad87de725fa0f19d32acaf1a7955642d46bf7825bbcd20b"
+    },
+    {
+      "path": "oss/src/utils/telemetry.ts",
+      "sha256": "474e599574c3ea87c4b356030b987008614716c3706910bbf9c2e9c9ddb42895"
+    },
+    {
+      "path": "oss/src/utils/telemetry.types.ts",
+      "sha256": "19989d6288e3c895a9a8a9d7fbd6bc22a552c8e9bdaf9eb66b307245a79efddb"
+    },
+    {
+      "path": "oss/src/vector_stores/azure_ai_search.ts",
+      "sha256": "9cde3a0638067ca6d15064f22ed8df85d597db8776a8b7ba90cb4e1b5368c10b"
+    },
+    {
+      "path": "oss/src/vector_stores/azure_mysql.ts",
+      "sha256": "b0993b96d38deb1527fb55e32fc4a35790fcd54b43c1ea23e6b0406b71afb7a4"
+    },
+    {
+      "path": "oss/src/vector_stores/baidu.ts",
+      "sha256": "2eb780795517c057a80abcfae714a8fc9e1ea52498b78daf867ddc2adad31fc0"
+    },
+    {
+      "path": "oss/src/vector_stores/base.ts",
+      "sha256": "0c866025ad01d4144a18346f057985223098a49f03f80943309601ebf382ec02"
+    },
+    {
+      "path": "oss/src/vector_stores/cassandra.ts",
+      "sha256": "95fb3c0622abffd62a8f3761cbbece87f2fa42198649623f8afe652f10989061"
+    },
+    {
+      "path": "oss/src/vector_stores/chroma.ts",
+      "sha256": "c1a51b56f7a0d615ed340881e2418342b744e61aff7f8e8974086f37dddaf26b"
+    },
+    {
+      "path": "oss/src/vector_stores/databricks.ts",
+      "sha256": "023ef4fe13c4f1f32d7787489e2ba37d349ba6e16ed684d3324496d1692d226b"
+    },
+    {
+      "path": "oss/src/vector_stores/elasticsearch.ts",
+      "sha256": "151de5058c99ba2c9178f1817869cf38ca92985c8149e155799269c9f531ea16"
+    },
+    {
+      "path": "oss/src/vector_stores/langchain.ts",
+      "sha256": "54f371d5bbf60935bda3af37cca681570df5bc98dba6caed79bfde2fea6e379a"
+    },
+    {
+      "path": "oss/src/vector_stores/memory.ts",
+      "sha256": "1e71f3dd8471a89e4b822a482b37df9160c9da900f9f321bd7eaa256a9a9f52e"
+    },
+    {
+      "path": "oss/src/vector_stores/milvus.ts",
+      "sha256": "9cfb3464d2dfdb2daae21bfbd740247cceb728b4292d8d7ac4f447bf21dfbe80"
+    },
+    {
+      "path": "oss/src/vector_stores/mongodb.ts",
+      "sha256": "24c07deb3ee1984ce0d4755badcb08f77c3a1125828f4c532a20c93b1ca6a264"
+    },
+    {
+      "path": "oss/src/vector_stores/neptune_analytics.ts",
+      "sha256": "73ead98c827e568e6447cb8a87626d3148da6e83f248c6e93b3e2891c395dd55"
+    },
+    {
+      "path": "oss/src/vector_stores/opensearch.ts",
+      "sha256": "a914bfbea388b38dfcfdd07e165105176d9c9debd6c8f09f9475e297e3631c48"
+    },
+    {
+      "path": "oss/src/vector_stores/oracledb.ts",
+      "sha256": "4ba05366d1fdfa7b52d5fb53b46c0bec7e764d8927b210ca7edcf1215654ebfc"
+    },
+    {
+      "path": "oss/src/vector_stores/pgvector.ts",
+      "sha256": "eaaa4c9cd02c58f84c0798de226b792ad4cbfbc264b402690a69a8cf784b0b75"
+    },
+    {
+      "path": "oss/src/vector_stores/pinecone.ts",
+      "sha256": "5ac7c3d61060a94fe898f5d693d3a5e3ece20b15089db214e202ab138caf1a92"
+    },
+    {
+      "path": "oss/src/vector_stores/qdrant.ts",
+      "sha256": "5f3b3ca4f1b3273af98089a24b4449c5d95b4e9f5bf8a66f3ca17b7e2d2391aa"
+    },
+    {
+      "path": "oss/src/vector_stores/redis.ts",
+      "sha256": "5cc4620b879aa2d3807f5a5232055d67719e3fb762d5dcdd63ae9781a1dae99d"
+    },
+    {
+      "path": "oss/src/vector_stores/s3_vectors.ts",
+      "sha256": "5476ab39aa4648f66e0cd26e2de588759d7a5831e14ca48961cefe03531cab22"
+    },
+    {
+      "path": "oss/src/vector_stores/supabase.ts",
+      "sha256": "3f6f12315888d99cf1af4f5f62a71d723c4337ea402549a1675b75b64b812f52"
+    },
+    {
+      "path": "oss/src/vector_stores/turbopuffer.ts",
+      "sha256": "548a6aff08db420ceb6842b9afc1cd5fc3321822bd24ddb9397898850259bcc1"
+    },
+    {
+      "path": "oss/src/vector_stores/upstash_vector.ts",
+      "sha256": "4461265df06ee3a7512daea1aea04740538c61ed279a2474ee3965759bebc725"
+    },
+    {
+      "path": "oss/src/vector_stores/valkey.ts",
+      "sha256": "e9dfddf6fee6b7e7154b3d57762a6ad68696f3e0b05b0712e894e7bde6c0f408"
+    },
+    {
+      "path": "oss/src/vector_stores/vectorize.ts",
+      "sha256": "686ad0688e46a19d60a6e62a35393ac865f6c515b3245104b543bbb5adffcceb"
+    },
+    {
+      "path": "oss/src/vector_stores/vertex_ai_vector_search.ts",
+      "sha256": "fb0d91a30df25beebde868baa2a1136a81f3bf03fd15d0adea8e5dd6bdb685db"
+    },
+    {
+      "path": "oss/src/vector_stores/weaviate.ts",
+      "sha256": "1532a254ca850e422b065aa3bbacf7e22b761a3d1ebcab87d3fadd8b3ccd26dd"
+    },
+    {
+      "path": "oss/tests/anthropic-llm.test.ts",
+      "sha256": "6a0a15c77c716bca142bcb1a2d01305c1b408fba46af558145e1f507f3e9ab01"
+    },
+    {
+      "path": "oss/tests/aws-bedrock-embedder.test.ts",
+      "sha256": "ad5400f353b4fa4e525022c576b1633a135fc2ef0a181382b3a49ac16c8fc2ba"
+    },
+    {
+      "path": "oss/tests/azure-embedder.test.ts",
+      "sha256": "c68944a0403368fa75172efd91c82d5c1dc862df7f606fa4383cfd26ec9970f5"
+    },
+    {
+      "path": "oss/tests/baidu.test.ts",
+      "sha256": "b8a7c5172f5fb4463ea637c9c2b7affb247ec7b77e378fcfec3154cf4fc09721"
+    },
+    {
+      "path": "oss/tests/cassandra.unit.test.ts",
+      "sha256": "b9f53033f483f4f8a4ee38745ae52d15e5e91e97c81256eaaf4b09b69d926da1"
+    },
+    {
+      "path": "oss/tests/config-manager.test.ts",
+      "sha256": "d090ecb6b4e7b2769e4f6427e3b6d476191b094da6fc20f7a6fd3df3bd6542bf"
+    },
+    {
+      "path": "oss/tests/deepseek.test.ts",
+      "sha256": "90ef59f35e7ab1c751f1a18305e5991db1b05c67b3550d8a3a382b0f2989036d"
+    },
+    {
+      "path": "oss/tests/dimension-autodetect.test.ts",
+      "sha256": "2576a75a75c8092c5ea6111f464b3b4e2c2c548dd5f9c188dac0a50b769f788c"
+    },
+    {
+      "path": "oss/tests/elasticsearch.unit.test.ts",
+      "sha256": "b6d02eb707a7d1a8c8a9aab2b5c40ed5eea74d0058076358c64fa4d70ae40af7"
+    },
+    {
+      "path": "oss/tests/entity-extraction.test.ts",
+      "sha256": "1f84aa9890f2e0af8937a860a32a1e63a4d609f5c8e208d7faa068febea515af"
+    },
+    {
+      "path": "oss/tests/extract-json.test.ts",
+      "sha256": "dfa427a32e666235a59e18b1fce65b021f51c3bcfd5bf7ce94fc972f76bd0181"
+    },
+    {
+      "path": "oss/tests/factory.unit.test.ts",
+      "sha256": "01d200c69ff541de3d14b3d9d53d2075ff021eb0d705eecf4645912c3bf3a5a9"
+    },
+    {
+      "path": "oss/tests/fastembed-embedder.test.ts",
+      "sha256": "745a8abc680d291fc88409dbc3c09a0825417ab3702e33dfc0c564acef7690c8"
+    },
+    {
+      "path": "oss/tests/google-embedder.test.ts",
+      "sha256": "cf7fc98cc07d13710baf13a9915ea6d3d25615e26b0351c8516c4cfdcbe73c1d"
+    },
+    {
+      "path": "oss/tests/google-llm.test.ts",
+      "sha256": "668cc1052f755cba650bc4036d9f88ec2cd74dfb30f48bb5c0eafa19102159a1"
+    },
+    {
+      "path": "oss/tests/huggingface-embedder.test.ts",
+      "sha256": "cbb388a249c6e18aa14ec28a0cf2c28b16c854a8be4dbf17b2e588c4397d062b"
+    },
+    {
+      "path": "oss/tests/litellm.test.ts",
+      "sha256": "49f557d33815b34662b38b227191cf35e639dd26f6dc02de79d3e8f13f9b3859"
+    },
+    {
+      "path": "oss/tests/lmstudio-embedder.test.ts",
+      "sha256": "54c778500aa4c6f97a5e5fe7a62cb4874e6db295515280c580a5e86200eded4c"
+    },
+    {
+      "path": "oss/tests/lmstudio-llm.test.ts",
+      "sha256": "0856f03ed7daf569dafc9bf797ac25e2b9688edff0c88b3ff7fa4afd54defdbb"
+    },
+    {
+      "path": "oss/tests/memory.add.test.ts",
+      "sha256": "39310d08905ec6b22292f0010679e092be51ad8806c17d9d7d083a1e79069703"
+    },
+    {
+      "path": "oss/tests/memory.crud.test.ts",
+      "sha256": "6efe1811067c6db48b7411a6f5dd0393b49b914f8dc0553cf4085790226514bf"
+    },
+    {
+      "path": "oss/tests/memory.embedding-action.test.ts",
+      "sha256": "10da0878e8278dcc38b6612fec80874a64cface30772302891523c5657b39a8d"
+    },
+    {
+      "path": "oss/tests/memory.entity-boost.test.ts",
+      "sha256": "7b0a8a95699cf24865ebdf3ede2b3368f3bf8e5adf775d71ad0c4b9c943ffc7e"
+    },
+    {
+      "path": "oss/tests/memory.init.test.ts",
+      "sha256": "d6a89bae302e259906ce114d644e97899ff6b82775e9af9a0842d548078ef975"
+    },
+    {
+      "path": "oss/tests/memory.llm-error.test.ts",
+      "sha256": "030fe552672f017e76824e89968ef71a4c0f76244c1f492f18ad0a362b041da7"
+    },
+    {
+      "path": "oss/tests/memory.prototype-key-embedding.test.ts",
+      "sha256": "3489ff7453f97b887c338cd63bd7e382a9f1a08c7253f52bf7a63157d4b8ca87"
+    },
+    {
+      "path": "oss/tests/memory.rerank.test.ts",
+      "sha256": "459a111a6235051317026e0904a00cecfdfde50a43a1bf2d19994976d595c3fc"
+    },
+    {
+      "path": "oss/tests/memory.validation.test.ts",
+      "sha256": "3032bf0be8cb322e3df52a7edb762dcd6f97b0cbd1875930c8def9ded2f7cff8"
+    },
+    {
+      "path": "oss/tests/minimax.test.ts",
+      "sha256": "352510bb58466e0f5fdd5adba88b7651c347ed6ed0545e5f6fe704d488ba00b6"
+    },
+    {
+      "path": "oss/tests/notices.decay-feature.test.ts",
+      "sha256": "42662c7b2a91387038d3a839cec8caeae27dbcbc855ca35e04caf8a8ec312d04"
+    },
+    {
+      "path": "oss/tests/notices.decay-usage.test.ts",
+      "sha256": "3eb0ca3c15a00038a577aaceacbd263339e8a09ed663accd5fee50e18aed3512"
+    },
+    {
+      "path": "oss/tests/notices.first-run.test.ts",
+      "sha256": "4d669bd4fa30a958e0cc27105f12cfcb7917682604de6d76a91d4c14b75d92df"
+    },
+    {
+      "path": "oss/tests/notices.foundation.test.ts",
+      "sha256": "8552ac4c8ed97daa2152ba62ef9f5ae121f7dc9d291f4161f385e7fa3d7c6ecb"
+    },
+    {
+      "path": "oss/tests/notices.performance-slow-query.test.ts",
+      "sha256": "2ac07d89c9d7c816fe3613041a79152aa448d90c979ced7d3ef9954242c170aa"
+    },
+    {
+      "path": "oss/tests/notices.scale-threshold.test.ts",
+      "sha256": "4fdd4c1b6119254bf896949137530aac825ce6cd64d054ae9bcbef6f47f3ab08"
+    },
+    {
+      "path": "oss/tests/notices.temporal-feature.test.ts",
+      "sha256": "31016fe99640e20353c748234a29d6a86420f35a3ee95806e51a8a759e8d0731"
+    },
+    {
+      "path": "oss/tests/notices.temporal-usage.test.ts",
+      "sha256": "2a6fa620a23e71c38068611ebdc6eecd9a10ee5c46cbd1fb14bc7565eab37bf1"
+    },
+    {
+      "path": "oss/tests/ollama-embedder.test.ts",
+      "sha256": "758903efc977545ec1310ffa3c7ec8e624fd2995f097ac788bafb7d63f70e3f6"
+    },
+    {
+      "path": "oss/tests/openai-embedder.test.ts",
+      "sha256": "47d697135a03ea1ee4d93ecc46b997c3f03476ca928067d6ca3c9cfbf5bfdc52"
+    },
+    {
+      "path": "oss/tests/openai-llm.test.ts",
+      "sha256": "b9d81e1dd48e7fd9507870fb2d5b9b24b30146a5b2b78445c2cd3f2f285bccf3"
+    },
+    {
+      "path": "oss/tests/openai-structured-llm.test.ts",
+      "sha256": "b4427dcd85472d0df78fc65afd6d15951455fddf983f1cba35dac0de3558d0b7"
+    },
+    {
+      "path": "oss/tests/opensearch.unit.test.ts",
+      "sha256": "210e55c62b1ab1db37f6a695dd6e45f4c59d39b5aa650a2a9f3ab9427598df3a"
+    },
+    {
+      "path": "oss/tests/optional-peers.test.ts",
+      "sha256": "8066a993a1919db0fac76ed0d3b09de4d3765f61a87018a6a038dc025824feaf"
+    },
+    {
+      "path": "oss/tests/oracledb.unit.test.ts",
+      "sha256": "78a7647a6666fba6d4156c46da019cc23862aee67648566e44192d17adfb5d52"
+    },
+    {
+      "path": "oss/tests/pgvector.filters.test.ts",
+      "sha256": "e3324ff85b45f6291e067bfc8f3829876f4e26a218f690aad2b0a4b5e487cdce"
+    },
+    {
+      "path": "oss/tests/pgvector.unit.test.ts",
+      "sha256": "ad7bbb4f100111ab7ba2b8c806c1f6103267f67c586dcb1571cfd838147bad05"
+    },
+    {
+      "path": "oss/tests/qdrant-keyword-search.test.ts",
+      "sha256": "6a881c8def8911da37e8df87de945c811a1aebe99210882d5be12d29216a1aa8"
+    },
+    {
+      "path": "oss/tests/qdrant-url-port.test.ts",
+      "sha256": "90dbfad76ce927eb4bb638bf7de36670a70ceae7cd7cdc9179a9c5a88ed411ce"
+    },
+    {
+      "path": "oss/tests/redis.filter-expr.test.ts",
+      "sha256": "e02f9115442112bb5b568b1829d5a744285a453a490615786551a8c0ca2d10ec"
+    },
+    {
+      "path": "oss/tests/redis.unit.test.ts",
+      "sha256": "eee3a0fc623fc0a5dd222c5540249d206da353270e17e8f8b7a62f557e4f5bf2"
+    },
+    {
+      "path": "oss/tests/remove-code-blocks.test.ts",
+      "sha256": "dd47d29ae919594ce52130ceed30dfca85619af74c7f96297b2484fd7f94a08d"
+    },
+    {
+      "path": "oss/tests/sarvam.test.ts",
+      "sha256": "0aa482cb129cdc8c40f98b3907ffa915c0ec320f655849088c6e28aaa72c2ba6"
+    },
+    {
+      "path": "oss/tests/scoring.test.ts",
+      "sha256": "25ed5115942fd41486a22e6496b789693e736abf926064c9349346cf06d4cd70"
+    },
+    {
+      "path": "oss/tests/session-scope.unit.test.ts",
+      "sha256": "462c55b1afb706c2b69ea391abcbcab37befd3a5f85d6e850351bfc7c3bcd73d"
+    },
+    {
+      "path": "oss/tests/storage.unit.test.ts",
+      "sha256": "fdb60ae9cdc74caea9cb32e8daadd4d15320dcb045cd55b75edac0bcd93b8de8"
+    },
+    {
+      "path": "oss/tests/telemetry-sampling.test.ts",
+      "sha256": "b1d5149ac54cb142f93ea1549873e32ff03fcd65eb6482689eaaf0f72d1d82ef"
+    },
+    {
+      "path": "oss/tests/together-embedder.test.ts",
+      "sha256": "93e7bdb14cbea8478dcbb1da2fba96aa34dae961ec918485399665a86e2bb858"
+    },
+    {
+      "path": "oss/tests/together.test.ts",
+      "sha256": "c7381a6884cf647e34874a33b18edaf56c4f038930ae31fb5a74e21b6818f4c0"
+    },
+    {
+      "path": "oss/tests/tsup-externals.test.ts",
+      "sha256": "cebaf040ff7add4474d146114a9f2c0e0b1a461f794c9d86df2b691139cdf504"
+    },
+    {
+      "path": "oss/tests/upstash_vector.unit.test.ts",
+      "sha256": "190fa2fce8620d32575532405559f98bd113b0d31a2c0796c06df79b6cca20ed"
+    },
+    {
+      "path": "oss/tests/valkey.test.ts",
+      "sha256": "0f6addeff9571f24989181d14faf33ff5b8dfeb5ce719092645119793ef16055"
+    },
+    {
+      "path": "oss/tests/vector-store.unit.test.ts",
+      "sha256": "034aa09b70d1efa1284a1b32bd14e9f1e0c9d1b40de2a42bc50bb6ab21634406"
+    },
+    {
+      "path": "oss/tests/vector-stores-compat.test.ts",
+      "sha256": "5301fda9ee6484b2bc4a10b5ba8093beda0f85a8e39ee3bb2c75eed267ff42bc"
+    },
+    {
+      "path": "oss/tests/vertex-ai-vector-search.test.ts",
+      "sha256": "5d9956aebaad23de73bfcbbcc49b64959062e6f1b8eac24d41573897e27ddf11"
+    },
+    {
+      "path": "oss/tests/vertexai-embedder.test.ts",
+      "sha256": "db7de3e4beb7de9a929c82b89843aca876a7d354c48a21030f52a009f1bb53ec"
+    },
+    {
+      "path": "oss/tests/vertexai-protobuf.test.ts",
+      "sha256": "4e8a4f9c6d80e109d7421b532c54acf415785c464fec2f734eb3ad2fa1172538"
+    },
+    {
+      "path": "oss/tests/xai.test.ts",
+      "sha256": "b10499f38538d99993f8e17c7021de662390206bde736ec50168541e22324dc3"
+    },
+    {
+      "path": "oss/tsconfig.json",
+      "sha256": "e630894783173fa5fc342e081dad7d28baf71b251c1372d9c14948f90617cded"
+    }
+  ]
+}

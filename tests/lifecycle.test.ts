@@ -56,3 +56,22 @@ test('fabricated source falls back to grounded extraction; unknown operation ID 
  const p=await x.prepare(req,s.snapshot('s'),AbortSignal.timeout(1000));assert.ok(p.degraded.includes('extraction_offline'));assert.ok(p.facts.every(f=>!f.content.includes('swimming')));assert.ok(p.facts.some(f=>f.content.includes('hiking')));
  const bad=new Extractor({...c,mode:'enhanced'},{json:async()=>({facts:[],operations:[{type:'forget',target_ids:['other-tenant-id'],subject:'user',predicate:'hobby',source:{index:0,quote:'I like hiking.'}}]})} as any);await assert.rejects(()=>bad.prepare(req,s.snapshot('s'),AbortSignal.timeout(1000)),/Unknown memory operation target/);assert.equal(s.revision(),0);
 }));
+
+test('bounded entity expansion retrieves the second hop without inventing a conclusion',()=>fixture(async({prepare,commit,s,c}:any)=>{
+ const a=await prepare('Alice: My friend is Bob.');a.p.facts[0].entities=['Alice','Bob'];commit(a);
+ const b=await prepare('Bob: I like kayaking.');b.p.facts[0].entities=['Bob'];commit(b);
+ const rows=retrieve(s,{query:"What hobby does Alice's friend enjoy?",user_id:'u',top_k:100},null,c).data;
+ assert.ok(rows.some((x:any)=>x.content.includes('friend is Bob')));assert.ok(rows.some((x:any)=>x.content.includes('kayaking')));assert.ok(rows.every((x:any)=>!x.content.includes('Alice likes kayaking')));
+}));
+
+test('querying with another embedding space uses lexical fallback rather than mixing vectors',()=>fixture(async({prepare,commit,s,c}:any)=>{
+ const a=await prepare('I like kayaking.');a.p.facts[0].vector=[1,0];a.p.embeddingSpace='old:2';commit(a);
+ assert.equal(retrieve(s,{query:'unrelated-nonce',user_id:'u',top_k:10},[1,0],{...c,embeddingSpace:'new:2'}).data.length,0);
+ assert.ok(retrieve(s,{query:'unrelated-nonce',user_id:'u',top_k:10},[1,0],{...c,embeddingSpace:'old:2'}).data.length>0);
+}));
+
+test('a valid but unrelated target ID cannot authorize deletion',()=>fixture(async({s,c,add}:any)=>{
+ await add('I like coffee.');const f=s.facts()[0];const req={request_id:'bad',user_id:'u',session_id:'s',messages:[{role:'user',content:'That gym schedule is wrong. Do not store that.',timestamp:'2026-01-02T00:00:00Z'}]};
+ const x=new Extractor({...c,mode:'enhanced'},{json:async()=>({facts:[],operations:[{type:'forget',target_ids:[f.id],subject:f.subject,predicate:f.predicate,source:{index:0,quote:req.messages[0].content}}]})} as any);
+ const p=await x.prepare(req,s.snapshot('s'),AbortSignal.timeout(1000));assert.equal(p.operations.length,0);assert.ok(p.degraded.includes('extraction_offline'));assert.equal(s.facts()[0].state,'active');
+}));

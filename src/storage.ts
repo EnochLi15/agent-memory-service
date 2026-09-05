@@ -64,7 +64,7 @@ export class TenantStore {
       const inserted=prepared.messages.map(m=>({...m,ordinal:m.ordinal+offset}));
       for(const m of inserted)this.db.prepare('INSERT INTO messages VALUES (?,?,?,?)').run(m.id,m.session_id,m.ordinal,JSON.stringify(m));
       this.db.prepare('INSERT INTO sessions(id,anchor) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET anchor=excluded.anchor').run(req.session_id,prepared.anchor);
-      let all=this.facts(); const suppressedSources=new Set<string>(); const redactedSources=new Set<string>(); const erasedIds=new Set<string>();
+      let all=this.facts(); const suppressedSources=new Set<string>(); const redactedSources=new Set<string>(); const erasedIds=new Set<string>(all.filter(f=>f.state==='erased').map(f=>f.id));
       for(const operation of prepared.operations){
         const source=prepared.messages[operation.source.index]; if(!source)throw new ServiceError('SOURCE','Missing operation source');
         suppressedSources.add(source.id);

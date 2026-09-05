@@ -9,7 +9,8 @@ export function cosine(a:number[],b:number[]):number {if(a.length!==b.length)ret
 export function retrieve(store:TenantStore,req:SearchRequest,vector:number[]|null,config:Config):SearchResponse {
   const top=Math.min(100,Math.floor(req.top_k),config.maxEvidence);if(!top)return {data:[]};
   const qi=intent(req.query);const facts=store.facts().filter(f=>allowed(f,qi));const byId=new Map(facts.map(f=>[f.id,f]));
-  const semantic=vector ? facts.filter(f=>f.vector).map(f=>({id:f.id,score:cosine(vector,f.vector!)})).filter(x=>x.score>.15).sort((a,b)=>b.score-a.score).slice(0,150):[];
+  const compatibleVector=vector&&store.meta('embedding_space')===config.embeddingSpace?vector:null;
+  const semantic=compatibleVector ? facts.filter(f=>f.vector).map(f=>({id:f.id,score:cosine(compatibleVector,f.vector!)})).filter(x=>x.score>.15).sort((a,b)=>b.score-a.score).slice(0,150):[];
   const lexical=store.lexical(req.query,180).filter(x=>byId.has(x.id));
   const expanded=new Map(lexical.map(x=>[x.id,x]));
   for(const option of req.options??[]){if(typeof option!=='string')continue;for(const hit of store.lexical(`${req.query} ${option}`,40)){if(byId.has(hit.id)&&!expanded.has(hit.id))expanded.set(hit.id,{...hit,score:hit.score*.5});}}
@@ -30,8 +31,19 @@ export function retrieve(store:TenantStore,req:SearchRequest,vector:number[]|nul
   // Bounded two-hop entity expansion, always from eligible facts and backed by sources.
   if(config.retrieval==='hybrid'){
     const seeds=[...candidates.values()].sort((a,b)=>b.score-a.score).slice(0,6);
-    const names=new Set(seeds.flatMap(c=>c.fact.entities).filter(n=>n.length>3));
-    let count=0;for(const f of facts){if(count>=40)break;if(!candidates.has(f.id)&&f.entities.some(e=>names.has(e))&&overlap(req.query,f.content)>.08){add(f.id,.007,'relation');count++;}}
+    let frontier=new Set([...qi.entities,...seeds.flatMap(c=>c.fact.entities)]);const visited=new Set<string>();let count=0;
+    for(let depth=0;depth<2&&frontier.size;depth++){
+      const next=new Set<string>();const perEntity=new Map<string,number>();
+      for(const f of facts){
+        if(count>=40)break;
+        const shared=f.entities.filter(e=>frontier.has(e)&&!visited.has(e));
+        if(!shared.length||shared.every(e=>(perEntity.get(e)??0)>=8))continue;
+        if(!candidates.has(f.id)){add(f.id,.012/(depth+1),'relation-'+(depth+1));count++;}
+        for(const e of shared)perEntity.set(e,(perEntity.get(e)??0)+1);
+        for(const e of f.entities)if(!visited.has(e))next.add(e);
+      }
+      for(const e of frontier)visited.add(e);frontier=next;
+    }
   }
   if(config.rawFallback){
     for(const m of store.raw()){
