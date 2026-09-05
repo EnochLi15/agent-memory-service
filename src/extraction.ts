@@ -25,31 +25,32 @@ export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction 
     const named = clean.match(/^([\p{L}][\p{L} .'-]{0,40}):\s*/u);
     const subject = named?.[1]?.trim() ?? (message.role === 'user' ? 'user' : message.role);
     const body = named ? clean.slice(named[0].length) : clean;
-    if (message.role === 'user' && /remember.*again|store.*again|重新.*记|再次.*记/i.test(body)) {
-      const candidates = snapshot.facts.filter(f => f.state === 'erased' && overlap(body, f.predicate) > 0);
-      const keys = new Set(candidates.map(f => `${f.subject}|${f.predicate}|${f.scope}`));
-      if (keys.size !== 1) throw new ServiceError('RESTORE', 'Offline restore needs an unambiguous property and a new value');
-      const f = candidates[0]!;
-      const value = body.match(/(?:is|是)\s*([^.!。！]+?)(?:\s+again)?[.!。！]*$/i)?.[1]?.trim();
-      if (!value) throw new ServiceError('RESTORE', 'Explicit value required');
-      result.operations.push({type:'restore',target_ids:[],subject:f.subject,predicate:f.predicate,scope:f.scope,value,boundary:'value',source:{index,quote:clean},reason:'Explicit new authorization'});
-      result.facts.push({content:`${subject}: ${body}`,subject:f.subject,predicate:f.predicate,value,scope:f.scope,kind:'fact',modality:'confirmed',cardinality:f.cardinality,time_text:'',valid_from:null,valid_to:null,sources:[{index,quote:clean}],supersedes:[],depends_on:[]});
-      continue;
-    }
-    if (realControl(body) && message.role === 'user') {
-      const relevant = snapshot.facts.filter(f => f.state !== 'erased' && overlap(body, `${f.subject} ${f.predicate} ${f.value} ${f.content}`) > .12);
-      const valueExact = relevant.filter(f => f.value && canonical(body).includes(canonical(f.value)));
-      const target = valueExact.length ? valueExact : relevant;
-      const propertyWords = body.match(/(?:my|我的)\s*([\p{L}\s]{1,35})/u)?.[1] ?? '';
-      const propertyMatches=target.filter(f=>/code|pin|密码|编号/i.test(body)?/code|pin|密码|编号/i.test(f.predicate):false);
-      const typed=propertyMatches.length?propertyMatches:target.filter(f=>f.modality!=='inferred');
-      if (!typed.length || (new Set(typed.map(f => `${f.subject}|${f.predicate}`)).size > 1 && !valueExact.length)) throw new ServiceError('AMBIGUOUS_OPERATION', 'Offline mode cannot safely bind this memory operation');
-      const first = typed[0]!;
-      result.operations.push({ type: /current colleague|current contact|当前同事|当前联系人/i.test(body) ? 'retract' : 'forget', target_ids: typed.map(f => f.id), subject: first.subject, predicate: first.predicate, scope: first.scope, value: valueExact[0]?.value ?? '', boundary: valueExact.length ? 'value' : 'property', source: { index, quote: clean }, reason: propertyWords });
-      continue;
-    }
-    if (message.role !== 'user' && !named) continue;
     for (const quote of body.split(/(?<=[.!?。！？;；])\s*/u).map(s => s.trim()).filter(Boolean)) {
+      if (message.role === 'user' && /remember.*again|store.*again|重新.*记|再次.*记/i.test(quote)) {
+        const candidates = snapshot.facts.filter(f => f.state === 'erased' && overlap(quote, f.predicate) > 0);
+        const keys = new Set(candidates.map(f => `${f.subject}|${f.predicate}|${f.scope}`));
+        if (keys.size !== 1) throw new ServiceError('RESTORE', 'Offline restore needs an unambiguous property and a new value');
+        const f = candidates[0]!;
+        const value = quote.match(/(?:is|是)\s*([^.!。！]+?)(?:\s+again)?[.!。！]*$/i)?.[1]?.trim();
+        if (!value) throw new ServiceError('RESTORE', 'Explicit value required');
+        result.operations.push({type:'restore',target_ids:[],subject:f.subject,predicate:f.predicate,scope:f.scope,value,boundary:'value',source:{index,quote},reason:'Explicit new authorization'});
+        result.facts.push({content:`${subject}: ${quote}`,subject:f.subject,predicate:f.predicate,value,scope:f.scope,kind:'fact',modality:'confirmed',cardinality:f.cardinality,time_text:'',valid_from:null,valid_to:null,sources:[{index,quote}],supersedes:[],depends_on:[]});
+        continue;
+      }
+      if (realControl(quote) && message.role === 'user') {
+        const available=[...snapshot.facts,...result.facts.map(f=>({...f,id:'',state:'active' as const}))];
+        const relevant = available.filter(f => f.state !== 'erased' && overlap(quote, `${f.subject} ${f.predicate} ${f.value} ${f.content}`) > .12);
+        const valueExact = relevant.filter(f => f.value && canonical(quote).includes(canonical(f.value)));
+        const target = valueExact.length ? valueExact : relevant;
+        const propertyWords = quote.match(/(?:my|我的)\s*([\p{L}\s]{1,35})/u)?.[1] ?? '';
+        const propertyMatches=target.filter(f=>/code|pin|密码|编号/i.test(quote)?/code|pin|密码|编号/i.test(f.predicate):false);
+        const typed=propertyMatches.length?propertyMatches:target.filter(f=>f.modality!=='inferred');
+        if (!typed.length || (new Set(typed.map(f => `${f.subject}|${f.predicate}`)).size > 1 && !valueExact.length)) throw new ServiceError('AMBIGUOUS_OPERATION', 'Offline mode cannot safely bind this memory operation');
+        const first = typed[0]!;
+        result.operations.push({ type: /current colleague|current contact|当前同事|当前联系人/i.test(quote) ? 'retract' : 'forget', target_ids: typed.map(f => f.id).filter(Boolean), subject: first.subject, predicate: first.predicate, scope: first.scope, value: valueExact[0]?.value ?? '', boundary: valueExact.length ? 'value' : 'property', source: { index, quote }, reason: propertyWords });
+        continue;
+      }
+      if (message.role !== 'user' && !named) continue;
       if (/^(hi|hello|thanks|thank you|ok|okay|你好|谢谢)[.!。！\s]*$/i.test(quote)) continue;
       let predicate = 'experience', value = quote, cardinality: 'single'|'multiple' = 'multiple';
       const patterns: [RegExp,string][] = [

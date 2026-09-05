@@ -63,6 +63,17 @@ test('forget it and do not forget are not destructive',async()=>fixture(async ap
   await add(app,'a',[msg('My access code is ZX-482.')]);await add(app,'b',[msg('Forget it. Do not forget my access code.')]);
   assert.match((await search(app,'access code')).map(x=>x.content).join('\n'),/ZX-482/);
 }));
+test('one message can update a retained fact and forget a different property',async()=>fixture(async app=>{
+ await add(app,'a',[msg('I live in Seattle. My access code is ZX-482. My manager is Clara.')]);
+ await add(app,'b',[msg('I now live in Portland. Forget my access code.','2026-02-01T00:00:00Z')]);
+ const city=(await search(app,'current city')).map(x=>x.content).join('\n');assert.match(city,/Portland/);assert.doesNotMatch(city,/Seattle|ZX-482/);
+ assert.match((await search(app,'manager')).map(x=>x.content).join('\n'),/Clara/);
+}));
+test('a fact introduced and forgotten within one add never becomes searchable',async()=>fixture(async app=>{
+ await add(app,'batch',[msg('My access code is QZ-816. My manager is Clara.'),msg('Forget my access code.','2026-01-01T00:00:01Z')]);
+ for(const query of ['access code QZ-816','previous access code'])assert.ok((await search(app,query)).every(x=>!x.content.includes('QZ-816')));
+ assert.match((await search(app,'manager')).map(x=>x.content).join('\n'),/Clara/);
+}));
 test('descriptions of human forgetfulness are evidence, not memory deletion commands',async()=>fixture(async app=>{
   await add(app,'a',[msg('My access code is ZX-482. My manager is Alice.')]);
   await add(app,'b',[msg("I'm on sertraline 50mg daily. I sometimes forget a dose but most days I remember. Just want that on record."),msg('I forget my access code sometimes.'),msg('我有时忘记吃药。请记住这个情况。')]);

@@ -9,7 +9,12 @@ export function cosine(a:number[],b:number[]):number {if(a.length!==b.length)ret
 export function retrieve(store:TenantStore,req:SearchRequest,vector:number[]|null,config:Config):SearchResponse {
   const top=Math.min(100,Math.floor(req.top_k),config.maxEvidence);if(!top)return {data:[]};
   const qi=intent(req.query);if(config.experimental?.temporal===false){qi.historical=false;qi.trajectory=false;qi.asOf=null;}
-  const allFacts=store.facts();const facts=allFacts.filter(f=>allowed(f,qi)&&(config.experimental?.reflection!==false||(f.kind!=='reflection'&&f.modality!=='inferred')));const byId=new Map(facts.map(f=>[f.id,f]));
+  const allFacts=store.facts();let eligible=allFacts.filter(f=>allowed(f,qi));
+  // Derived evidence cannot remain current after a supporting state expires or
+  // is corrected. Historical queries may still use valid historical support.
+  while(true){const ids=new Set(eligible.map(f=>f.id));const next=eligible.filter(f=>f.depends_on.every(id=>ids.has(id)));if(next.length===eligible.length)break;eligible=next;}
+  const visibleIds=new Set(eligible.map(f=>f.id));
+  const facts=eligible.filter(f=>config.experimental?.reflection!==false||(f.kind!=='reflection'&&f.modality!=='inferred'));const byId=new Map(facts.map(f=>[f.id,f]));
   const compatibleVector=vector&&store.meta('embedding_space')===config.embeddingSpace?vector:null;
   const semantic=compatibleVector ? facts.filter(f=>f.vector).map(f=>({id:f.id,score:cosine(compatibleVector,f.vector!)})).filter(x=>x.score>.15).sort((a,b)=>b.score-a.score).slice(0,150):[];
   const lexical=store.lexical(req.query,180).filter(x=>byId.has(x.id));
@@ -55,6 +60,7 @@ export function retrieve(store:TenantStore,req:SearchRequest,vector:number[]|nul
   }
   if(config.rawFallback){
     for(const m of store.raw()){
+      if(allFacts.some(f=>f.source_ids.includes(m.id)&&!visibleIds.has(f.id)))continue;
       if(m.role!=='user'&&!/^([\p{L}][\p{L} .'-]{0,40}):\s*/u.test(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim()))continue;
       if(!/\b(I|my|we|our)\b|我|^[\p{L} .'-]+:/iu.test(m.content))continue;
       const relevance=overlap(req.query,m.content);if(relevance<.2||m.content.length>2500)continue;
@@ -67,8 +73,8 @@ export function retrieve(store:TenantStore,req:SearchRequest,vector:number[]|nul
   for(const c of ranked){
     const f=c.fact;const key=f.content.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');if(seen.has(key))continue;
     const state=f.predicate==='raw_evidence'?'original source; interpret its speaker, negation and conditional wording':f.state==='conflicted'?'conflicting confirmed claims; do not choose without clarification':f.state==='superseded'?`historical; valid until ${f.valid_to??'later update'}`:f.modality;
-    const originals=f.source_ids.slice(0,2).flatMap(id=>{const m=store.source(id);if(!m||m.redacted||(f.predicate==='memory_operation'&&!qi.historical)||seenSources.has(id)||allFacts.some(x=>x.source_ids.includes(id)&&!allowed(x,qi)))return [];const q=f.source_quotes.find(q=>m.content.includes(q))??'';const position=q?m.content.indexOf(q):0;const start=Math.max(0,position-100);const excerpt=m.content.length<=600?m.content:m.content.slice(0,100)+' … '+m.content.slice(start,start+400);return [`${m.role}: ${excerpt}`];});
-    const invalidValues=allFacts.filter(x=>!allowed(x,qi)&&x.value&&x.source_ids.some(id=>f.source_ids.includes(id))).map(x=>x.value.toLowerCase());
+    const originals=f.source_ids.slice(0,2).flatMap(id=>{const m=store.source(id);if(!m||m.redacted||(f.predicate==='memory_operation'&&!qi.historical)||seenSources.has(id)||allFacts.some(x=>x.source_ids.includes(id)&&!visibleIds.has(x.id)))return [];const q=f.source_quotes.find(q=>m.content.includes(q))??'';const position=q?m.content.indexOf(q):0;const start=Math.max(0,position-100);const excerpt=m.content.length<=600?m.content:m.content.slice(0,100)+' … '+m.content.slice(start,start+400);return [`${m.role}: ${excerpt}`];});
+    const invalidValues=allFacts.filter(x=>!visibleIds.has(x.id)&&x.value&&x.source_ids.some(id=>f.source_ids.includes(id))).map(x=>x.value.toLowerCase());
     const safeQuotes=f.source_quotes.filter(q=>!invalidValues.some(v=>q.toLowerCase().includes(v)));
     const support=f.source_ids.every(id=>seenSources.has(id))?'':originals.length?`\nVerbatim source context (use this to verify actor and negation):\n${originals.join('\n')}`:safeQuotes.length?`\nVerbatim support: ${safeQuotes.slice(0,2).join(' | ')}`:'';
     const external=f.source_ids.flatMap(id=>{const m=store.source(id);const label=m?.content.match(/\[Source id: ([^\]]+)\]/)?.[1];return label?[label]:[];});

@@ -68,7 +68,11 @@ export class TenantStore {
       for(const operation of prepared.operations){
         const source=prepared.messages[operation.source.index]; if(!source)throw new ServiceError('SOURCE','Missing operation source');
         suppressedSources.add(source.id);
-        let target=operation.target_ids.length ? all.filter(f=>operation.target_ids.includes(f.id)) : all.filter(f=>slot(f)===slot(operation) && (!operation.value || canonical(f.value)===canonical(operation.value)));
+        // New facts may be revoked later in the same HTTP chunk. Bind their
+        // validated property/value without inventing externally addressable IDs.
+        const pending=prepared.facts.filter(f=>f.source_ids.some(id=>{const i=prepared.messages.findIndex(m=>m.id===id);return i>=0&&i<=operation.source.index;}));
+        const pool=[...all,...pending];
+        let target=operation.target_ids.length ? all.filter(f=>operation.target_ids.includes(f.id)) : pool.filter(f=>slot(f)===slot(operation) && (!operation.value || canonical(f.value)===canonical(operation.value)));
         const actionFamily=propertyFamily(operation.predicate,target[0]?.content??'');
         // Close duplicate representations of the same scoped value, including harmless
         // predicate wording differences. Do not extend deletion to other people/scopes.
@@ -110,6 +114,7 @@ export class TenantStore {
       const markers=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
       for(const incoming of prepared.facts){
         const f={...incoming,revision};
+        if(f.state==='erased'||f.state==='retracted'||f.state==='superseded'){this.put(f);all.push(f);for(const id of f.source_ids)suppressedSources.add(id);continue;}
         // An exact old-value replay cannot resurrect forgotten material.
         if(markers.some(m=>!(m.allowedValueHashes??[]).includes(valueDigest(f.value)) && ((slot(m)===slot(f) && (m.boundary==='property'||m.valueHash===valueDigest(f.value)))||containsValue(f.content,m)))){for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}continue;}
         if(f.modality==='hypothetical'||f.modality==='quoted')continue;

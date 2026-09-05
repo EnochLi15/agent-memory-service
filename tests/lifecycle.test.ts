@@ -94,3 +94,8 @@ test('a model plan alias becomes a tentative event without a second inference',(
  const p=await x.prepare({request_id:'plan',user_id:'u',session_id:'s',messages:[{role:'user',content:'I plan to move to Paris.',timestamp:'2026-01-01T00:00:00Z'}]},s.snapshot('s'),AbortSignal.timeout(1000));
  assert.equal(calls,1);assert.equal(p.facts[0].kind,'event');assert.equal(p.facts[0].modality,'tentative');
 }));
+test('derived evidence follows the current or historical visibility of its dependencies',()=>fixture(async({prepare,commit,s,find,add}:any)=>{
+ const a=await prepare('I live in Oslo.');commit(a);const parent=s.facts()[0];
+ const b=await prepare('I prefer nearby Oslo parks.');b.p.facts[0].modality='inferred';b.p.facts[0].kind='reflection';b.p.facts[0].depends_on=[parent.id];commit(b);
+ await add('I now live in Bergen.','2026-02-01T00:00:00Z');assert.doesNotMatch(find('current nearby parks'),/Oslo/);assert.match(find('previous nearby parks'),/Oslo/);
+}));
