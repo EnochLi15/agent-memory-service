@@ -7,11 +7,11 @@ const req=(id:string,content:string,date='2026-01-01')=>({user_id:'u',request_id
 const fact=(content:string,value:string,predicate='coffee_preference',more:any={})=>({content,value,subject:'user',predicate,scope:'',modality:'confirmed',cardinality:'single',sources:[{index:0,quote:content}],...more});
 async function fixture(body:any){
  const dir=mkdtempSync(join(tmpdir(),'transitions-')),store=new TenantStore(dir,'u');let calls=0;
- const prepare=async(r:any,facts:any[],relation='compatible',operations:any[]=[])=>new Extractor(config,{verify:async()=>[],embedBatch:async(xs:string[])=>xs.map(()=>[1,0]),json:async(_system:string,input:string,_signal:any,ctx:any)=>{
+ const prepare=async(r:any,facts:any[],relation='compatible',operations:any[]=[],sourceParts?:any)=>new Extractor(config,{verify:async()=>[],embedBatch:async(xs:string[])=>xs.map(()=>[1,0]),json:async(_system:string,input:string,_signal:any,ctx:any)=>{
   const data=JSON.parse(input);
-  if(ctx.purpose==='state_transition'){calls++;return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,relation,old_quote:c.old.source_quotes[0],new_quote:c.incoming.source_quotes[0],reason:'Fixture relationship supported by the cited statements.'}))};}
+  if(ctx.purpose==='state_transition'){calls++;return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,relation,old_source_slot:0,new_source_slot:0,reason:'Fixture relationship supported by the cited statements.'}))};}
   if(ctx.purpose==='erasure_binding')return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,effect:'erase',quote:c.fact.source_quotes[0],reason:'Fixture forget scope.'}))};
-  if(ctx.purpose==='source_erasure')return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,parts:[{text:c.text,effect:'erase'}],reason:'Fixture authorized forgotten property.'}))};
+  if(ctx.purpose==='source_erasure')return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,parts:sourceParts?sourceParts(c):[{text:c.text,effect:'erase'}],reason:'Fixture authorized forgotten property.'}))};
   return {facts,operations};
  }} as any).prepare(r,store.snapshot('s'),AbortSignal.timeout(2000));
  const commit=(r:any,p:any,failAt?:string)=>store.commit(r,hash(JSON.stringify(r)),p,store.revision(),failAt);
@@ -43,10 +43,12 @@ test('exclusive states at the same effective time remain conflicted rather than 
  const b=req('b','I live in Berlin.');commit(b,await prepare(b,[fact(b.messages[0].content,'Berlin','current_city')],'exclusive'));
  assert.ok(store.facts().every((f:any)=>f.state==='conflicted'));
 }));
-test('uncertainty rejects the new write without changing the old state',()=>fixture(async({store,prepare,commit}:any)=>{
+test('uncertain implicit relationship preserves grounded statements with unresolved current state',()=>fixture(async({store,prepare,commit}:any)=>{
  const a=req('a','My coffee is black drip.');commit(a,await prepare(a,[fact(a.messages[0].content,'black drip')]));
- const before=store.snapshot('s'),b=req('b','I like simple coffee.','2026-02-01');
- await assert.rejects(prepare(b,[fact(b.messages[0].content,'simple coffee')],'uncertain'),/uncertain/);assert.deepEqual(store.snapshot('s'),before);
+ const b=req('b','I like simple coffee.','2026-02-01');
+ commit(b,await prepare(b,[fact(b.messages[0].content,'simple coffee')],'uncertain'));
+ assert.equal(store.revision(),2);assert.equal(store.facts().length,2);assert.ok(store.facts().every((f:any)=>f.state==='conflicted'));
+ const evidence=JSON.stringify(retrieve(store,{query:'coffee',user_id:'u',top_k:32},null,config).data);assert.match(evidence,/black drip/);assert.match(evidence,/simple coffee/);assert.match(evidence,/no current value has been selected/);
 }));
 test('a missing or stale transition plan cannot publish facts, sources, events or a receipt',()=>fixture(async({store,prepare,commit}:any)=>{
  const a=req('a','My coffee is black drip.');commit(a,await prepare(a,[fact(a.messages[0].content,'black drip')]));
@@ -65,7 +67,12 @@ test('v5 rejects reuse of an existing v4 directory',()=>fixture(async({store,pre
 test('transition witnesses and exact coverage cannot be forged or truncated',()=>fixture(async({store,prepare,commit}:any)=>{
  const a=req('a','My coffee is black drip.');commit(a,await prepare(a,[fact(a.messages[0].content,'black drip')]));
  const b=req('b','I like simple coffee.','2026-02-01'),p=await prepare(b,[fact(b.messages[0].content,'simple coffee')]),work=transitionWork(b,store.facts(),p.facts,p.operations),d=p.transitionPlan.decisions[0];
- for(const decisions of [[],[d,d],[{...d,index:77}],[{...d,old_quote:'invented evidence'}],[{...d,new_quote:'invented evidence'}]])assert.throws(()=>decodeTransitions({decisions},work),/Incomplete|Invalid/);
+ for(const decisions of [[],[d,d],[{...d,index:77}],[{...d,old_source_slot:77}],[{...d,new_source_slot:77}],[{...d,old_source_slot:-1}],[{...d,new_source_slot:0.5}],[{...d,old_quote:'invented evidence'}],[{...d,new_quote:'invented evidence'}]])assert.throws(()=>decodeTransitions({decisions},work),/Incomplete|Invalid/);
+}));
+test('an uncertain relationship still requires valid original-source witness indexes',()=>fixture(async({store,prepare,commit}:any)=>{
+ const a=req('a','My coffee is black drip.');commit(a,await prepare(a,[fact(a.messages[0].content,'black drip')]));
+ const b=req('b','I like simple coffee.','2026-02-01'),p=await prepare(b,[fact(b.messages[0].content,'simple coffee')]),work=transitionWork(b,store.facts(),p.facts,p.operations);
+ assert.throws(()=>decodeTransitions({decisions:p.transitionPlan.decisions.map((d:any)=>({...d,relation:'uncertain',old_source_slot:999}))},work),/witness index/);
 }));
 test('all implicit pairs are bounded without silently dropping excess comparisons',()=>fixture(async({store,prepare,commit}:any)=>{
  const a=req('a','My coffee is black drip.');commit(a,await prepare(a,[fact(a.messages[0].content,'black drip')]));
@@ -90,4 +97,18 @@ test('forget and explicit restore still erase raw details without resurrecting o
  commit(c,await prepare(c,[fact(c.messages[0].content,'black drip')],'compatible',[{type:'restore',subject:'user',predicate:'coffee_preference',target_ids:[],value:'black drip',boundary:'property',source:{index:0,quote:c.messages[0].content}}]));
  assert.equal(store.facts().filter((f:any)=>f.state==='active'&&f.value==='black drip').length,1);
  assert.ok(store.snapshot('s').erasureSources.filter((m:any)=>m.content.includes('black drip')).every((m:any)=>m.content===c.messages[0].content));
+}));
+test('an unresolved implicit preference cannot cancel an authorized unrelated forget',()=>fixture(async({store,prepare,commit}:any)=>{
+ const a=req('a','My coffee is black drip.');commit(a,await prepare(a,[fact(a.messages[0].content,'black drip')]));
+ const b=req('b','My access code is 8867.','2026-02-01');commit(b,await prepare(b,[fact(b.messages[0].content,'8867','access_code')]));
+ const secret=store.facts().find((f:any)=>f.predicate==='access_code'),c=req('c','I like simple coffee. Forget my access code.','2026-03-01');
+ commit(c,await prepare(c,[fact('I like simple coffee.','simple coffee')],'uncertain',[{type:'forget',subject:'user',predicate:'access_code',target_ids:[secret.id],boundary:'property',source:{index:0,quote:'Forget my access code.'}}],(candidate:any)=>candidate.text===c.messages[0].content?[{text:'I like simple coffee. ',effect:'retain'},{text:'Forget my access code.',effect:'erase'}]:[{text:candidate.text,effect:'erase'}]));
+ assert.equal(store.facts().find((f:any)=>f.id===secret.id).state,'erased');assert.ok(store.facts().filter((f:any)=>f.predicate==='coffee_preference').every((f:any)=>f.state==='conflicted'));assert.doesNotMatch(JSON.stringify(store.snapshot('s').erasureSources),/8867/);
+}));
+test('an explicit correction can resolve an uncertain value even when corroboration merges into a duplicate',()=>fixture(async({store,prepare,commit}:any)=>{
+ const a=req('a','My coffee is black drip.');commit(a,await prepare(a,[fact(a.messages[0].content,'black drip')]));
+ const b=req('b','I like simple coffee.','2026-02-01');commit(b,await prepare(b,[fact(b.messages[0].content,'simple coffee')],'uncertain'));
+ const alternate=store.facts().find((f:any)=>f.value==='simple coffee'),c=req('c','Correction: my coffee is black drip. The simple coffee entry is wrong.','2026-03-01');
+ commit(c,await prepare(c,[fact('my coffee is black drip.','black drip')],'compatible',[{type:'correct',subject:'user',predicate:'coffee_preference',target_ids:[alternate.id],source:{index:0,quote:c.messages[0].content}}]));
+ assert.equal(store.facts().find((f:any)=>f.value==='black drip').state,'active');assert.equal(store.facts().find((f:any)=>f.id===alternate.id).state,'retracted');
 }));

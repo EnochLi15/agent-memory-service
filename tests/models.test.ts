@@ -24,7 +24,28 @@ test('stage routing uses explicit caller purpose and records the actual model wi
   assert.ok(bodies.every(b=>b.reasoning_effort==='low'&&b.max_completion_tokens===10000&&b.stream===true));assert.equal(c.addTimeout,115000);
  }finally{await new Promise<void>(r=>server.close(()=>r()));}
 });
-import {mkdtempSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+import {mkdtempSync,readFileSync,rmSync,statSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+test('private tracing preserves the exact transition response and identity without logging credentials',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'memory-private-trace-')),trace=join(dir,'trace.jsonl'),audit=join(dir,'audit.jsonl');
+ const previous={trace:process.env.MEMORY_MODEL_TRACE,audit:process.env.MEMORY_MODEL_AUDIT};let calls=0;
+ const response={decisions:[{index:0,relation:'compatible',old_source_slot:0,new_source_slot:0,reason:'Independent qualifier.'}]};
+ const server=createServer(async(req,res)=>{calls++;let raw='';for await(const x of req)raw+=x;const b=JSON.parse(raw);assert.equal(b.model,'critic');assert.equal(b.response_format.json_schema.name,'state_transition_v3');res.writeHead(200,{'content-type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{index:0,delta:{content:JSON.stringify(response)},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');});
+ await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));process.env.MEMORY_MODEL_TRACE=trace;process.env.MEMORY_MODEL_AUDIT=audit;
+ try{
+  const c=configFromEnv({MEMORY_LLM_API_KEY:'fixture-credential-never-log',MEMORY_VERIFICATION_MODEL:'critic',MEMORY_VERIFICATION_FORMAT:'compact',MEMORY_VERIFICATION_RESPONSE_FORMAT:'json_schema'});c.llmBase=`http://127.0.0.1:${(server.address() as any).port}`;
+  const model=new Models(c),identity={user_id:'private-tenant',request_id:'private-request'};
+  assert.deepEqual(await model.json('system','input',AbortSignal.timeout(1000),{purpose:'state_transition',trace:identity}),response);
+  const raw=readFileSync(trace,'utf8'),entry=JSON.parse(raw.trim()),usage=JSON.parse(readFileSync(audit,'utf8').trim());
+  assert.deepEqual(entry.output,response);assert.deepEqual(entry.identity,identity);assert.equal(entry.input,'input');assert.equal(entry.system,'system');assert.equal(usage.trace_id,entry.trace_id);assert.equal(statSync(trace).mode&0o777,0o600);
+  assert.ok(!raw.includes(c.llmKey));assert.ok(!readFileSync(audit,'utf8').includes('private-tenant'));
+  process.env.MEMORY_MODEL_TRACE=join(dir,'missing','trace.jsonl');
+  await assert.rejects(model.json('system','input',AbortSignal.timeout(1000),{purpose:'state_transition'}),/trace could not be written/);assert.equal(calls,2,'Trace IO failure must not resample a completed model response');
+ }finally{
+  if(previous.trace===undefined)delete process.env.MEMORY_MODEL_TRACE;else process.env.MEMORY_MODEL_TRACE=previous.trace;
+  if(previous.audit===undefined)delete process.env.MEMORY_MODEL_AUDIT;else process.env.MEMORY_MODEL_AUDIT=previous.audit;
+  await new Promise<void>(r=>server.close(()=>r()));rmSync(dir,{recursive:true,force:true});
+ }
+});
 test('unsupported stage model errors retain the actual route in audit and never switch models',async()=>{
  const bodies:any[]=[],dir=mkdtempSync(join(tmpdir(),'memory-stage-audit-')),path=join(dir,'audit.jsonl'),previous=process.env.MEMORY_MODEL_AUDIT;
  const server=createServer(async(req,res)=>{let raw='';for await(const part of req)raw+=part;bodies.push(JSON.parse(raw));res.writeHead(400,{'content-type':'application/json'});res.end(JSON.stringify({error:{message:'Unsupported fixture model',type:'invalid_request_error'}}));});

@@ -3,6 +3,7 @@
 // strict vector validation, no tool calls or SDK retry hidden outside the request deadline.
 import OpenAI from 'openai';
 import { appendFileSync } from 'node:fs';
+import {createHash,randomUUID} from 'node:crypto';
 import type { Config } from './config.js';
 import { ServiceError } from './types.js';
 import type {AddRequest,Extraction,Fact} from './types.js';
@@ -16,7 +17,7 @@ function audit(record:Record<string,unknown>):void {
   if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
 }
 type GenerationPurpose='extraction'|'verification'|'repair'|'rerank'|'erasure_binding'|'source_erasure'|'state_transition';
-type GenerationContext={purpose?:GenerationPurpose;verification_format?:string;verification_scope?:{facts:number;operations:number;replacements:number;messages:number;reused:number}};
+type GenerationContext={purpose?:GenerationPurpose;verification_format?:string;verification_scope?:{facts:number;operations:number;replacements:number;messages:number;reused:number};trace?:{user_id:string;request_id:string}};
 
 export class Models {
   private client: OpenAI;
@@ -35,7 +36,7 @@ export class Models {
     const input=JSON.stringify(compact?{...data,VERIFICATION_PROTOCOL:COMPACT_VERIFICATION_PROTOCOL,PROPOSAL:{...proposal,facts:proposal.facts.map(f=>({...f,sources:f.sources.map((s,source_slot)=>({...s,source_slot}))}))},REPLACEMENT_TARGETS:scope.replacements.map((r,check_index)=>({...r,check_index}))}:data);let repair='';
     for(let attempt=0;attempt<2;attempt++){
       let raw:unknown;
-      try{raw=await this.json(prompt,input+repair,signal,{purpose:'verification',verification_format:compact?COMPACT_VERIFICATION_PROTOCOL:'verbose',verification_scope:counts});}
+      try{raw=await this.json(prompt,input+repair,signal,{purpose:'verification',verification_format:compact?COMPACT_VERIFICATION_PROTOCOL:'verbose',verification_scope:counts,trace:{user_id:req.user_id,request_id:req.request_id}});}
       catch{throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not complete evidence verification within the request budget');}
       try{const decoded=compact?decodeCompactVerification(raw,proposal,scope):undefined;return session.evaluate(plan,decoded?.canonical??raw,decoded?.protocolErrors);}
       catch(error){
@@ -55,21 +56,29 @@ export class Models {
     // Streaming prevents idle gateway disconnects during long structured generations.
     // Nothing is published until the entire JSON object is validated and committed.
     const purpose=context?.purpose??(system.startsWith('Rank evidence')?'rerank':system.startsWith('Validate memory evidence')?'verification':system.includes('PATCH_SCHEMA')?'repair':'extraction');
+    const {trace:identity,...auditContext}=context??{};
+    const traceFile=process.env.MEMORY_MODEL_TRACE,traceId=traceFile?randomUUID():undefined;
+    const saveTrace=(record:Record<string,unknown>):void=>{
+      if(!traceFile)return;
+      try{appendFileSync(traceFile,JSON.stringify({protocol:'private-model-trace-v1',at:new Date().toISOString(),trace_id:traceId,identity,purpose,model:this.stageModel(purpose),system,input:user,input_sha256:createHash('sha256').update(user).digest('hex'),...record})+'\n',{mode:0o600});}
+      catch{throw new ServiceError('EVIDENCE_VALIDATION','Requested private model trace could not be written');}
+    };
     const model=this.stageModel(purpose),structured=['verification','erasure_binding','source_erasure','state_transition'].includes(purpose)&&this.config.verificationResponseFormat==='json_schema';
     const formatAudit=['verification','erasure_binding','source_erasure','state_transition'].includes(purpose)?{verification_response_format:structured?'json_schema':'json_object'}:{};let last:unknown;
     for(let attempt=0;attempt<2;attempt++){
-      const started=performance.now();let usage:unknown=null;
+      const started=performance.now();let usage:unknown=null,content='';
       try{
         const stream=await this.client.chat.completions.create({
           model,...(this.config.llmReasoningEffort?{reasoning_effort:this.config.llmReasoningEffort}:{}),messages:[{role:'system',content:system},{role:'user',content:user}],
           response_format:structured?(purpose==='state_transition'?TRANSITION_RESPONSE_FORMAT:purpose==='source_erasure'?SOURCE_ERASURE_RESPONSE_FORMAT:purpose==='erasure_binding'?ERASURE_RESPONSE_FORMAT:COMPACT_VERIFICATION_RESPONSE_FORMAT):{type:'json_object'},max_completion_tokens:10000,stream:true,stream_options:{include_usage:true},
         },{signal});
-        let content='',finish:string|null=null;
+        let finish:string|null=null;
         for await(const chunk of stream){content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
         if(!content||finish!=='stop')throw new ServiceError('MODEL_OUTPUT','Incomplete model output');
         const parsed=JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
-        audit({kind:'generation',...context,...formatAudit,purpose,model,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage,output_chars:content.length});return parsed;
-      }catch(error){audit({kind:'generation',...context,...formatAudit,purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,error_type:error instanceof Error?error.name:'unknown'});last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
+        saveTrace({attempt,outcome:'ok',output:parsed});
+        audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage,output_chars:content.length});return parsed;
+      }catch(error){saveTrace({attempt,outcome:'error',output_text:content,error_type:error instanceof Error?error.name:'unknown'});audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,error_type:error instanceof Error?error.name:'unknown'});last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
     }
     throw last;
   }

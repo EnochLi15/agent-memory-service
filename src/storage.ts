@@ -187,6 +187,9 @@ export class TenantStore {
         const same=all.filter(old=>(old.state==='active'||old.state==='conflicted')&&slot(old)===slot(f));
         const duplicate=same.find(old=>canonical(old.value)===canonical(f.value)&&old.modality===f.modality&&f.kind!=='event');
         if(duplicate){
+          // A fresh corroboration can resolve a previously conflicted value once
+          // verified operations have removed every differing current alternative.
+          if(semanticTransitions&&duplicate.state==='conflicted'&&f.modality==='confirmed'&&f.cardinality==='single'&&same.every(old=>canonical(old.value)===canonical(f.value)))duplicate.state='active';
           mergedIds.set(f.id,duplicate.id);
           duplicate.source_spans=[...(duplicate.source_spans??[]),...(f.source_spans??[])];
           duplicate.source_ids=[...new Set([...duplicate.source_ids,...f.source_ids])];duplicate.source_quotes=[...new Set([...duplicate.source_quotes,...f.source_quotes])];duplicate.revision=revision;
@@ -200,6 +203,7 @@ export class TenantStore {
               const relation=transitions.get(transitionKey(f.id,old.id));
               if(!relation)throw new ServiceError('EVIDENCE_VALIDATION','Unverified implicit state transition');
               if(relation==='compatible')continue;
+              if(relation==='uncertain'){old.state='conflicted';f.state='conflicted';old.revision=revision;this.put(old);continue;}
             }
             const oldDate=old.valid_from??old.observed_at;
             const bounds=(fact:Fact):[number,number]=>{const start=Date.parse(fact.event_time?.start??fact.valid_from??fact.observed_at);return [start,fact.event_time?.end_exclusive?Date.parse(fact.event_time.end_exclusive):start+1];};

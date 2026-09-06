@@ -18,7 +18,7 @@ async function fixture(fn:any){const dir=mkdtempSync(join(tmpdir(),'memory-life-
  try{await fn({s,c,x,prepare,commit,add,find});}finally{s.close();rmSync(dir,{recursive:true,force:true});}
 }
 test('same-time conflict stays explicit; later state resolves it; as-of honors day boundary',()=>fixture(async({add,find}:any)=>{
- await add('I live in Seattle.');await add('I live in Boston.');const conflict=find('current city');assert.match(conflict,/Seattle/);assert.match(conflict,/Boston/);assert.match(conflict,/conflicting confirmed claims/);
+ await add('I live in Seattle.');await add('I live in Boston.');const conflict=find('current city');assert.match(conflict,/Seattle/);assert.match(conflict,/Boston/);assert.match(conflict,/no current value has been selected/);
  await add('I live in Portland.','2026-02-01T00:00:00Z');assert.doesNotMatch(find('current city'),/Seattle|Boston/);assert.match(find('city as of 2026-01-01'),/Seattle/);assert.doesNotMatch(find('city as of 2026-01-01'),/Portland/);
 }));
 test('new raw replay and differently named fact cannot recover erased value',()=>fixture(async({add,prepare,commit,find,s}:any)=>{

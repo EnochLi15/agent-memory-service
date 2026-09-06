@@ -157,6 +157,7 @@ export class Extractor {
   constructor(private config: Config, private models: Models) {}
   async prepare(req: AddRequest, snapshot: Snapshot, signal: AbortSignal): Promise<Prepared> {
     addSchema.parse(req);
+    const traceIdentity={user_id:req.user_id,request_id:req.request_id};
     if(this.config.sourceErasure&&!this.config.experimental?.rawOnly&&snapshot.revision>0&&!snapshot.erasureSources)throw new ServiceError('SOURCE_FORMAT','Source erasure requires a fresh v4 directory');
     const degraded: string[] = [];const partialSources=new Set<number>();
     const modelSignal=AbortSignal.any([signal,AbortSignal.timeout(Math.min(95000,Math.max(500,this.config.addTimeout-25000)))]);
@@ -195,7 +196,7 @@ export class Extractor {
           repairScope=undefined;
           const repairSystem=issue?(patchMode?PATCH_PROMPT:'\nRepair the malformed proposal; return the complete extraction schema.'):'';
           const repairInput=issue?JSON.stringify({...JSON.parse(user),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:failedProposal,...(patchMode?{REPAIR_SCOPE:scope,REPLACEMENT_TARGET_GROUPS:replacementTargetGroups(prior.data!,relevant),FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
-          const output=await this.models.json(patchMode?PATCH_PROMPT:EXTRACTION_PROMPT+repairSystem,repairInput,modelSignal,{purpose:issue?'repair':'extraction'});
+          const output=await this.models.json(patchMode?PATCH_PROMPT:EXTRACTION_PROMPT+repairSystem,repairInput,modelSignal,{purpose:issue?'repair':'extraction',trace:traceIdentity});
           let raw:unknown=output;
           if(patchMode){
             try{raw=applyRepair(prior.data!,output,scope);}
@@ -309,7 +310,7 @@ export class Extractor {
       if(work.candidates.length){
         if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Erasure scope requires semantic binding; offline recovery cannot certify independence');
         let raw:unknown;
-        try{raw=await this.models.json(ERASURE_PROMPT,JSON.stringify({NEW_MESSAGES:req.messages,CONTEXT_ONLY:snapshot.tail,CANDIDATES:work.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'erasure_binding'});}
+        try{raw=await this.models.json(ERASURE_PROMPT,JSON.stringify({NEW_MESSAGES:req.messages,CONTEXT_ONLY:snapshot.tail,CANDIDATES:work.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'erasure_binding',trace:traceIdentity});}
         catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not bind erasure scope within the shared model budget');}
         erasurePlan=decodeErasure(raw,work);
       }else erasurePlan={fingerprint:work.fingerprint,decisions:work.automatic};
@@ -319,7 +320,7 @@ export class Extractor {
       const work=sourceErasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[],snapshot.erasureSources??[],messages);
       if(work.candidates.length){
         if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Source erasure requires semantic verification');
-        let raw:unknown;try{raw=await this.models.json(SOURCE_ERASURE_PROMPT,JSON.stringify({CANDIDATES:work.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'source_erasure'});}
+        let raw:unknown;try{raw=await this.models.json(SOURCE_ERASURE_PROMPT,JSON.stringify({CANDIDATES:work.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'source_erasure',trace:traceIdentity});}
         catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Source erasure unavailable within shared model budget');}
         sourceErasurePlan=decodeSourceErasure(raw,work);
       }else sourceErasurePlan={fingerprint:work.fingerprint,decisions:[]};
@@ -329,7 +330,7 @@ export class Extractor {
       const work=transitionWork(req,snapshot.facts,facts,parsed.operations);
       if(work.candidates.length){
         if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Implicit transitions require semantic verification');
-        let raw:unknown;try{raw=await this.models.json(TRANSITION_PROMPT,JSON.stringify({NEW_MESSAGES:req.messages,CANDIDATES:work.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'state_transition'});}
+        let raw:unknown;try{raw=await this.models.json(TRANSITION_PROMPT,JSON.stringify({NEW_MESSAGES:req.messages,CANDIDATES:work.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'state_transition',trace:traceIdentity});}
         catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Implicit transition verification unavailable within shared model budget');}
         transitionPlan=decodeTransitions(raw,work);
       }else transitionPlan={fingerprint:work.fingerprint,decisions:[]};

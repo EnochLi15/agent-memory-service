@@ -116,7 +116,7 @@ export function packEvidence(store:TenantStore,req:SearchRequest,config:Config,f
     }
     const c=ranked.splice(index,1)[0]!;
     const f=c.fact;const key=evidenceKey(f);if(seen.has(key)){discarded.push({id:f.id,reason:'duplicate'});continue;}
-    const state=f.predicate==='raw_evidence'?'original source; interpret its speaker, negation and conditional wording':f.state==='conflicted'?'conflicting confirmed claims; do not choose without clarification':f.state==='superseded'?`historical; valid until ${f.valid_to??'later update'}`:f.modality;
+    const state=f.predicate==='raw_evidence'?'original source; interpret its speaker, negation and conditional wording':f.state==='conflicted'?'unresolved relationship or timing between supported statements; no current value has been selected':f.state==='superseded'?`historical; valid until ${f.valid_to??'later update'}`:f.modality;
     const originals=f.source_ids.slice(0,2).flatMap(id=>{const m=store.source(id);if(f.id.startsWith('source-')||f.id.startsWith('event-')||!m||m.redacted||(f.predicate==='memory_operation'&&!qi.historical)||seenSources.has(id)||allFacts.some(x=>x.source_ids.includes(id)&&!visibleIds.has(x.id)))return [];const q=f.source_quotes.find(q=>m.content.includes(q))??'';const position=q?m.content.indexOf(q):0;const start=Math.max(0,position-100);const excerpt=m.content.length<=600?m.content:m.content.slice(0,100)+' … '+m.content.slice(start,start+400);return [`${m.role}: ${excerpt}`];});
     const invalidValues=allFacts.filter(x=>!visibleIds.has(x.id)&&x.value&&x.source_ids.some(id=>f.source_ids.includes(id))).map(x=>x.value.toLowerCase());
     const safeQuotes=f.source_quotes.filter(q=>!invalidValues.some(v=>q.toLowerCase().includes(v)));
