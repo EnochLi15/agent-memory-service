@@ -16,6 +16,7 @@ COPY package.json ./
 COPY contracts ./contracts
 COPY upstream ./upstream
 COPY README.md UPSTREAM.md ./
+COPY docs ./docs
 RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME ["/data"]
