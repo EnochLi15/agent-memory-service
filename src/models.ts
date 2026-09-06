@@ -8,7 +8,7 @@ import { ServiceError } from './types.js';
 import type {AddRequest,Extraction,Fact} from './types.js';
 import {VERIFICATION_PROMPT,verificationInput,VerificationProtocolError} from './verification.js';
 import {VerificationSession} from './verification-session.js';
-import {COMPACT_VERIFICATION_PROMPT,COMPACT_VERIFICATION_PROTOCOL,decodeCompactVerification} from './verification-compact.js';
+import {COMPACT_VERIFICATION_PROMPT,COMPACT_VERIFICATION_PROTOCOL,COMPACT_VERIFICATION_RESPONSE_FORMAT,decodeCompactVerification} from './verification-compact.js';
 function audit(record:Record<string,unknown>):void {
   if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
 }
@@ -23,7 +23,7 @@ export class Models {
   private stageModel(purpose:GenerationPurpose):string{return purpose==='rerank'?this.config.llmModel:this.config.llmStageModels[purpose]??this.config.llmModel;}
   async verify(proposal:Extraction,req:AddRequest,facts:Fact[],omitted:number[],signal:AbortSignal,session=new VerificationSession()):Promise<string[]>{
     const compact=this.config.verificationFormat==='compact',prompt=compact?COMPACT_VERIFICATION_PROMPT:VERIFICATION_PROMPT;
-    const plan=session.plan(req,proposal,facts,{base:this.config.llmBase,model:this.stageModel('verification'),effort:this.config.llmReasoningEffort,prompt});
+    const plan=session.plan(req,proposal,facts,{base:this.config.llmBase,model:this.stageModel('verification'),effort:this.config.llmReasoningEffort,prompt,responseFormat:this.config.verificationResponseFormat,...(this.config.verificationResponseFormat==='json_schema'?{schema:COMPACT_VERIFICATION_RESPONSE_FORMAT.json_schema}:{})});
     if(plan.blockedFindings.length)return plan.blockedFindings;
     const scope=plan.scope;
     const counts={facts:scope.fact_indices.length,operations:scope.operation_indices.length,replacements:scope.replacements.length,messages:scope.message_indices.length,reused:plan.reused};
@@ -52,20 +52,21 @@ export class Models {
     // Streaming prevents idle gateway disconnects during long structured generations.
     // Nothing is published until the entire JSON object is validated and committed.
     const purpose=context?.purpose??(system.startsWith('Rank evidence')?'rerank':system.startsWith('Validate memory evidence')?'verification':system.includes('PATCH_SCHEMA')?'repair':'extraction');
-    const model=this.stageModel(purpose);let last:unknown;
+    const model=this.stageModel(purpose),structured=purpose==='verification'&&this.config.verificationResponseFormat==='json_schema';
+    const formatAudit=purpose==='verification'?{verification_response_format:structured?'json_schema':'json_object'}:{};let last:unknown;
     for(let attempt=0;attempt<2;attempt++){
       const started=performance.now();let usage:unknown=null;
       try{
         const stream=await this.client.chat.completions.create({
           model,...(this.config.llmReasoningEffort?{reasoning_effort:this.config.llmReasoningEffort}:{}),messages:[{role:'system',content:system},{role:'user',content:user}],
-          response_format:{type:'json_object'},max_completion_tokens:10000,stream:true,stream_options:{include_usage:true},
+          response_format:structured?COMPACT_VERIFICATION_RESPONSE_FORMAT:{type:'json_object'},max_completion_tokens:10000,stream:true,stream_options:{include_usage:true},
         },{signal});
         let content='',finish:string|null=null;
         for await(const chunk of stream){content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
         if(!content||finish!=='stop')throw new ServiceError('MODEL_OUTPUT','Incomplete model output');
         const parsed=JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
-        audit({kind:'generation',...context,purpose,model,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage,output_chars:content.length});return parsed;
-      }catch(error){audit({kind:'generation',...context,purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,error_type:error instanceof Error?error.name:'unknown'});last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
+        audit({kind:'generation',...context,...formatAudit,purpose,model,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage,output_chars:content.length});return parsed;
+      }catch(error){audit({kind:'generation',...context,...formatAudit,purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,error_type:error instanceof Error?error.name:'unknown'});last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
     }
     throw last;
   }

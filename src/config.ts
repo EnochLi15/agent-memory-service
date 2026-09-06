@@ -4,6 +4,7 @@ export interface Config {
   llmStageModels:Partial<Record<'extraction'|'verification'|'repair',string>>;
   maxRepairRounds:1|2;
   verificationFormat:'verbose'|'compact';
+  verificationResponseFormat:'json_object'|'json_schema';
   embeddingBase: string; embeddingModel: string; embeddingDigest: string | null; embeddingDimensions: number; embeddingSpace: string;
   addTimeout: number; searchTimeout: number; maxEvidence: number; tokenBudget: number; retrieval: 'hybrid' | 'lexical' | 'mem0';
   rerank: boolean; rawFallback: boolean;incrementalVerification:boolean;
@@ -21,6 +22,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   if(maxRepairRounds!==1&&maxRepairRounds!==2)throw new Error('Invalid MEMORY_MAX_REPAIR_ROUNDS');
   const verificationFormat=env.MEMORY_VERIFICATION_FORMAT??'verbose';
   if(verificationFormat!=='verbose'&&verificationFormat!=='compact')throw new Error('Invalid MEMORY_VERIFICATION_FORMAT');
+  const verificationResponseFormat=env.MEMORY_VERIFICATION_RESPONSE_FORMAT??'json_object';
+  if(!['json_object','json_schema'].includes(verificationResponseFormat))throw new Error('Invalid MEMORY_VERIFICATION_RESPONSE_FORMAT');
+  if(verificationResponseFormat==='json_schema'&&verificationFormat!=='compact')throw new Error('Strict verification schema requires compact format');
   for(const stage of ['extraction','verification','repair'] as const){
     const key=`MEMORY_${stage.toUpperCase()}_MODEL`,value=env[key];
     if(value!==undefined){if(!value.trim())throw new Error(`Invalid ${key}`);stageModels[stage]=value.trim();}
@@ -33,6 +37,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     llmStageModels:stageModels,
     maxRepairRounds,
     verificationFormat,
+    verificationResponseFormat:verificationResponseFormat as Config['verificationResponseFormat'],
     embeddingBase: (env.MEMORY_EMBEDDING_BASE_URL ?? 'http://127.0.0.1:11434').replace(/\/$/, ''), embeddingModel: model, embeddingDigest: env.MEMORY_EMBEDDING_DIGEST??null,
     embeddingDimensions: dimensions, embeddingSpace: `${model}:${env.MEMORY_EMBEDDING_DIGEST ?? 'configured'}:${dimensions}:${model.startsWith('nomic-embed-text')?'nomic-prefix-v1':'none'}`,
     addTimeout: num('MEMORY_ADD_TIMEOUT_MS', 115000), searchTimeout: num('MEMORY_SEARCH_TIMEOUT_MS', 55000),

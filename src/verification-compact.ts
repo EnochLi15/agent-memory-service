@@ -2,6 +2,11 @@ import type {Extraction} from './types.js';
 import {VERIFICATION_SEMANTICS,type VerificationScope} from './verification.js';
 
 export const COMPACT_VERIFICATION_PROTOCOL='source-reference-tuples-v1';
+// Constrain the transport envelope. Tuple positions, source identity, check
+// uniqueness, coverage and all semantic judgments still use the local decoder.
+const tupleCell={anyOf:[{type:'integer'},{type:'boolean'},{type:'string'},{type:'null'},{type:'array',items:{type:'integer'}}]};
+const checkArrays=['fact_checks','operation_checks','replacement_checks','message_checks'];
+export const COMPACT_VERIFICATION_RESPONSE_FORMAT={type:'json_schema',json_schema:{name:'memory_verification_tuples_v1',strict:true,schema:{type:'object',properties:Object.fromEntries(checkArrays.map(k=>[k,{type:'array',items:{type:'array',items:tupleCell}}])),required:checkArrays,additionalProperties:false}}} as const;
 // Share all semantic requirements with the verbose protocol; change only encoding.
 export const COMPACT_VERIFICATION_PROMPT=VERIFICATION_SEMANTICS+`
 Output protocol: source-reference-tuples-v1. Return exactly four JSON arrays using these tuples, including [] for empty scopes. Every requested item must appear exactly once; do not output checks outside CHECK_SCOPE.
