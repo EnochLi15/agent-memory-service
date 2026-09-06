@@ -63,7 +63,7 @@ test('compact successful checks retain coverage and reference enforcement',()=>{
  const proposal=extractionSchema.parse({facts:[{content:'My browser is Firefox.',subject:'user',predicate:'browser',value:'Firefox',sources:[{index:0,quote:'My browser is Firefox.'}]}],operations:[]});
  const raw={fact_checks:[{index:0,supported:true,modality_supported:true,source_index:0,quote:'My browser is Firefox.'}],operation_checks:[],replacement_checks:[],message_checks:[{index:0,disposition:'represented',fact_indices:[0]}]};
  assert.deepEqual(verificationIssues(raw,req,proposal),[]);
- raw.message_checks[0]!.fact_indices=[];assert.equal(verificationIssues(raw,req,proposal).length,1);
+ raw.message_checks[0]!.fact_indices=[];assert.throws(()=>verificationIssues(raw,req,proposal),/Invalid coverage references/);
  assert.throws(()=>verificationIssues({...raw,message_checks:[{index:0,disposition:'missing'}]},req,proposal),/grounded/);
 });
 

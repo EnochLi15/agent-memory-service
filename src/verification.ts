@@ -30,11 +30,20 @@ export function humanQuote(req:AddRequest,index:number,quote:string):boolean{
  const start=text.indexOf(quote);if(start<0)return false;
  return ![...text.matchAll(/\[(?:Session time|Source id):[^\]]*\]/g)].some(m=>start>=m.index!&&start+quote.length<=m.index!+m[0].length);
 }
+// This is a citation map, not a semantic coverage verdict. A linked fact can
+// still omit details or be unsupported; the checker must judge those separately.
+export function messageSourceLinks(req:AddRequest,proposal:Extraction){
+ return participantIndices(req).map(index=>({index,
+  fact_indices:proposal.facts.flatMap((f,i)=>f.sources.some(s=>s.index===index&&humanQuote(req,index,s.quote))?[i]:[]),
+  operation_indices:proposal.operations.flatMap((o,i)=>o.source.index===index&&humanQuote(req,index,o.source.quote)?[i]:[]),
+ }));
+}
 export function verificationIssues(raw:unknown,req:AddRequest,proposal:Extraction):string[]{
  const out=raw as Record<string,unknown>;if(!out||!Array.isArray(out.fact_checks)||!Array.isArray(out.operation_checks)||!Array.isArray(out.replacement_checks)||!Array.isArray(out.message_checks))throw new VerificationProtocolError('Missing structured verification arrays');
  const issues:string[]=[],facts=new Set<number>(),operations=new Set<number>(),messages=new Set<number>(),replacements=new Set<string>();
  const invalid=(message:string):never=>{throw new VerificationProtocolError(message,[...issues]);};
  const expectedMessages=new Set(participantIndices(req));const expectedReplacements=new Set(proposal.facts.flatMap((f,index)=>f.supersedes.map(id=>`${index}:${id}`)));
+ const sourceLinks=new Map(messageSourceLinks(req,proposal).map(link=>[link.index,link]));
  for(const c of out.fact_checks as any[]){
   if(!c||!Number.isInteger(c.index)||!proposal.facts[c.index]||facts.has(c.index)||typeof c.supported!=='boolean'||typeof c.modality_supported!=='boolean'||!Number.isInteger(c.source_index)||typeof c.quote!=='string'||(c.reason!==undefined&&typeof c.reason!=='string'))invalid('Invalid fact verification');
   facts.add(c.index);const fact=proposal.facts[c.index]!;
@@ -60,7 +69,14 @@ export function verificationIssues(raw:unknown,req:AddRequest,proposal:Extractio
   messages.add(c.index);
   if(c.disposition==='represented'){
    const fs=c.fact_indices as number[],os=c.operation_indices as number[];
-   if(!fs.length&&!os.length||new Set(fs).size!==fs.length||new Set(os).size!==os.length||fs.some(i=>!Number.isInteger(i)||!proposal.facts[i]?.sources.some(s=>s.index===c.index&&humanQuote(req,c.index,s.quote)))||os.some(i=>!Number.isInteger(i)||proposal.operations[i]?.source.index!==c.index||!humanQuote(req,c.index,proposal.operations[i]!.source.quote)))issues.push(`message ${c.index}: proposed coverage lacks valid source-linked proposal references; add or correct evidence for this participant message, or classify it as not_memorable if it truly has no personal information`);
+   const links=sourceLinks.get(c.index)!;
+   if(!fs.length&&!os.length||new Set(fs).size!==fs.length||new Set(os).size!==os.length||fs.some(i=>!Number.isInteger(i)||!links.fact_indices.includes(i))||os.some(i=>!Number.isInteger(i)||!links.operation_indices.includes(i))){
+    // When grounded items exist, wrong checker indexes do not establish that
+    // the proposal is missing information. Repair the verdict, never silently
+    // prune references or negatively cache this as a semantic memory failure.
+    if(links.fact_indices.length||links.operation_indices.length)invalid(`Invalid coverage references for message ${c.index}; use its MESSAGE_SOURCE_LINKS and reassess whether ALL memorable content is covered`);
+    issues.push(`message ${c.index}: proposed coverage lacks valid source-linked proposal references; add or correct evidence for this participant message, or classify it as not_memorable if it truly has no personal information`);
+   }
   }else{
    if(c.fact_indices.length||c.operation_indices.length)invalid('Only represented messages may carry proposal references');
    if(c.disposition==='missing'){
@@ -77,5 +93,5 @@ export function verificationInput(req:AddRequest,proposal:Extraction,facts:Fact[
  const byId=new Map(facts.map(f=>[f.id,f]));
  for(const id of targetIds){const f=byId.get(id);if(f)for(const ref of [...f.supersedes,...f.depends_on])targetIds.add(ref);}
  const required=scope??{fact_indices:proposal.facts.map((_,i)=>i),operation_indices:proposal.operations.map((_,i)=>i),replacements:proposal.facts.flatMap((f,fact_index)=>f.supersedes.map(target_id=>({fact_index,target_id}))),message_indices:participantIndices(req)};
- return {NEW_MESSAGES:req.messages.map((m,index)=>({index,...m})),PARTICIPANT_INDEX:participantIndices(req),CHECK_SCOPE:required,REPLACEMENT_TARGETS:required.replacements,PROPOSAL:proposal,TARGET_FACTS:facts.filter(f=>targetIds.has(f.id)).map(f=>({id:f.id,subject:f.subject,predicate:f.predicate,scope:f.scope,content:f.content,value:f.value,state:f.state,modality:f.modality,depends_on:f.depends_on,supersedes:f.supersedes})),OMISSION_HINTS:unrepresented};
+ return {NEW_MESSAGES:req.messages.map((m,index)=>({index,...m})),PARTICIPANT_INDEX:participantIndices(req),MESSAGE_SOURCE_LINKS:messageSourceLinks(req,proposal),CHECK_SCOPE:required,REPLACEMENT_TARGETS:required.replacements,PROPOSAL:proposal,TARGET_FACTS:facts.filter(f=>targetIds.has(f.id)).map(f=>({id:f.id,subject:f.subject,predicate:f.predicate,scope:f.scope,content:f.content,value:f.value,state:f.state,modality:f.modality,depends_on:f.depends_on,supersedes:f.supersedes})),OMISSION_HINTS:unrepresented};
 }

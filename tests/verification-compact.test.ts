@@ -60,3 +60,18 @@ test('format changes invalidate certificates and terse format cannot impersonate
  model.json=async(_s,input)=>{calls++;assert.deepEqual(JSON.parse(input).CHECK_SCOPE.fact_indices,[0,1]);return decodeCompactVerification(raw(),proposal(),scope()).canonical;};assert.deepEqual(await run(model,proposal(),state),[]);assert.equal(calls,2);
  const compact=m();compact.json=async()=>decodeCompactVerification(raw(),proposal(),scope()).canonical;await assert.rejects(run(compact));
 });
+
+test('an invalid coverage reference is a protocol error when grounded source-linked items exist',async()=>{
+ const model=m();let calls=0;model.json=async(_s,input)=>{calls++;const d=JSON.parse(input.split('\nPROTOCOL_REPAIR:')[0]!);assert.deepEqual(d.MESSAGE_SOURCE_LINKS,[{index:0,fact_indices:[0],operation_indices:[]},{index:1,fact_indices:[1],operation_indices:[0]}]);
+  if(calls===1)return {...raw(),message_checks:[[0,'represented',[0,1],[]],[1,'represented',[1],[0]]]};
+  assert.match(input,/PROTOCOL_REPAIR/);return raw();
+ };assert.deepEqual(await run(model),[]);assert.equal(calls,2);
+});
+test('true missing content survives a sibling coverage-reference protocol failure without resampling',async()=>{
+ const model=m(),state=new VerificationSession();let calls=0;model.json=async()=>{calls++;return {...raw(),message_checks:[[0,'missing',req.messages[0]!.content,'browser setup missing'],[1,'represented',[0,1],[0]]]};};
+ const issues=await run(model,proposal(),state);assert.equal(calls,1);assert.equal(issues.length,1);assert.match(issues[0]!,/^message 0:/);
+ assert.deepEqual(await run(model,proposal(),state),issues);assert.equal(calls,1);
+ const p=proposal();p.facts[0]!.content+=' Restated browser setup.';
+ model.json=async(_s,input)=>{calls++;const d=JSON.parse(input);assert.deepEqual(d.CHECK_SCOPE.fact_indices,[0,1]);assert.deepEqual(d.CHECK_SCOPE.message_indices,[0,1]);return raw();};
+ assert.deepEqual(await run(model,p,state),[]);assert.equal(calls,2);
+});
