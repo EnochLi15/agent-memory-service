@@ -109,3 +109,52 @@ for(const rejectTail of [false,true])test(`large source cleanup is atomic across
  else{const p=await prepare();assert.ok(p.sourceErasurePlan.decisions.length>64);const partial=structuredClone(p);partial.sourceErasurePlan.decisions.pop();assert.throws(()=>f.commit(del,partial),/Incomplete/);assert.deepEqual(f.store.snapshot('s'),before);f.commit(del,p);assert.equal(f.store.revision(),2);assert.doesNotMatch(JSON.stringify(f.store.snapshot('s')),/Pham/);}
  assert.ok(batches>=2);
 }));
+test('verified erased facts are not rejudged, while all their original sources still undergo cleanup',()=>fixture(async(f:any)=>{
+ const r=request('seed-dependent',seedText);
+ f.commit(r,await f.prepare(r,{facts:[fact(seedText),{...fact(seedText),predicate:'appointment_note',scope:'record detail'}],operations:[]}));
+ const target=f.store.facts().find((x:any)=>x.predicate==='appointment'),related=f.store.facts().find((x:any)=>x.predicate==='appointment_note'),del=request('forget-dependent','Forget my dentist appointment.');let sourceCandidates:any[]=[];
+ const p=await f.prepare(del,deletion(target),(d:any)=>{sourceCandidates.push(...d.CANDIDATES);return {decisions:d.CANDIDATES.map((c:any,index:number)=>({index,parts:[{text:c.text,effect:c.kind==='fact'?'uncertain':'erase'}],reason:'Fixture source cleanup.'}))};});
+ assert.ok(p.erasurePlan.decisions.some((d:any)=>d.fact_id===related.id&&d.effect==='erase'));assert.ok(sourceCandidates.length>0);assert.ok(sourceCandidates.every((c:any)=>c.kind==='source'));assert.ok(sourceCandidates.some((c:any)=>c.text===seedText));
+ const forged=structuredClone(p);for(const d of forged.erasurePlan.decisions)if(d.fact_id===related.id)d.effect='retain';assert.throws(()=>f.commit(del,forged),/stale|Missing/);assert.equal(f.store.revision(),1);
+ f.commit(del,p);assert.ok(f.store.facts().every((x:any)=>x.state==='erased'));assert.doesNotMatch(JSON.stringify(f.store.snapshot('s')),/Pham/);
+}));
+test('source scope receives surviving fact meanings while never exempting a retired witness',()=>fixture(async(f:any)=>{
+ const target=await seed(f),r=request('delete-context','Forget my dentist appointment. I prefer SMS.');let seen:any[]=[];
+ const p=await f.prepare(r,{...deletion(target),facts:[{content:'I prefer SMS.',subject:'user',predicate:'contact_preference',value:'SMS',sources:[{index:0,quote:'I prefer SMS.'}]}]},(d:any)=>{seen.push(...d.CANDIDATES);return {decisions:d.CANDIDATES.map((c:any,index:number)=>{
+  const split=c.text.indexOf(' I prefer SMS.');const oldSplit=c.text.indexOf('; I still use Firefox');
+  return {index,parts:split>=0?[{text:c.text.slice(0,split),effect:'erase'},{text:c.text.slice(split),effect:'retain'}]:oldSplit>=0?[{text:c.text.slice(0,oldSplit),effect:'erase'},{text:c.text.slice(oldSplit),effect:'retain'}]:[{text:c.text,effect:'erase'}],reason:'Fixture scope partition.'};
+ })};});
+ const current=seen.find(c=>c.kind==='source'&&c.text===r.messages[0].content);assert.ok(current.context.linked_facts.some((x:any)=>x.predicate==='contact_preference'&&x.source_quotes.includes('I prefer SMS.')));assert.ok(seen.filter(c=>c.kind==='source').every(c=>c.context.linked_facts.every((x:any)=>x.id!==target.id)));assert.ok(seen.some(c=>c.context.linked_erased_facts?.some((x:any)=>x.id===target.id)));
+ f.commit(r,p);assert.ok(f.store.facts().some((x:any)=>x.state==='active'&&x.value==='SMS'));assert.doesNotMatch(JSON.stringify(f.store.snapshot('s').erasureSources),/Pham/);
+}));
+
+for(const repeatDefect of [false,true])test(`source quote repair shares the deadline and permits only one batch repair: repeat=${repeatDefect}`,()=>fixture(async(f:any)=>{
+ const r=request('quote-seed',seedText);
+ for(let i=0;i<70;i++)r.messages.push({role:'assistant',content:`Echo ${i}: appointment with Pham; I still use Firefox.`,timestamp:'2026-01-01T00:00:00Z'});
+ f.commit(r,await f.prepare(r,{facts:[fact(seedText)],operations:[]}));
+ const target=f.store.facts()[0],del=request('quote-delete','Forget my dentist appointment.'),before=f.store.snapshot('s');let batches=0,repairs=0;const signals:AbortSignal[]=[];
+ const model={verify:async()=>[],embedBatch:async(xs:string[])=>xs.map(()=>[1,0]),json:async(_s:string,input:string,signal:AbortSignal,ctx:any)=>{
+  signals.push(signal);const d=JSON.parse(input);
+  if(ctx.purpose==='source_erasure'){
+   batches++;let damaged=false;
+   return {decisions:d.CANDIDATES.map((c:any)=>{
+    const text=d.SOURCES[c.source_slot].text,split=text.indexOf(';');if(split<0)return {index:c.index,effect:'erase',erase_quotes:[],reason:'same_erased_record'};
+    const damage=!damaged&&(batches===1||repeatDefect);if(damage)damaged=true;
+    return {index:c.index,effect:'mixed',erase_quotes:[damage?'appointment Pham':text.slice(0,split)],reason:'mixed_source'};
+   })};
+  }
+  if(ctx.purpose==='source_erasure_repair'){repairs++;return {repairs:d.PROBLEMS.map((p:any)=>({index:p.index,status:'resolved',quote:p.candidate.text.split(';')[0]}))};}
+  if(ctx.purpose==='erasure_binding')return {decisions:d.CANDIDATES.map((c:any,index:number)=>({index,effect:'erase',quote:c.fact.source_quotes[0],reason:'Same appointment.'}))};
+  return deletion(target);
+ }};
+ const prepare=()=>new Extractor(config,model as any).prepare(del,before,AbortSignal.timeout(2000));
+ if(repeatDefect){await assert.rejects(prepare,/repair budget exhausted/);assert.deepEqual(f.store.snapshot('s'),before);}
+ else{const p=await prepare();f.commit(del,p);assert.doesNotMatch(JSON.stringify(f.store.snapshot('s')),/Pham/);assert.match(JSON.stringify(f.store.snapshot('s')),/Firefox/);}
+ assert.equal(repairs,1);assert.ok(batches>=2);assert.ok(signals.every(s=>s===signals[0]),'No stage receives a renewed deadline');
+}));
+
+test('a certified erased fact cannot keep every original witness intact behind a reviewed source',()=>fixture(async(f:any)=>{
+ const target=await seed(f),del=request('contradictory-source','Forget my dentist appointment.'),before=f.store.snapshot('s');
+ const p=await f.prepare(del,deletion(target),(d:any)=>({decisions:d.CANDIDATES.map((c:any,index:number)=>({index,parts:[{text:c.text,effect:'retain'}],reason:'Erroneous independent-source verdict.'}))}));
+ assert.throws(()=>f.commit(del,p),/every original witness intact/);assert.deepEqual(f.store.snapshot('s'),before);assert.equal(f.store.receipt(del.request_id,hash(JSON.stringify(del))),null);
+}));

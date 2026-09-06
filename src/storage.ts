@@ -10,7 +10,7 @@ import {redactPassage} from './passages.js';
 import {eventCategory} from './events.js';
 import {resolveOperationTargets} from './binding.js';
 import {retirementEffectMismatch} from './operation-intent.js';
-import {erasureAnchors,sourceErasureWork,validateSourceErasure,maskSource} from './source-erasure.js';
+import {erasureAnchors,sourceErasureWork,validateSourceErasure,maskSource,assertErasedWitnessProgress} from './source-erasure.js';
 import {valueWords,valueDigest,containsValue,valueOccurrences,boundaryKey,retainedAgainst,erasureWork,validateErasurePlan} from './erasure.js';
 import type {ErasureBoundary} from './types.js';
 import {transitionKey,transitionWork,validateTransitions} from './transitions.js';
@@ -101,11 +101,12 @@ export class TenantStore {
       if(sourceErasure){
         const boundaries=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
         const oldSources=(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage);
-        const work=sourceErasureWork(req,this.facts(),prepared.facts,prepared.operations,boundaries,oldSources,prepared.messages);
+        const work=sourceErasureWork(req,this.facts(),prepared.facts,prepared.operations,boundaries,oldSources,prepared.messages,[...forcedErased]);
         const validated=validateSourceErasure(prepared.sourceErasurePlan,work);sourceCuts=validated.cuts;
         for(const id of validated.erasedFacts)forcedErased.add(id);
         for(const c of work.candidates)if(c.kind==='source')reviewedSources.add(c.id);
       }
+      const sourceWitnesses=sourceErasure?[...this.facts(),...prepared.facts].map(f=>({id:f.id,source_ids:[...f.source_ids],source_quotes:[...f.source_quotes]})):[];
       const revision=expectedRevision+1;
       if(prepared.sourceFormat){
         const format=this.meta('source_format');
@@ -238,6 +239,7 @@ export class TenantStore {
         }
         for(const o of prepared.operations.filter(o=>o.type==='forget')){const m=prepared.messages[o.source.index];if(m&&!reviewedSources.has(m.id)){const start=m.content.indexOf(o.source.quote);if(start>=0)sourceCuts.set(m.id,[...(sourceCuts.get(m.id)??[]),{start,end:start+o.source.quote.length}]);}}
         const originals=new Map((this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>{const m=JSON.parse(r.body) as StoredMessage;return [m.id,m] as const;}));
+        assertErasedWitnessProgress(sourceWitnesses,originals,sourceCuts,erasedIds);
         for(const f of all.filter(f=>f.state!=='erased')){
           const quotes:string[]=[];
           for(const q of f.source_quotes){let located=false;

@@ -10,9 +10,9 @@ import {messageAnchors,normalizeFactTime} from './temporal.js';
 import {humanQuote} from './verification.js';
 import {VerificationSession} from './verification-session.js';
 import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,type RepairScope} from './repair.js';
-import {sourceErasureWork,sourceErasureBatches,sourceErasureInput,decodeSourceErasureResponse,decodeSourceErasure,SOURCE_ERASURE_PROMPT} from './source-erasure.js';
+import {sourceErasureWork,sourceErasureBatches,sourceErasureInput,sourceQuoteProblems,applySourceQuoteRepairs,SOURCE_QUOTE_REPAIR_PROMPT,decodeSourceErasureResponse,decodeSourceErasure,SOURCE_ERASURE_PROMPT} from './source-erasure.js';
 import {erasureWork,decodeErasure,ERASURE_PROMPT} from './erasure.js';
-import {transitionWork,decodeTransitions,TRANSITION_PROMPT} from './transitions.js';
+import {transitionWork,transitionInput,decodeTransitions,TRANSITION_PROMPT} from './transitions.js';
 
 export function hash(s: string): string { return createHash('sha256').update(s).digest('hex'); }
 import {retirementEffectMismatch,currentRelationRemoval,realControl,instructionSpans,authorizesForget,missingForgetObligations,missingPersonalSources} from './operation-intent.js';
@@ -225,8 +225,9 @@ export class Extractor {
           if(unknown.length){expandTargets(valid.data);issue='Unknown target IDs. Use ONLY short IDs from EXISTING_FACTS, never invent IDs. This list now includes bounded operation-specific candidates. Candidate similarity is not authorization; bind only actual targets supported by the user statement. If a rejected assistant claim was not in existing memories, emit no delete/correct operation for it. Unknown IDs: '+JSON.stringify(unknown.slice(0,8));continue;}
           const bindingPool=[...snapshot.facts,...proposalFacts(valid.data,req)];
           const invalid=valid.data.facts.flatMap((f,i)=>f.sources.filter(s=>!req.messages[s.index]?.content.includes(s.quote)).map(s=>({fact:i,index:s.index,quote:s.quote})));
+          const unauthorized=valid.data.operations.flatMap((o,index)=>o.type==='forget'&&!authorizesForget(o,req)?[index]:[]);
           const badOps=valid.data.operations.filter(o=>!req.messages[o.source.index]?.content.includes(o.source.quote)||!humanOperation(o,req));
-          const sourceFeedback=invalid.length||badOps.length?' SOURCE_ERRORS: '+JSON.stringify({facts:invalid,operations:badOps})+'. Also repair these exact human source spans in this same patch; copy from NEW_MESSAGES without paraphrasing.':'';
+          const sourceFeedback=invalid.length||badOps.length||unauthorized.length?' SOURCE_ERRORS: '+JSON.stringify({facts:invalid,operations:badOps,authorization_errors:unauthorized.map(operation=>({operation,source:valid.data.operations[operation]!.source,reason:'Cited span does not authorize deletion of this target.'}))})+'. Also repair these exact human source spans in this same patch; copy from NEW_MESSAGES without paraphrasing. For authorization errors cite an actual deletion instruction for the same target, not a reason for removal; remove only that unsupported operation if no such instruction exists. Preserve valid sibling operations.':'';
           const badScopes=valid.data.operations.flatMap((o,index)=>{
             const code=operationScopeProblem(o,bindingPool.filter(f=>o.target_ids.includes(f.id)));
             return code?[{operation:index,code,requested:{subject:o.subject,predicate:o.predicate,scope:o.scope},selected_targets:bindingPool.filter(f=>o.target_ids.includes(f.id)).map(f=>({id:f.id,proposal_index:valid.data.facts.findIndex((_,i)=>factId(req,i)===f.id),subject:f.subject,predicate:f.predicate,scope:f.scope,content:f.content}))}]:[];
@@ -235,11 +236,10 @@ export class Extractor {
           if(badScopes.length||badReplacements.length){
             expandTargets(valid.data);
             const facts=new Set([...badReplacements,...invalid.map(f=>f.fact),...badScopes.flatMap(o=>o.selected_targets.map(f=>f.proposal_index).filter(i=>i>=0))]);
-            const operations=new Set([...badScopes.map(o=>o.operation),...valid.data.operations.flatMap((o,index)=>badOps.includes(o)?[index]:[])]);
+            const operations=new Set([...badScopes.map(o=>o.operation),...valid.data.operations.flatMap((o,index)=>badOps.includes(o)?[index]:[]),...unauthorized]);
             repairScope=scopeForFindings(valid.data,[...facts].map(i=>`fact ${i}: Invalid binding or source`).concat([...operations].map(i=>`operation ${i}: Invalid binding or source`)));
           }
           if(badScopes.length||badReplacements.length){issue='Operation target binding: subject, property or scope does not match its selected targets. '+JSON.stringify({operations:badScopes,replacement_facts:badReplacements})+sourceFeedback+'. Reuse matching existing fields only if that record is actually the requested target. For same-chunk transient targets, proposal_index identifies the editable fact slot. If the user forgets multiple properties of one concrete entity, give those transient facts that same entity scope when their original statements support it; preserve unrelated devices. Alternatively split operations only when the source actually authorizes each distinct scope. Changing sources alone does not fix a scope mismatch. Never rename an existing or unrelated record to pass validation. If correcting an assistant claim that was never stored, keep the grounded USER facts but emit no operation or supersedes reference against an unrelated record. Cite the user correction itself, not the assistant restatement. Return the corrected object.';continue;}
-          const unauthorized=valid.data.operations.flatMap((o,index)=>o.type==='forget'&&!authorizesForget(o,req)?[index]:[]);
           if(unauthorized.length){
             const findings=unauthorized.map(index=>`operation ${index}: The cited source is not an authorizing user deletion instruction.`);
             repairScope=scopeForFindings(valid.data,findings);
@@ -323,13 +323,21 @@ export class Extractor {
     }
     let sourceErasurePlan:Prepared['sourceErasurePlan'];
     if(useErasure&&this.config.sourceErasure){
-      const work=sourceErasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[],snapshot.erasureSources??[],messages);
+      const work=sourceErasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[],snapshot.erasureSources??[],messages,erasurePlan?.decisions.filter(d=>d.effect==='erase').map(d=>d.fact_id)??[]);
       if(work.candidates.length){
         if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Source erasure requires semantic verification');
-        const decisions:NonNullable<Prepared['sourceErasurePlan']>['decisions']=[];
+        const decisions:NonNullable<Prepared['sourceErasurePlan']>['decisions']=[];let sourceQuoteRepairUsed=false;
         for(const batch of sourceErasureBatches(work)){
           let raw:unknown;try{raw=await this.models.json(SOURCE_ERASURE_PROMPT,JSON.stringify(sourceErasureInput(batch)),modelSignal,{purpose:'source_erasure',trace:traceIdentity});}
           catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Source erasure unavailable within shared model budget');}
+          const problems=sourceQuoteProblems(raw,batch);
+          if(problems.length){
+            if(sourceQuoteRepairUsed)throw new ServiceError('EVIDENCE_VALIDATION','Source quote repair budget exhausted');
+            sourceQuoteRepairUsed=true;let patch:unknown;
+            try{patch=await this.models.json(SOURCE_QUOTE_REPAIR_PROMPT,JSON.stringify({PROBLEMS:problems.map((p,index)=>({index,...p}))}),modelSignal,{purpose:'source_erasure_repair',trace:traceIdentity});}
+            catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Source quote repair unavailable within shared model budget');}
+            raw=applySourceQuoteRepairs(raw,batch,patch);
+          }
           const checked=decodeSourceErasureResponse(raw,batch);
           decisions.push(...checked.decisions.map(d=>({...d,index:d.index+batch.offset})));
         }
@@ -341,7 +349,7 @@ export class Extractor {
       const work=transitionWork(req,snapshot.facts,facts,parsed.operations);
       if(work.candidates.length){
         if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Implicit transitions require semantic verification');
-        let raw:unknown;try{raw=await this.models.json(TRANSITION_PROMPT,JSON.stringify({NEW_MESSAGES:req.messages,CANDIDATES:work.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'state_transition',trace:traceIdentity});}
+        let raw:unknown;try{raw=await this.models.json(TRANSITION_PROMPT,JSON.stringify(transitionInput(req,work)),modelSignal,{purpose:'state_transition',trace:traceIdentity});}
         catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Implicit transition verification unavailable within shared model budget');}
         transitionPlan=decodeTransitions(raw,work);
       }else transitionPlan={fingerprint:work.fingerprint,decisions:[]};

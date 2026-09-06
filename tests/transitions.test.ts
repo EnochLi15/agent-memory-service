@@ -112,3 +112,10 @@ test('an explicit correction can resolve an uncertain value even when corroborat
  commit(c,await prepare(c,[fact('my coffee is black drip.','black drip')],'compatible',[{type:'correct',subject:'user',predicate:'coffee_preference',target_ids:[alternate.id],source:{index:0,quote:c.messages[0].content}}]));
  assert.equal(store.facts().find((f:any)=>f.value==='black drip').state,'active');assert.equal(store.facts().find((f:any)=>f.id===alternate.id).state,'retracted');
 }));
+import {transitionInput} from '../dist/transitions.js';
+test('transition transport labels each witness without changing its fact or accepted slot meaning',()=>fixture(async({store,prepare,commit}:any)=>{
+ const a=req('label-old','My coffee is black drip.');commit(a,await prepare(a,[fact(a.messages[0].content,'black drip')]));
+ const b=req('label-new','I like simple coffee.','2026-02-01'),p=await prepare(b,[fact(b.messages[0].content,'simple coffee')]);const work=transitionWork(b,store.facts(),p.facts,p.operations),input=transitionInput(b,work);
+ assert.deepEqual(input.CANDIDATES[0].old.source_quotes,[{slot:0,quote:a.messages[0].content}]);assert.deepEqual(input.CANDIDATES[0].incoming.source_quotes,[{slot:0,quote:b.messages[0].content}]);assert.deepEqual(work.candidates[0].old.source_quotes,[a.messages[0].content]);assert.equal(input.CANDIDATES[0].old_id,work.candidates[0].old_id);
+ assert.throws(()=>decodeTransitions({decisions:[{...p.transitionPlan.decisions[0],old_source_slot:1}]},work),/witness index/);
+}));

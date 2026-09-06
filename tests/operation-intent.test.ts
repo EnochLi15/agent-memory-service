@@ -131,3 +131,13 @@ test('a witness repair cannot remove an unflagged valid deletion',()=>fixture(as
  let calls=0;const x=new Extractor(config,{json:async()=>++calls===1?{facts:[],operations:[...proposal('Forget my access code.',[fact.id]).operations,{type:'forget',target_ids:[manager.id],subject:'user',predicate:'manager',value:'Alice',scope:'',boundary:'value',source:{index:0,quote:'I have a new manager.'}}]}:{operation_edits:[{index:0,remove:true},{index:1,remove:true}]}} as any);
  await assert.rejects(x.prepare(request(content),snapshot,AbortSignal.timeout(1000)),/unflagged operation/);assert.equal(calls,2);assert.deepEqual(store.snapshot('s'),snapshot);
 }));
+test('one bounded patch receives independent target-scope and authorization errors together',()=>fixture(async({snapshot,fact}:any)=>{
+ const manager=snapshot.facts.find((f:any)=>f.predicate==='manager');manager.scope='work';const content='Forget my access code. Forget my manager. I like swimming.';
+ const initial={facts:[],operations:[...proposal('Forget my access code.',[fact.id,manager.id]).operations,{type:'forget',target_ids:[manager.id],subject:'user',predicate:'manager',value:'Alice',scope:'work',boundary:'value',source:{index:0,quote:'I like swimming.'}}]};
+ let calls=0,checks=0,feedback='',repairScope:any;const x=new Extractor({...config,maxRepairRounds:2},{json:async(_s:string,input:string)=>{
+  if(++calls===1)return structuredClone(initial);
+  if(calls===2){const data=JSON.parse(input);feedback=data.REPAIR_FEEDBACK;repairScope=data.REPAIR_SCOPE;return {operation_edits:[{index:0,changes:{target_ids:[fact.id]}},{index:1,changes:{source:{index:0,quote:'Forget my manager.'}}}]};}
+  return {append_facts:[{content:'I like swimming.',subject:'user',predicate:'hobby',value:'swimming',modality:'confirmed',sources:[{index:0,quote:'I like swimming.'}]}]};
+ },verify:async()=>++checks===1?['message 0: Missing swimming preference.']:[],embedBatch:async(xs:string[])=>xs.map(()=>[1,0])} as any);
+ const p=await x.prepare(request(content),snapshot,AbortSignal.timeout(1000));assert.equal(calls,3);assert.equal(checks,2);assert.deepEqual(repairScope.operation_indices,[0,1]);assert.equal(p.operations.length,2);assert.ok(p.facts.some(f=>f.value==='swimming'));assert.match(feedback,/authorization_errors/);assert.match(feedback,/Operation target binding/);
+}));

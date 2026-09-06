@@ -42,3 +42,26 @@ test('packed batch capacity is checked on transmitted JSON and never drops repea
  for(const batch of batches){assert.ok(batch.candidates.length<=64);assert.ok(JSON.stringify(sourceErasureInput(batch)).length<=64000);}
  assert.ok(JSON.stringify(sourceErasureInput({candidates})).length<JSON.stringify({CANDIDATES:candidates}).length/3);
 });
+
+import {sourceQuoteProblems,applySourceQuoteRepairs} from '../dist/source-erasure.js';
+test('quote repair preserves verdicts, valid siblings and the original response',()=>{
+ const text='Iris works as a strong second option; I prefer June. Old hedging.',w=work(text);
+ w.candidates.push({...w.candidates[0],id:'independent',text:'My colleague Iris stays.'});
+ const raw={decisions:[row('mixed',['Iris as a strong second option','Old hedging.']),{...row('retain'),index:1}]},before=structuredClone(raw);
+ const problems=sourceQuoteProblems(raw,w);assert.equal(problems.length,1);assert.equal(problems[0].quote_index,0);assert.deepEqual(problems[0].unchanged_quotes,['Old hedging.']);assert.deepEqual(problems[0].candidate,w.candidates[0]);
+ const patched=applySourceQuoteRepairs(raw,w,{repairs:[{index:0,status:'resolved',quote:'Iris works as a strong second option'}]}) as any;
+ assert.deepEqual(raw,before);const expected=structuredClone(before);expected.decisions[0].erase_quotes[0]='Iris works as a strong second option';assert.deepEqual(patched,expected);
+ const result=validateSourceErasure(decodeSourceErasureResponse(patched,w),w);assert.match(maskSource(text,result.cuts.get('source-1')!),/I prefer June/);assert.equal(result.cuts.has('independent'),false);
+});
+test('all semantic decisions must be resolved before any quote defect is repairable',()=>{
+ const w=work('Erase old value; keep current.');w.candidates.push({...w.candidates[0],id:'later'});
+ const raw={decisions:[row('mixed',['missing word']),{...row('uncertain'),index:1}]};
+ assert.throws(()=>sourceQuoteProblems(raw,w),/Uncertain/);assert.throws(()=>applySourceQuoteRepairs(raw,w,{repairs:[{index:0,status:'resolved',quote:'Erase old value'}]}),/Uncertain/);
+});
+test('quote patches reject omitted, duplicate, uncertain, nonliteral and overlapping repairs',()=>{
+ const w=work('Erase old value; delete old detail; keep current.'),raw={decisions:[row('mixed',['Erase value','delete detail'])]};
+ const valid={repairs:[{index:0,status:'resolved',quote:'Erase old value'},{index:1,status:'resolved',quote:'delete old detail'}]};
+ for(const patch of [{repairs:[]},{repairs:[valid.repairs[0],valid.repairs[0]]},{repairs:[{...valid.repairs[0],status:'uncertain',quote:''},valid.repairs[1]]},{...valid,decisions:[]},{repairs:[{...valid.repairs[0],effect:'erase'},valid.repairs[1]]},{repairs:[{...valid.repairs[0],quote:'not present'},valid.repairs[1]]},{repairs:[{...valid.repairs[0],quote:'Erase old value; delete old detail'},valid.repairs[1]]}])assert.throws(()=>applySourceQuoteRepairs(raw,w,patch));
+ assert.doesNotThrow(()=>applySourceQuoteRepairs(raw,w,valid));
+ assert.throws(()=>sourceQuoteProblems({decisions:[row('mixed',Array.from({length:9},(_,i)=>'missing-'+i))]},w),/Too many/);
+});

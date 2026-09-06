@@ -10,13 +10,13 @@ import type {AddRequest,Extraction,Fact} from './types.js';
 import {VERIFICATION_PROMPT,verificationInput,VerificationProtocolError} from './verification.js';
 import {VerificationSession} from './verification-session.js';
 import {COMPACT_VERIFICATION_PROMPT,COMPACT_VERIFICATION_PROTOCOL,COMPACT_VERIFICATION_RESPONSE_FORMAT,decodeCompactVerification} from './verification-compact.js';
-import {SOURCE_ERASURE_RESPONSE_FORMAT} from './source-erasure.js';
+import {SOURCE_ERASURE_RESPONSE_FORMAT,SOURCE_QUOTE_REPAIR_RESPONSE_FORMAT} from './source-erasure.js';
 import {ERASURE_RESPONSE_FORMAT} from './erasure.js';
 import {TRANSITION_RESPONSE_FORMAT} from './transitions.js';
 function audit(record:Record<string,unknown>):void {
   if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
 }
-type GenerationPurpose='extraction'|'verification'|'repair'|'rerank'|'erasure_binding'|'source_erasure'|'state_transition';
+type GenerationPurpose='extraction'|'verification'|'repair'|'rerank'|'erasure_binding'|'source_erasure'|'source_erasure_repair'|'state_transition';
 type GenerationContext={purpose?:GenerationPurpose;verification_format?:string;verification_scope?:{facts:number;operations:number;replacements:number;messages:number;reused:number};trace?:{user_id:string;request_id:string}};
 
 export class Models {
@@ -24,7 +24,7 @@ export class Models {
   constructor(private config: Config) {
     this.client = new OpenAI({ apiKey: config.llmKey || 'local', baseURL: config.llmBase, maxRetries: 0, timeout: config.addTimeout });
   }
-  private stageModel(purpose:GenerationPurpose):string{return purpose==='rerank'?this.config.llmModel:this.config.llmStageModels[purpose==='erasure_binding'||purpose==='source_erasure'||purpose==='state_transition'?'verification':purpose]??this.config.llmModel;}
+  private stageModel(purpose:GenerationPurpose):string{return purpose==='rerank'?this.config.llmModel:this.config.llmStageModels[purpose==='erasure_binding'||purpose==='source_erasure'||purpose==='source_erasure_repair'||purpose==='state_transition'?'verification':purpose]??this.config.llmModel;}
   async verify(proposal:Extraction,req:AddRequest,facts:Fact[],omitted:number[],signal:AbortSignal,session=new VerificationSession()):Promise<string[]>{
     const compact=this.config.verificationFormat==='compact',prompt=compact?COMPACT_VERIFICATION_PROMPT:VERIFICATION_PROMPT;
     const plan=session.plan(req,proposal,facts,{base:this.config.llmBase,model:this.stageModel('verification'),effort:this.config.llmReasoningEffort,prompt,responseFormat:this.config.verificationResponseFormat,...(this.config.verificationResponseFormat==='json_schema'?{schema:COMPACT_VERIFICATION_RESPONSE_FORMAT.json_schema}:{})});
@@ -63,14 +63,14 @@ export class Models {
       try{appendFileSync(traceFile,JSON.stringify({protocol:'private-model-trace-v1',at:new Date().toISOString(),trace_id:traceId,identity,purpose,model:this.stageModel(purpose),system,input:user,input_sha256:createHash('sha256').update(user).digest('hex'),...record})+'\n',{mode:0o600});}
       catch{throw new ServiceError('EVIDENCE_VALIDATION','Requested private model trace could not be written');}
     };
-    const model=this.stageModel(purpose),structured=['verification','erasure_binding','source_erasure','state_transition'].includes(purpose)&&this.config.verificationResponseFormat==='json_schema';
-    const formatAudit=['verification','erasure_binding','source_erasure','state_transition'].includes(purpose)?{verification_response_format:structured?'json_schema':'json_object'}:{};let last:unknown;
+    const model=this.stageModel(purpose),structured=['verification','erasure_binding','source_erasure','source_erasure_repair','state_transition'].includes(purpose)&&this.config.verificationResponseFormat==='json_schema';
+    const formatAudit=['verification','erasure_binding','source_erasure','source_erasure_repair','state_transition'].includes(purpose)?{verification_response_format:structured?'json_schema':'json_object'}:{};let last:unknown;
     for(let attempt=0;attempt<2;attempt++){
       const started=performance.now();let usage:unknown=null,content='';
       try{
         const stream=await this.client.chat.completions.create({
           model,...(this.config.llmReasoningEffort?{reasoning_effort:this.config.llmReasoningEffort}:{}),messages:[{role:'system',content:system},{role:'user',content:user}],
-          response_format:structured?(purpose==='state_transition'?TRANSITION_RESPONSE_FORMAT:purpose==='source_erasure'?SOURCE_ERASURE_RESPONSE_FORMAT:purpose==='erasure_binding'?ERASURE_RESPONSE_FORMAT:COMPACT_VERIFICATION_RESPONSE_FORMAT):{type:'json_object'},max_completion_tokens:10000,stream:true,stream_options:{include_usage:true},
+          response_format:structured?(purpose==='source_erasure_repair'?SOURCE_QUOTE_REPAIR_RESPONSE_FORMAT:purpose==='state_transition'?TRANSITION_RESPONSE_FORMAT:purpose==='source_erasure'?SOURCE_ERASURE_RESPONSE_FORMAT:purpose==='erasure_binding'?ERASURE_RESPONSE_FORMAT:COMPACT_VERIFICATION_RESPONSE_FORMAT):{type:'json_object'},max_completion_tokens:10000,stream:true,stream_options:{include_usage:true},
         },{signal});
         let finish:string|null=null;
         for await(const chunk of stream){content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}

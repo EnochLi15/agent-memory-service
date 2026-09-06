@@ -29,7 +29,7 @@ test('private tracing preserves the exact transition response and identity witho
  const dir=mkdtempSync(join(tmpdir(),'memory-private-trace-')),trace=join(dir,'trace.jsonl'),audit=join(dir,'audit.jsonl');
  const previous={trace:process.env.MEMORY_MODEL_TRACE,audit:process.env.MEMORY_MODEL_AUDIT};let calls=0;
  const response={decisions:[{index:0,relation:'compatible',old_source_slot:0,new_source_slot:0,reason:'Independent qualifier.'}]};
- const server=createServer(async(req,res)=>{calls++;let raw='';for await(const x of req)raw+=x;const b=JSON.parse(raw);assert.equal(b.model,'critic');assert.equal(b.response_format.json_schema.name,'state_transition_v3');res.writeHead(200,{'content-type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{index:0,delta:{content:JSON.stringify(response)},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');});
+ const server=createServer(async(req,res)=>{calls++;let raw='';for await(const x of req)raw+=x;const b=JSON.parse(raw);assert.equal(b.model,'critic');assert.equal(b.response_format.json_schema.name,'state_transition_v4');res.writeHead(200,{'content-type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{index:0,delta:{content:JSON.stringify(response)},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');});
  await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));process.env.MEMORY_MODEL_TRACE=trace;process.env.MEMORY_MODEL_AUDIT=audit;
  try{
   const c=configFromEnv({MEMORY_LLM_API_KEY:'fixture-credential-never-log',MEMORY_VERIFICATION_MODEL:'critic',MEMORY_VERIFICATION_FORMAT:'compact',MEMORY_VERIFICATION_RESPONSE_FORMAT:'json_schema'});c.llmBase=`http://127.0.0.1:${(server.address() as any).port}`;
@@ -62,4 +62,11 @@ test('source erasure sends the compact strict schema to the verification model',
  const server=createServer(async(req,res)=>{let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);assert.equal(body.model,'critic');assert.equal(body.response_format.json_schema.name,'source_erasure_v4');assert.equal(body.response_format.json_schema.strict,true);res.writeHead(200,{'content-type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{index:0,delta:{content:JSON.stringify(reply)},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');});
  await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
  try{const c=configFromEnv({MEMORY_VERIFICATION_MODEL:'critic',MEMORY_VERIFICATION_FORMAT:'compact',MEMORY_VERIFICATION_RESPONSE_FORMAT:'json_schema'});c.llmBase=`http://127.0.0.1:${(server.address() as any).port}`;assert.deepEqual(await new Models(c).json('scope','input',AbortSignal.timeout(1000),{purpose:'source_erasure'}),reply);}finally{await new Promise<void>(r=>server.close(()=>r()));}
+});
+
+test('source quote repair routes once to the verifier with its strict patch schema',async()=>{
+ const bodies:any[]=[],reply={repairs:[{index:0,status:'resolved',quote:'Iris works as a strong second option'}]};
+ const server=createServer(async(req,res)=>{let raw='';for await(const chunk of req)raw+=chunk;bodies.push(JSON.parse(raw));res.writeHead(200,{'content-type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{index:0,delta:{content:JSON.stringify(reply)},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');});
+ await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
+ try{const c=configFromEnv({MEMORY_VERIFICATION_MODEL:'critic',MEMORY_REPAIR_MODEL:'other',MEMORY_VERIFICATION_FORMAT:'compact',MEMORY_VERIFICATION_RESPONSE_FORMAT:'json_schema'});c.llmBase=`http://127.0.0.1:${(server.address() as any).port}`;assert.deepEqual(await new Models(c).json('quote repair','input',AbortSignal.timeout(1000),{purpose:'source_erasure_repair'}),reply);assert.equal(bodies.length,1);assert.equal(bodies[0].model,'critic');assert.equal(bodies[0].response_format.json_schema.name,'source_erasure_quote_repair_v1');assert.equal(bodies[0].response_format.json_schema.strict,true);}finally{await new Promise<void>(r=>server.close(()=>r()));}
 });
