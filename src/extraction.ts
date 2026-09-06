@@ -102,8 +102,15 @@ function resolveSource(source:{index:number;quote:string},req:AddRequest):void {
   if(req.messages[source.index]?.content.includes(source.quote))return;
   const escaped=source.quote.trim().split(/\s+/).map(x=>x.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('\\s+');
   if(!escaped)return;
-  const matches=req.messages.flatMap((m,index)=>{const match=m.content.match(new RegExp(escaped,'u'));return match?[{index,quote:match[0]}]:[];});
-  if(matches.length===1){source.index=matches[0]!.index;source.quote=matches[0]!.quote;}
+  const matches=req.messages.flatMap((m,index)=>[...m.content.matchAll(new RegExp(escaped,'gu'))].map(match=>({index,quote:match[0]})));
+  if(matches.length===1){source.index=matches[0]!.index;source.quote=matches[0]!.quote;return;}
+  // A case-only copying error can recover an exact span, but cannot select a
+  // different speaker or one of several occurrences. Claim/modality support
+  // still goes through independent verification against the recovered text.
+  if(matches.length)return;
+  const declared=req.messages[source.index];if(!declared)return;
+  const local=[...declared.content.matchAll(new RegExp(escaped,'giu'))];
+  if(local.length===1)source.quote=local[0]![0];
 }
 const factId=(req:AddRequest,index:number):string=>hash(`${req.user_id}\0${req.request_id}\0fact\0${index}`);
 function before(a:{index:number;quote:string},b:{index:number;quote:string},req:AddRequest):boolean{
