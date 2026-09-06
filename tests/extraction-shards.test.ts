@@ -83,3 +83,26 @@ test('an operation cannot use selector resolution to delete a future cross-shard
  const r=request(['Forget my access code 9182.','What is gravity?','What is a rainbow?','My access code is 9182.']);let verified=0;
  await assert.rejects(()=>new Extractor(configFromEnv(env),{json:async(_s:string,user:string,_signal:any,ctx:any)=>{if(ctx.purpose==='repair')return {};const x=JSON.parse(user);return {message_groups:x.PARTICIPANT_INDEX.map((i:number)=>i===0?{message_index:i,facts:[],operations:[{...proposalGroup(3).operations[0],source:{index:0,quote:r.messages[0].content}}]}:i===3?{message_index:i,operations:[],facts:[{...proposalGroup(0).facts[0],sources:[{index:3,quote:r.messages[3].content}]}]}:group(i))};},verify:async()=>{verified++;return [];}} as any).prepare(r,{revision:0,facts:[],tail:[],anchor:null},AbortSignal.timeout(3000)),{code:'OPERATION_TARGET'});assert.equal(verified,0);
 });
+
+test('missing array fields survive merge unchanged and still fail the strict grouped decoder',async()=>{
+ for(const field of ['facts','operations']){
+  const merged:any=await prepareExtractionShards(req,'prompt',input(req),3,AbortSignal.timeout(3000),async(_s,user)=>{const x=JSON.parse(user),p=empty(x);for(const g of p.message_groups)if(g.message_index===3)delete g[field];return p;});
+  assert.equal(Object.hasOwn(merged.message_groups[3],field),false);assert.deepEqual(merged.message_groups.map((g:any)=>g.message_index),[0,1,2,3]);assert.throws(()=>decodeGroupedExtraction(merged,req),/schema/);
+ }
+});
+test('a missing operations field reaches bounded repair and still executes the real cross-shard operation atomically',async()=>{
+ let extractionCalls=0,repairs=0,verified=0;const original=req;
+ const models={json:async(_s:string,user:string,_signal:any,ctx:any)=>{
+  const x=JSON.parse(user);if(ctx.purpose==='extraction'){extractionCalls++;return {message_groups:x.PARTICIPANT_INDEX.map((i:number)=>{const g:any=structuredClone(proposalGroup(i));if(i===3)delete g.operations;return g;})};}
+  assert.equal(ctx.purpose,'repair');repairs++;assert.equal(ctx.extraction_shard,undefined);assert.deepEqual(x.PARTICIPANT_INDEX,[0,1,2,3]);assert.equal(Object.hasOwn(x.FAILED_PROPOSAL.message_groups[3],'operations'),false);
+  assert.deepEqual(x.FAILED_PROPOSAL.message_groups.slice(0,3),[0,1,2].map(proposalGroup));return {message_groups:[0,1,2,3].map(proposalGroup)};
+ },verify:async(p:any)=>{verified++;assert.equal(p.operations.length,1);return [];},embedBatch:async(xs:string[])=>xs.map(()=>[1,0])};
+ const dir=mkdtempSync(join(tmpdir(),'shard-array-repair-')),store=new TenantStore(dir,'u');
+ try{const p=await new Extractor(configFromEnv(env),models as any).prepare(original,store.snapshot('s'),AbortSignal.timeout(3000));assert.equal(extractionCalls,3);assert.equal(repairs,1);assert.equal(verified,1);assert.deepEqual(p.degraded,[]);
+  store.commit(original,hash(JSON.stringify(original)),p,0);assert.equal(store.revision(),1);assert.ok(store.facts().some(f=>f.subject==='user'&&f.predicate==='access_code'&&f.state==='erased'));assert.ok(store.facts().some(f=>f.subject==='brother'&&f.value==='9182'&&f.state==='active'));assert.ok(store.facts().some(f=>f.value==='Firefox'&&f.state==='active'));
+ }finally{store.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('a still-malformed global repair cannot publish defaults, skip verification, or exceed the existing repair limit',async()=>{
+ let repairs=0,verified=0,embedded=0;const models={json:async(_s:string,user:string,_signal:any,ctx:any)=>{const x=JSON.parse(user);if(ctx.purpose==='repair')repairs++;return {message_groups:x.PARTICIPANT_INDEX.map((i:number)=>{const g:any=group(i);if(i===3)delete g.operations;return g;})};},verify:async()=>{verified++;return [];},embedBatch:async()=>{embedded++;return [];}};
+ await assert.rejects(()=>new Extractor(configFromEnv({...env,MEMORY_MAX_REPAIR_ROUNDS:'1'}),models as any).prepare(req,{revision:0,facts:[],tail:[],anchor:null},AbortSignal.timeout(3000)),/bounded repair rounds/);assert.equal(repairs,1);assert.equal(verified,0);assert.equal(embedded,0);
+});

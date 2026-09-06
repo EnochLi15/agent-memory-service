@@ -22,8 +22,12 @@ function checkedGroups(raw:unknown,shard:ExtractionShard):any[]{
  if(!x||typeof x!=='object'||Array.isArray(x)||Object.keys(x).some(k=>k!=='message_groups')||!Array.isArray(x.message_groups))throw new ServiceError('EXTRACTION_SCHEMA','Invalid extraction shard envelope');
  const groups=x.message_groups,seen=new Set<number>();
  for(const g of groups){
-  if(!g||typeof g!=='object'||Object.keys(g).some(k=>!['message_index','facts','operations'].includes(k))||!owned.has(g.message_index)||seen.has(g.message_index)||!Array.isArray(g.facts)||!Array.isArray(g.operations))throw new ServiceError('EXTRACTION_SCHEMA','Extraction shard omitted or invented a participant group');seen.add(g.message_index);
-  for(const refs of [...g.facts.flatMap((f:any)=>[f?.supersedes??[],f?.depends_on??[]]),...g.operations.map((o:any)=>o?.target_ids??[])]){
+  if(!g||typeof g!=='object'||Object.keys(g).some(k=>!['message_index','facts','operations'].includes(k))||!owned.has(g.message_index)||seen.has(g.message_index))throw new ServiceError('EXTRACTION_SCHEMA','Extraction shard omitted or invented a participant group');seen.add(g.message_index);
+  // A complete owned roster with a missing array is a malformed proposal,
+  // not an ownership failure. Preserve the omission for the existing strict
+  // grouped decoder and bounded global repair; never infer an empty array.
+  for(const field of ['facts','operations'])if(Object.hasOwn(g,field)&&!Array.isArray(g[field]))throw new ServiceError('EXTRACTION_SCHEMA','Extraction shard contains a non-array '+field+' field');
+  for(const refs of [...(g.facts??[]).flatMap((f:any)=>[f?.supersedes??[],f?.depends_on??[]]),...(g.operations??[]).map((o:any)=>o?.target_ids??[])]){
    if(!Array.isArray(refs))throw new ServiceError('EXTRACTION_SCHEMA','Invalid extraction shard references');
    for(const ref of refs)if(typeof ref==='string'&&ref.startsWith('new:')){const match=ref.match(/^new:(\d+):(\d+)$/);if(!match||!owned.has(Number(match[1])))throw new ServiceError('EXTRACTION_SCHEMA','Extraction shard guessed a foreign or flat fact handle');}
   }
