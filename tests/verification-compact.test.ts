@@ -9,6 +9,16 @@ const raw=()=>({fact_checks:[[0,true,true,0],[1,true,true,0]],operation_checks:[
 const m=()=>new Models(configFromEnv({MEMORY_VERIFICATION_FORMAT:'compact'}));
 const run=(model:Models,p=proposal(),state=new VerificationSession(),r=req)=>model.verify(p,r,[old] as any,[],AbortSignal.timeout(1000),state);
 
+test('a false decision remains rejected even when its explanation claims the evidence is supported',async()=>{
+ const model=m(),state=new VerificationSession();let calls=0;
+ model.json=async()=>{calls++;const result=raw();result.fact_checks[0]=[0,false,true,0,'The context actually supports this fact.'];return result;};
+ const findings=await run(model,proposal(),state);
+ assert.equal(findings.length,1);assert.match(findings[0]!,/^fact 0:/);
+ model.json=async()=>{calls++;return raw();};
+ assert.deepEqual(await run(model,proposal(),state),findings);
+ assert.equal(calls,1,'The contradictory explanation cannot unlock a favorable resample');
+});
+
 test('compact tuples resolve exact sources and replacement pairs into the full strict validator',()=>{
  const decoded=decodeCompactVerification(raw(),proposal(),scope());assert.deepEqual(decoded.protocolErrors,[]);assert.deepEqual(verificationIssues(decoded.canonical,req,proposal()),[]);
  assert.equal(decoded.canonical.fact_checks[1]!.source_index,1);assert.equal(decoded.canonical.fact_checks[1]!.quote,req.messages[1]!.content);
