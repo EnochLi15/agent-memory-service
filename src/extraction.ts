@@ -17,7 +17,8 @@ import {SOURCE_REFERENCE_PROTOCOL,SOURCE_REFERENCE_PROMPT,sourceReferenceMessage
 import {GROUPED_EXTRACTION_PROTOCOL,GROUPED_EXTRACTION_PROMPT,decodeGroupedExtraction} from './extraction-groups.js';
 import {VerificationSession} from './verification-session.js';
 import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,replacementBindingProblems,type RepairScope} from './repair.js';
-import {sourceErasureWork,sourceErasureBatches,sourceErasureInput,sourceQuoteProblems,applySourceQuoteRepairs,SOURCE_QUOTE_REPAIR_PROMPT,decodeSourceErasureResponse,decodeSourceErasure,SOURCE_ERASURE_PROMPT} from './source-erasure.js';
+import {sourceErasureWork} from './source-erasure.js';
+import {executeSourceErasure} from './source-erasure-execution.js';
 import {erasureWork,decodeErasure,ERASURE_PROMPT} from './erasure.js';
 import {transitionWork,transitionInput,decodeTransitions,TRANSITION_PROMPT} from './transitions.js';
 
@@ -381,22 +382,7 @@ export class Extractor {
       const work=sourceErasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[],snapshot.erasureSources??[],messages,erasurePlan?.decisions.filter(d=>d.effect==='erase').map(d=>d.fact_id)??[]);
       if(work.candidates.length){
         if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Source erasure requires semantic verification');
-        const decisions:NonNullable<Prepared['sourceErasurePlan']>['decisions']=[];let sourceQuoteRepairUsed=false;
-        for(const batch of sourceErasureBatches(work)){
-          let raw:unknown;try{raw=await this.models.json(SOURCE_ERASURE_PROMPT,JSON.stringify(sourceErasureInput(batch)),modelSignal,{purpose:'source_erasure',trace:traceIdentity});}
-          catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Source erasure unavailable within shared model budget');}
-          const problems=sourceQuoteProblems(raw,batch);
-          if(problems.length){
-            if(sourceQuoteRepairUsed)throw new ServiceError('EVIDENCE_VALIDATION','Source quote repair budget exhausted');
-            sourceQuoteRepairUsed=true;let patch:unknown;
-            try{patch=await this.models.json(SOURCE_QUOTE_REPAIR_PROMPT,JSON.stringify({PROBLEMS:problems.map((p,index)=>({index,...p}))}),modelSignal,{purpose:'source_erasure_repair',trace:traceIdentity});}
-            catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Source quote repair unavailable within shared model budget');}
-            raw=applySourceQuoteRepairs(raw,batch,patch);
-          }
-          const checked=decodeSourceErasureResponse(raw,batch);
-          decisions.push(...checked.decisions.map(d=>({...d,index:d.index+batch.offset})));
-        }
-        sourceErasurePlan=decodeSourceErasure({decisions},work);
+        sourceErasurePlan=await executeSourceErasure(work,this.config.sourceErasureWorkers,modelSignal,(system,input,s,purpose,source_erasure_batch)=>this.models.json(system,input,s,{purpose,trace:traceIdentity,...(source_erasure_batch?{source_erasure_batch}:{})}));
       }else sourceErasurePlan={fingerprint:work.fingerprint,decisions:[]};
     }
     let transitionPlan:Prepared['transitionPlan'];

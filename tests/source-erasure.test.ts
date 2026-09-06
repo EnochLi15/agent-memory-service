@@ -7,9 +7,9 @@ const config=configFromEnv({MEMORY_MODE:'enhanced',MEMORY_ERASURE_BINDING:'true'
 const request=(id:string,text:string)=>({request_id:id,user_id:'u',session_id:'s',messages:[{role:'user',content:text,timestamp:'2026-01-01T00:00:00Z'}]});
 const fact=(quote:string,subject='user',scope='dentist')=>({content:quote,subject,predicate:'appointment',value:"dentist appointment with Dr. Pham's office on Elm Street",scope,sources:[{index:0,quote}]});
 const compactFixture=(raw:any)=>({decisions:raw.decisions.map((r:any)=>({index:r.index,effect:r.parts.some((p:any)=>p.effect==='uncertain')?'uncertain':r.parts.every((p:any)=>p.effect===r.parts[0].effect)?r.parts[0].effect:'mixed',erase_quotes:r.parts.some((p:any)=>p.effect==='retain')&&r.parts.some((p:any)=>p.effect==='erase')?r.parts.filter((p:any)=>p.effect==='erase').map((p:any)=>p.text):[],reason:r.parts.some((p:any)=>p.effect==='uncertain')?'uncertain_scope':r.parts.some((p:any)=>p.effect==='retain')&&r.parts.some((p:any)=>p.effect==='erase')?'mixed_source':r.parts[0].effect==='erase'?'same_erased_record':'independent_record'}))});
-async function fixture(fn:any){
+async function fixture(fn:any,sourceErasureWorkers=1){
  const dir=mkdtempSync(join(tmpdir(),'source-erasure-')),store=new TenantStore(dir,'u');let calls=0;
- const prepare=(req:any,p:any,override?:any)=>new Extractor(config,{verify:async()=>[],embedBatch:async(xs:string[])=>xs.map(()=>[1,0]),json:async(_s:string,input:string,_signal:any,ctx:any)=>{
+ const prepare=(req:any,p:any,override?:any)=>new Extractor({...config,sourceErasureWorkers},{verify:async()=>[],embedBatch:async(xs:string[])=>xs.map(()=>[1,0]),json:async(_s:string,input:string,_signal:any,ctx:any)=>{
   if(ctx?.purpose==='source_erasure'){
    calls++;const packed=JSON.parse(input),data={CANDIDATES:packed.CANDIDATES.map((c:any)=>({...packed.SOURCES[c.source_slot],...packed.BOUNDARIES[c.boundary_slot],index:c.index,matching_words:c.matching_words}))};if(override)return compactFixture(override(data));
    return compactFixture({decisions:data.CANDIDATES.map((c:any,index:number)=>{
@@ -106,16 +106,16 @@ test('source batches obey payload limits and preserve every original candidate i
  const decisions=batches.flatMap(b=>decodeSourceErasure({decisions:b.candidates.map((c,index)=>({index,parts:[{text:c.text,effect:'erase'}],reason:'Authorized.'}))},b).decisions.map(d=>({...d,index:d.index+b.offset})));
  assert.equal(decodeSourceErasure({decisions},work).decisions.length,100);assert.throws(()=>decodeSourceErasure({decisions:decisions.slice(0,-1)},work),/Incomplete/);
 });
-for(const rejectTail of [false,true])test(`large source cleanup is atomic across batches; reject final batch=${rejectTail}`,()=>fixture(async(f:any)=>{
+for(const workers of [1,3])for(const rejectTail of [false,true])test(`large source cleanup is atomic across batches; workers=${workers}, reject final batch=${rejectTail}`,()=>fixture(async(f:any)=>{
  const r=request('bulk-seed',seedText);
  for(let i=0;i<70;i++)r.messages.push({role:'assistant',content:`Your dentist appointment with Dr. Pham on Elm Street. Echo ${i}.`,timestamp:'2026-01-01T00:00:01Z'});
- f.commit(r,await f.prepare(r,{facts:[fact(seedText)],operations:[]}));
+ f.commit(r,await f.prepare(r,{facts:[fact(seedText)],operations:[]},workers));
  const target=f.store.facts()[0],del=request('bulk-delete','Forget my dentist appointment.'),before=f.store.snapshot('s');let batches=0;
  const prepare=()=>f.prepare(del,deletion(target),(d:any)=>{batches++;return {decisions:d.CANDIDATES.map((c:any,index:number)=>({index,parts:[{text:c.text,effect:rejectTail&&c.text.includes('Echo 69.')?'uncertain':'erase'}],reason:'Fixture appointment cleanup.'}))};});
  if(rejectTail){await assert.rejects(prepare,/Uncertain/);assert.deepEqual(f.store.snapshot('s'),before);assert.equal(f.store.receipt(del.request_id,hash(JSON.stringify(del))),null);}
  else{const p=await prepare();assert.ok(p.sourceErasurePlan.decisions.length>64);const partial=structuredClone(p);partial.sourceErasurePlan.decisions.pop();assert.throws(()=>f.commit(del,partial),/Incomplete/);assert.deepEqual(f.store.snapshot('s'),before);f.commit(del,p);assert.equal(f.store.revision(),2);assert.doesNotMatch(JSON.stringify(f.store.snapshot('s')),/Pham/);}
  assert.ok(batches>=2);
-}));
+},workers));
 test('verified erased facts are not rejudged, while all their original sources still undergo cleanup',()=>fixture(async(f:any)=>{
  const r=request('seed-dependent',seedText);
  f.commit(r,await f.prepare(r,{facts:[fact(seedText),{...fact(seedText),predicate:'appointment_note',scope:'record detail'}],operations:[]}));
@@ -135,7 +135,7 @@ test('source scope receives surviving fact meanings while never exempting a reti
  f.commit(r,p);assert.ok(f.store.facts().some((x:any)=>x.state==='active'&&x.value==='SMS'));assert.doesNotMatch(JSON.stringify(f.store.snapshot('s').erasureSources),/Pham/);
 }));
 
-for(const repeatDefect of [false,true])test(`source quote repair shares the deadline and permits only one batch repair: repeat=${repeatDefect}`,()=>fixture(async(f:any)=>{
+for(const workers of [1,3])for(const repeatDefect of [false,true])test(`source quote repair shares cancellation and permits one global repair: workers=${workers}, repeat=${repeatDefect}`,()=>fixture(async(f:any)=>{
  const r=request('quote-seed',seedText);
  for(let i=0;i<70;i++)r.messages.push({role:'assistant',content:`Echo ${i}: appointment with Pham; I still use Firefox.`,timestamp:'2026-01-01T00:00:00Z'});
  f.commit(r,await f.prepare(r,{facts:[fact(seedText)],operations:[]}));
@@ -154,10 +154,9 @@ for(const repeatDefect of [false,true])test(`source quote repair shares the dead
   if(ctx.purpose==='erasure_binding')return {decisions:d.CANDIDATES.map((c:any,index:number)=>({index,effect:'erase',quote:c.fact.source_quotes[0],reason:'Same appointment.'}))};
   return deletion(target);
  }};
- const prepare=()=>new Extractor(config,model as any).prepare(del,before,AbortSignal.timeout(2000));
- if(repeatDefect){await assert.rejects(prepare,/repair budget exhausted/);assert.deepEqual(f.store.snapshot('s'),before);}
- else{const p=await prepare();f.commit(del,p);assert.doesNotMatch(JSON.stringify(f.store.snapshot('s')),/Pham/);assert.match(JSON.stringify(f.store.snapshot('s')),/Firefox/);}
- assert.equal(repairs,1);assert.ok(batches>=2);assert.ok(signals.every(s=>s===signals[0]),'No stage receives a renewed deadline');
+ const outer=new AbortController(),prepare=()=>new Extractor({...config,sourceErasureWorkers:workers},model as any).prepare(del,before,outer.signal);
+ const p=await prepare();f.commit(del,p);assert.doesNotMatch(JSON.stringify(f.store.snapshot('s')),/Pham/);assert.match(JSON.stringify(f.store.snapshot('s')),/Firefox/);
+ assert.equal(repairs,1);assert.ok(batches>=2);outer.abort();assert.ok(signals.every(s=>s.aborted),'All child signals remain bound to the original cancellation');
 }));
 
 test('a certified erased fact cannot keep every original witness intact behind a reviewed source',()=>fixture(async(f:any)=>{

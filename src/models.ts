@@ -19,7 +19,7 @@ function audit(record:Record<string,unknown>):void {
   if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
 }
 type GenerationPurpose='extraction'|'verification'|'repair'|'rerank'|'erasure_binding'|'source_erasure'|'source_erasure_repair'|'state_transition'|'source_operation'|'source_operation_screen'|'source_operation_closure'|'source_operation_route';
-type GenerationContext={extraction_shard?:{index:number;count:number;participants:number[]};purpose?:GenerationPurpose;verification_format?:string;verification_scope?:{facts:number;operations:number;replacements:number;messages:number;reused:number};trace?:{user_id:string;request_id:string}};
+type GenerationContext={source_erasure_batch?:import('./source-erasure-execution.js').SourceErasureBatchContext;extraction_shard?:{index:number;count:number;participants:number[]};purpose?:GenerationPurpose;verification_format?:string;verification_scope?:{facts:number;operations:number;replacements:number;messages:number;reused:number};trace?:{user_id:string;request_id:string}};
 
 export class Models {
   private client: OpenAI;
