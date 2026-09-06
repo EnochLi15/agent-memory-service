@@ -125,7 +125,7 @@ test('same-value records in another scope survive deletion and mixed-source reda
  const op=proposal(deletion.messages[0]!.content,[target.id]);Object.assign(op.operations[0]!,{scope:'Red',value:'SHARED-821'});
  const prepared=await new Extractor(config,{verify:async()=>[],json:async()=>structuredClone(op)} as any).prepare(deletion,store.snapshot('s'),AbortSignal.timeout(1000));
  store.commit(deletion,hash(JSON.stringify(deletion)),prepared,store.revision());
- assert.equal(store.facts().find((f:any)=>f.scope==='Red'&&f.predicate==='access_code').state,'erased');
+ assert.equal(store.facts().find((f:any)=>f.id===target.id).state,'erased');
  const kept=store.facts().find((f:any)=>f.scope==='Blue');assert.equal(kept.state,'active');assert.equal(kept.value,'SHARED-821');
  const rows=retrieve(store,{user_id:'u',query:'project Blue access code',top_k:100},null,config).data;
  assert.match(JSON.stringify(rows),/For project Blue my access code is SHARED-821/);assert.doesNotMatch(JSON.stringify(rows),/For project Red my access code is SHARED-821/);

@@ -30,7 +30,7 @@ async function seed(f:any){const r=request('seed',seedText);r.messages.push({rol
 const deletion=(target:any)=>({facts:[],operations:[{type:'forget',target_ids:[target.id],subject:'user',predicate:'appointment',scope:'dentist',value:target.value,boundary:'value',source:{index:0,quote:'Forget my dentist appointment.'}}]});
 test('source erasure removes old assistant paraphrases and preserves unextracted mixed-sentence neighbors',()=>fixture(async(f:any)=>{
  const target=await seed(f),r=request('delete','Forget my dentist appointment.');f.commit(r,await f.prepare(r,deletion(target)));
- assert.ok(f.calls()>0);assert.equal(f.store.meta('source_format'),'dual-source-v4');
+ assert.ok(f.calls()>0);assert.equal(f.store.meta('source_format'),'dual-source-v4-s1');
  const all=f.store.db.prepare('SELECT body FROM messages').all().map((x:any)=>JSON.parse(x.body));
  assert.doesNotMatch(JSON.stringify(all),/Pham/);assert.match(JSON.stringify(all),/I still use Firefox/);
  assert.doesNotMatch(JSON.stringify(f.store.snapshot('s').tail),/Pham/);

@@ -87,5 +87,5 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
 
 export function sourceFormatFor(config:Config):NonNullable<Prepared['sourceFormat']>{
  const erasure=config.erasureBinding&&!config.experimental?.rawOnly;
- return `${config.sourceIndex&&!config.experimental?.rawOnly?'dual-source':'facts-only'}-v${erasure?(config.sourceFirst?10:config.sourceOperationRouting?9:config.sourceOperationBatches?8:config.sourceOperationHistory?7:config.sourceOperations?6:config.semanticTransitions?5:config.sourceErasure?4:3):2}` as NonNullable<Prepared['sourceFormat']>;
+ return `${config.sourceIndex&&!config.experimental?.rawOnly?'dual-source':'facts-only'}-v${erasure?(config.sourceFirst?10:config.sourceOperationRouting?9:config.sourceOperationBatches?8:config.sourceOperationHistory?7:config.sourceOperations?6:config.semanticTransitions?5:config.sourceErasure?4:3):2}-s1` as NonNullable<Prepared['sourceFormat']>;
 }

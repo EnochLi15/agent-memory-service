@@ -21,7 +21,7 @@ test('compatible detail survives duplicate-source merging followed by a single-v
  const detail='I drink black drip coffee every morning, no milk, no sugar.',routine='I like a plain cup of coffee routine.';
  const a=req('a',detail);commit(a,await prepare(a,[fact(detail,'black drip coffee')]));
  const b=req('b',detail+' '+routine,'2026-01-02');const p=await prepare(b,[fact(detail,'black drip coffee'),fact(routine,'plain cup of coffee routine')]);
- assert.equal(p.transitionPlan.decisions[0].relation,'compatible');commit(b,p);assert.equal(calls(),1);assert.equal(store.meta('source_format'),'dual-source-v5');
+ assert.equal(p.transitionPlan.decisions[0].relation,'compatible');commit(b,p);assert.equal(calls(),1);assert.equal(store.meta('source_format'),'dual-source-v5-s1');
  assert.ok(store.facts().every((f:any)=>f.state==='active'));assert.equal(store.facts().length,2);assert.ok(store.snapshot('s').erasureSources);
  const data=retrieve(store,{query:'coffee milk sugar',user_id:'u',top_k:32},null,config).data;
  assert.match(JSON.stringify(data),/black drip coffee/);assert.match(JSON.stringify(data),/no milk, no sugar/);
@@ -60,7 +60,7 @@ test('a missing or stale transition plan cannot publish facts, sources, events o
  assert.throws(()=>commit(b,p,'indexes'),/Fault injection/);assert.deepEqual(store.snapshot('s'),before);commit(b,p);assert.equal(store.revision(),2);
 }));
 test('v5 rejects reuse of an existing v4 directory',()=>fixture(async({store,prepare,commit}:any)=>{
- const a=req('a','I like tea.'),p=await prepare(a,[fact(a.messages[0].content,'tea')]);p.sourceFormat='dual-source-v4';delete p.transitionPlan;commit(a,p);
+ const a=req('a','I like tea.'),p=await prepare(a,[fact(a.messages[0].content,'tea')]);p.sourceFormat='dual-source-v4-s1';delete p.transitionPlan;commit(a,p);
  const b=req('b','I also enjoy its routine.','2026-01-02');
  const next=await prepare(b,[fact(b.messages[0].content,'routine')]);assert.throws(()=>commit(b,next),/Fresh data directory/);assert.equal(store.revision(),1);
 }));

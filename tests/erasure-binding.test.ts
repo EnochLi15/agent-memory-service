@@ -53,7 +53,7 @@ test('a pronoun-only retention witness cannot keep a value borrowed from the era
 }));
 test('v3 transaction checks request/record fingerprint and cannot omit an erasure plan',()=>fixture(async({store,prepare,commit}:any)=>{
  const r=req('seed','My hobby is hiking.');const p=await prepare(r,{facts:[fact(r.messages[0].content,'hobby','hiking')],operations:[]});
- assert.equal(p.sourceFormat,'dual-source-v3');
+ assert.equal(p.sourceFormat,'dual-source-v3-s1');
  const missing=structuredClone(p);delete missing.erasurePlan;assert.throws(()=>commit(r,missing),(e:any)=>e.code==='EVIDENCE_VALIDATION');
  const changed=structuredClone(p);changed.facts[0].scope='changed';assert.throws(()=>commit(r,changed),(e:any)=>e.code==='EVIDENCE_VALIDATION');
  assert.throws(()=>commit({...r,request_id:'other'},p),(e:any)=>e.code==='EVIDENCE_VALIDATION');assert.equal(store.revision(),0);assert.equal(store.facts().length,0);commit(r,p);

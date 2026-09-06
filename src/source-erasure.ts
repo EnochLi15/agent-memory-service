@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {slot,ServiceError,type AddRequest,type Fact,type Operation,type StoredMessage,type ErasureBoundary,type SourceErasurePlan} from './types.js';
+import {sameSlot,ServiceError,type AddRequest,type Fact,type Operation,type StoredMessage,type ErasureBoundary,type SourceErasurePlan} from './types.js';
 import {valueWords,valueDigest,boundaryKey,containsValue} from './erasure.js';
 const digest=(s:string)=>createHash('sha256').update(s).digest('hex');
 const stop=new Set('the and that this with from have has had was were are is for you your user our their they she his her its but not now then just about some any all been into says said will would should could want wants need needs name fact'.split(' '));
@@ -28,7 +28,7 @@ export function sourceErasureWork(req:AddRequest,prior:Fact[],incoming:Fact[],op
  const nominate=(kind:Candidate['kind'],id:string,start:number,text:string,context:unknown,isNew:boolean)=>{
   for(const [key,{boundary,authorization,fresh}] of boundaries){
    if(!fresh&&!isNew)continue;
-   if(boundary.allowedValueHashes?.includes(boundary.valueHash)||operations.some(o=>o.type==='restore'&&slot(o)===slot(boundary)&&valueDigest(o.value)===boundary.valueHash))continue;
+   if(boundary.allowedValueHashes?.includes(boundary.valueHash)||operations.some(o=>o.type==='restore'&&sameSlot(o,boundary)&&valueDigest(o.value)===boundary.valueHash))continue;
    const anchors=boundary.anchorHashes??[];
    const matching_words=[...new Set(valueWords(text).filter(w=>anchors.includes(digest(w))))];
    if(!containsValue(text,boundary)&&(!anchors.length||matching_words.length<Math.min(2,anchors.length)))continue;

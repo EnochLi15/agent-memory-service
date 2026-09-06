@@ -10,14 +10,14 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { canonical, slot, propertyFamily, replacementMatches, ServiceError, type AddRequest, type MemoryEvent, type Operation, type Fact, type Passage, type Prepared, type Receipt, type Snapshot, type StoredMessage, type QueryIntent } from './types.js';
+import { canonical, slot, sameScope, sameSlot, scopeKey, propertyFamily, replacementMatches, ServiceError, type AddRequest, type MemoryEvent, type Operation, type Fact, type Passage, type Prepared, type Receipt, type Snapshot, type StoredMessage, type QueryIntent } from './types.js';
 import { tokens } from './text.js';
 import {redactPassage} from './passages.js';
 import {eventCategory} from './events.js';
 import {resolveOperationTargets} from './binding.js';
 import {retirementEffectMismatch,missingForgetObligations} from './operation-intent.js';
 import {erasureAnchors,sourceErasureWork,validateSourceErasure,maskSource,assertErasedWitnessProgress} from './source-erasure.js';
-import {valueWords,valueDigest,containsValue,valueOccurrences,boundaryKey,retainedAgainst,erasureWork,validateErasurePlan} from './erasure.js';
+import {valueWords,valueDigest,containsValue,valueOccurrences,boundaryKey,protectBoundary,retainedAgainst,erasureWork,validateErasurePlan} from './erasure.js';
 import type {ErasureBoundary} from './types.js';
 import {transitionKey,transitionWork,validateTransitions} from './transitions.js';
 
@@ -28,7 +28,7 @@ function markerConcerns(m:Marker,f:Fact):boolean{
   if(retainedAgainst(f,m))return false;
   // An unscoped replay remains guarded; an explicitly different subject/context
   // is not erased merely because it happens to contain the same literal value.
-  return canonical(m.subject)===canonical(f.subject)&&(!f.scope||canonical(m.scope)===canonical(f.scope));
+  return canonical(m.subject)===canonical(f.subject)&&(!f.scope||sameScope(m,f));
 }
 export class TenantStore {
   readonly db: Database.Database;readonly preparation:PreparationLedger;
@@ -40,7 +40,7 @@ export class TenantStore {
     try{
       const hasMeta=this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").get();
       const format=hasMeta?this.meta('source_format'):null;
-      if(format!==null&&(!/^(?:(?:dual-source|facts-only)-v[2-9]|dual-source-v10)$/.test(format)||expectedFormat&&format!==expectedFormat))throw new ServiceError('SOURCE_FORMAT','Incompatible source representation; restore a compatible snapshot or use a fresh data directory');
+      if(format!==null&&(!/^(?:(?:dual-source|facts-only)-v[2-9]|dual-source-v10)-s1$/.test(format)||expectedFormat&&format!==expectedFormat))throw new ServiceError('SOURCE_FORMAT','Incompatible source representation; restore a compatible snapshot or use a fresh data directory');
       if(format===null&&this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts'").get()&&this.db.prepare('SELECT 1 FROM facts LIMIT 1').get())throw new ServiceError('SOURCE_FORMAT','Unversioned populated data requires explicit recovery; use a compatible snapshot or fresh data directory');
     }catch(error){this.db.close();throw error;}
     this.db.pragma('journal_mode = WAL'); this.db.pragma('foreign_keys = ON'); this.db.pragma('synchronous = FULL');
@@ -83,34 +83,35 @@ export class TenantStore {
   snapshot(session:string):Snapshot {
     const rows=this.db.prepare('SELECT body FROM messages WHERE session_id=? ORDER BY ordinal DESC LIMIT 10').all(session) as Row[];
     const boundaries=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
-    return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null,...(/-v(?:[3-9]|10)$/.test(this.meta('source_format')??'')?{erasureBoundaries:boundaries}:{}),...(/-v(?:[4-9]|10)$/.test(this.meta('source_format')??'')?{erasureSources:(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage)}:{})};
+    return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null,...(/-v(?:[3-9]|10)-s1$/.test(this.meta('source_format')??'')?{erasureBoundaries:boundaries}:{}),...(/-v(?:[4-9]|10)-s1$/.test(this.meta('source_format')??'')?{erasureSources:(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage)}:{})};
   }
   private put(f:Fact):void {
     // Extraction proposals carry a sources array, but persisted facts have one
     // canonical source_quotes field. Never preserve an untracked duplicate copy.
     delete (f as Fact & {sources?:unknown}).sources;
     if(f.state==='erased'){f.time_text='';delete f.event_time;delete f.transition_time;delete f.erasure_exemptions;}
-    this.db.prepare('INSERT OR REPLACE INTO facts VALUES (?,?)').run(f.id,JSON.stringify(f));
+    this.db.prepare('INSERT OR REPLACE INTO facts VALUES (?,?)').run(f.id,JSON.stringify(f.state==='erased'?{...f,scopeHash:scopeKey(f),scope:''}:f));
     this.db.prepare('DELETE FROM evidence_fts WHERE id=?').run(f.id);
     if (f.state!=='erased' && f.state!=='retracted') this.db.prepare('INSERT INTO evidence_fts(id,text) VALUES (?,?)').run(f.id,tokens(`${f.subject} ${f.predicate} ${f.scope} ${f.content}`).join(' '));
   }
   commit(req:AddRequest,payloadHash:string,prepared:Prepared,expectedRevision:number,failAt?:string):Receipt {
+    if(prepared.sourceFormat&&!/^(?:(?:dual-source|facts-only)-v[2-9]|dual-source-v10)-s1$/.test(prepared.sourceFormat))throw new ServiceError('SOURCE_FORMAT','Unsupported source representation; use a fresh data directory');
     // A rejected/rolled-back transaction must not mutate a fingerprinted plan
     // or its transient target records in the caller's prepared object.
-    if(/-v(?:[3-9]|10)$/.test(prepared.sourceFormat??''))prepared=structuredClone(prepared);
+    if(/-v(?:[3-9]|10)-s1$/.test(prepared.sourceFormat??''))prepared=structuredClone(prepared);
     return this.db.transaction(()=>{
       const already=this.receipt(req.request_id,payloadHash); if(already)return already;
       if(this.revision()!==expectedRevision)throw new ServiceError('REVISION_CONFLICT','Concurrent mutation; retry request');
       if(prepared.operations.some(o=>retirementEffectMismatch(o,req)))throw new ServiceError('OPERATION_INTENT','Retraction cannot satisfy an erasure request');
-      const semanticErasure=/-v(?:[3-9]|10)$/.test(prepared.sourceFormat??''),sourceErasure=/-v(?:[4-9]|10)$/.test(prepared.sourceFormat??''),semanticTransitions=/-v(?:[5-9]|10)$/.test(prepared.sourceFormat??'');
-      const sourceActions=/-v(?:[6-9]|10)$/.test(prepared.sourceFormat??'')?validateSourceOperations(prepared.sourceOperationPlan,req,this.facts(),prepared.facts,prepared.messages,/-v(?:[7-9]|10)$/.test(prepared.sourceFormat??'')?this.snapshot(req.session_id).erasureSources??[]:[]):undefined;
-      if(/-v(?:9|10)$/.test(prepared.sourceFormat??'')&&sourceActions){
+      const semanticErasure=/-v(?:[3-9]|10)-s1$/.test(prepared.sourceFormat??''),sourceErasure=/-v(?:[4-9]|10)-s1$/.test(prepared.sourceFormat??''),semanticTransitions=/-v(?:[5-9]|10)-s1$/.test(prepared.sourceFormat??'');
+      const sourceActions=/-v(?:[6-9]|10)-s1$/.test(prepared.sourceFormat??'')?validateSourceOperations(prepared.sourceOperationPlan,req,this.facts(),prepared.facts,prepared.messages,/-v(?:[7-9]|10)-s1$/.test(prepared.sourceFormat??'')?this.snapshot(req.session_id).erasureSources??[]:[]):undefined;
+      if(/-v(?:9|10)-s1$/.test(prepared.sourceFormat??'')&&sourceActions){
         validateSourceRoutePlan(prepared.sourceOperationPlan!,sourceActions.work);
         const resolved=sourceActions.plan.decisions.filter(d=>d.action==='reject_source').map(d=>sourceActions.work.instructions[d.instruction]!);
         if(missingForgetObligations(req,{facts:[],operations:prepared.operations}).some(o=>!resolved.some(i=>i.message===o.index&&i.start===o.span.start&&i.end===o.span.end)))throw new ServiceError('OPERATION_INTENT','Ordinary routing does not fulfill an unexecuted forget instruction');
       }
-      if(prepared.sourceFormat?.endsWith('-v8')&&sourceActions?.work.enabled)validateSourceBatchPlan(prepared.sourceOperationPlan!,sourceActions.work);
-      const coveragePrepared=prepared.sourceFormat==='dual-source-v10'?{...prepared,facts:prepared.facts.map(({vector,...f})=>({...structuredClone(f),vector:null})),operations:structuredClone(prepared.operations),messages:structuredClone(prepared.messages)}:undefined;
+      if(prepared.sourceFormat?.endsWith('-v8-s1')&&sourceActions?.work.enabled)validateSourceBatchPlan(prepared.sourceOperationPlan!,sourceActions.work);
+      const coveragePrepared=prepared.sourceFormat==='dual-source-v10-s1'?{...prepared,facts:prepared.facts.map(({vector,...f})=>({...structuredClone(f),vector:null})),operations:structuredClone(prepared.operations),messages:structuredClone(prepared.messages)}:undefined;
       if(coveragePrepared)validateSourceCoveragePlan(prepared.sourceCoveragePlan,req,coveragePrepared);
       const transitions=semanticTransitions?validateTransitions(prepared.transitionPlan,transitionWork(req,this.facts(),prepared.facts,prepared.operations)):undefined;
       let sourceCuts=new Map<string,{start:number;end:number}[]>();const reviewedSources=new Set<string>();
@@ -177,7 +178,7 @@ export class TenantStore {
         if(operation.type==='forget'&&target.some(f=>f.state==='erased')){
           const priorMarkers=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
           for(const f of target.filter(f=>f.state==='erased')){
-            const satisfied=priorMarkers.some(m=>slot(m)===slot(f)&&(operation.value?m.valueHash===valueDigest(operation.value):operation.boundary==='property'&&m.boundary==='property'));
+            const satisfied=priorMarkers.some(m=>sameSlot(m,f)&&(operation.value?m.valueHash===valueDigest(operation.value):operation.boundary==='property'&&m.boundary==='property'));
             if(!satisfied)throw new ServiceError('OPERATION_TARGET','Already erased target does not prove the requested deletion boundary');
           }
         }
@@ -186,7 +187,7 @@ export class TenantStore {
         if(operation.type==='restore'){
           if(!hasRestoreWording(operation.source.quote))throw new ServiceError('RESTORE','Explicit reauthorization required');
           const markerRows=this.db.prepare('SELECT id,body FROM markers').all() as {id:number;body:string}[];
-          for(const row of markerRows){const m=JSON.parse(row.body) as Marker;if(slot(m)===slot(operation)){if(!operation.value)throw new ServiceError('RESTORE','Explicit new value required');m.allowedValueHashes=[...new Set([...(m.allowedValueHashes??[]),valueDigest(operation.value)])];this.db.prepare('UPDATE markers SET body=? WHERE id=?').run(JSON.stringify(m),row.id);}}
+          for(const row of markerRows){const m=JSON.parse(row.body) as Marker;if(sameSlot(m,operation)){if(!operation.value)throw new ServiceError('RESTORE','Explicit new value required');m.allowedValueHashes=[...new Set([...(m.allowedValueHashes??[]),valueDigest(operation.value)])];this.db.prepare('UPDATE markers SET body=? WHERE id=?').run(JSON.stringify(m),row.id);}}
           continue;
         }
         if(!target.length && operation.type!=='update')throw new ServiceError('OPERATION_TARGET','No unambiguous existing target');
@@ -195,7 +196,7 @@ export class TenantStore {
           for(const id of f.source_ids)suppressedSources.add(id);
           if(operation.type==='forget'){
             const marker:Marker={subject:f.subject,predicate:f.predicate,scope:f.scope,boundary:operation.boundary,valueHash:valueDigest(f.value),tokenCount:valueWords(f.value).length,allowedValueHashes:[],revision,...(sourceErasure?{anchorHashes:erasureAnchors(f)}:{})};
-            this.db.prepare('INSERT INTO markers(body) VALUES (?)').run(JSON.stringify(marker));
+            this.db.prepare('INSERT INTO markers(body) VALUES (?)').run(JSON.stringify(protectBoundary(marker)));
             erasedIds.add(f.id);for(const id of f.source_ids)redactedSources.add(id);
             rememberErasedQuotes(f);
             f.state='erased'; f.content='';f.value='';f.vector=null;f.source_quotes=[];f.entities=[];
@@ -214,7 +215,7 @@ export class TenantStore {
         for(const id of f.supersedes){const old=all.find(x=>x.id===id);if(old&&!replacementMatches(f,old))throw new ServiceError('FACT_TARGET','Replacement targets a different subject, property or scope');}
         if(f.state==='erased'||f.state==='retracted'||f.state==='superseded'){this.put(f);all.push(f);for(const id of f.source_ids)suppressedSources.add(id);continue;}
         // An exact old-value replay cannot resurrect forgotten material.
-        if(markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)) && ((slot(m)===slot(f) && (m.boundary==='property'||m.valueHash===valueDigest(f.value)))||containsValue(f.content,m)))){for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}continue;}
+        if(markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)) && ((sameSlot(m,f) && (m.boundary==='property'||m.valueHash===valueDigest(f.value)))||containsValue(f.content,m)))){for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}continue;}
         if(f.modality==='hypothetical'||f.modality==='quoted')continue;
         const same=all.filter(old=>(old.state==='active'||old.state==='conflicted')&&slot(old)===slot(f));
         const duplicate=same.find(old=>canonical(old.value)===canonical(f.value)&&old.modality===f.modality&&f.kind!=='event');
@@ -371,7 +372,7 @@ export class TenantStore {
         const after=['forget','retract'].includes(o.type)?[]:prepared.facts.filter(f=>slot(f)===slot(o)&&f.source_ids.includes(source.id)).map(f=>mergedIds.get(f.id)??f.id).filter(id=>current.has(id));
         const original=originalFacts.find(f=>ids.includes(f.id))??prepared.facts.find(f=>ids.includes(f.id));
         event(o.type,{...o,content:original?.content??''},[source.id],ids,after,source.content.indexOf(o.source.quote),source.role==='user'?'user':'participant');
-        this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:o.type,target_ids:ids,subject:o.subject,predicate:o.predicate,scope:o.scope,boundary:o.boundary,source_id:source.id,revision}));
+        this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:o.type,target_ids:ids,subject:o.subject,predicate:o.predicate,scope:'',scopeHash:scopeKey(o),boundary:o.boundary,source_id:source.id,revision}));
       }
       if(sourceActions)for(const d of sourceActions.plan.decisions.filter(d=>d.action==='reject_source')){
         const instruction=sourceActions.work.instructions[d.instruction]!,source=inserted[instruction.message]!;

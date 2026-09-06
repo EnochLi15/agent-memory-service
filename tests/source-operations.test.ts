@@ -36,7 +36,7 @@ test('source-only removal preserves true facts through rollback, retry, restart 
  const dir=mkdtempSync(join(tmpdir(),'source-op-'));let store=new TenantStore(dir,'u');const calls:any[]=[],extractor=new Extractor(config,fake(calls) as any);
  const initial={...req,request_id:'initial',messages:[{role:'user',content:'I swim on Mondays.',timestamp}]};
  try{
-  const a=await extractor.prepare(initial,store.snapshot('s'),AbortSignal.timeout(2000));store.commit(initial,hash(JSON.stringify(initial)),a,0);assert.equal(store.meta('source_format'),'dual-source-v6');const before=structuredClone(store.facts());
+  const a=await extractor.prepare(initial,store.snapshot('s'),AbortSignal.timeout(2000));store.commit(initial,hash(JSON.stringify(initial)),a,0);assert.equal(store.meta('source_format'),'dual-source-v6-s1');const before=structuredClone(store.facts());
   const p=await extractor.prepare(req,store.snapshot('s'),AbortSignal.timeout(2000));assert.ok(p.sourceOperationPlan);const fingerprint=JSON.stringify(p);
   for(const boundary of ['operations','indexes']){assert.throws(()=>store.commit(req,hash(JSON.stringify(req)),p,1,boundary));assert.equal(store.revision(),1);assert.deepEqual(store.facts(),before);assert.equal(store.receipt(req.request_id,hash(JSON.stringify(req))),null);assert.equal(JSON.stringify(p),fingerprint);}
   const receipt=store.commit(req,hash(JSON.stringify(req)),p,1);assert.deepEqual(store.commit(req,hash(JSON.stringify(req)),p,1),receipt);assert.equal(store.revision(),2);
@@ -48,7 +48,7 @@ test('source-only removal preserves true facts through rollback, retry, restart 
 test('v6 rejects missing/tampered plans and existing v5 directories',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'source-op-identity-')),store=new TenantStore(dir,'u'),extractor=new Extractor(config,fake() as any);
  try{const p=await extractor.prepare(req,empty,AbortSignal.timeout(2000));const missing=structuredClone(p);delete missing.sourceOperationPlan;assert.throws(()=>store.commit(req,hash(JSON.stringify(req)),missing,0));const bad=structuredClone(p);bad.sourceOperationPlan!.fingerprint='forged';assert.throws(()=>store.commit(req,hash(JSON.stringify(req)),bad,0));assert.equal(store.revision(),0);
-  store.db.prepare('INSERT OR REPLACE INTO meta VALUES (?,?)').run('source_format','dual-source-v5');assert.throws(()=>store.commit(req,hash(JSON.stringify(req)),p,0),/Fresh data directory/);assert.equal(store.revision(),0);
+  store.db.prepare('INSERT OR REPLACE INTO meta VALUES (?,?)').run('source_format','dual-source-v5-s1');assert.throws(()=>store.commit(req,hash(JSON.stringify(req)),p,0),/Fresh data directory/);assert.equal(store.revision(),0);
  }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
 test('ordinary decisions cannot satisfy missing genuine forget operations',async()=>{

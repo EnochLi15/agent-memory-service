@@ -1,4 +1,4 @@
-import {canonical,slot,propertyFamily,operationScopeProblem,type Fact,type Operation} from './types.js';
+import {canonical,sameScope,sameSlot as matchesSlot,propertyFamily,operationScopeProblem,type Fact,type Operation} from './types.js';
 import {overlap} from './text.js';
 
 export type TargetBinding =
@@ -12,7 +12,7 @@ export function resolveOperationTargets(operation:Operation,pool:Fact[],allowEmp
  if(new Set(operation.target_ids).size!==operation.target_ids.length)return {status:'ambiguous',code:'OPERATION_TARGET',reason:'Duplicate target suggestions',candidate_ids:[]};
  if(operation.target_ids.some(id=>!byId.has(id)))return {status:'missing_evidence',code:'OPERATION_TARGET',reason:'A target is missing or unavailable at the operation source position',candidate_ids:[]};
  const explicit=operation.target_ids.length>0;
- let selected=explicit?operation.target_ids.map(id=>byId.get(id)!):pool.filter(f=>slot(f)===slot(operation)&&f.predicate!=='memory_operation'&&(
+ let selected=explicit?operation.target_ids.map(id=>byId.get(id)!):pool.filter(f=>matchesSlot(f,operation)&&f.predicate!=='memory_operation'&&(
   ['correct','update'].includes(operation.type)?['active','conflicted'].includes(f.state):!operation.value||canonical(f.value)===canonical(operation.value)));
  if(selected.some(f=>f.predicate==='memory_operation'))return {status:'missing_evidence',code:'OPERATION_TARGET',reason:'An operation trace is not the underlying target',candidate_ids:[]};
  const scopeProblem=operationScopeProblem(operation,selected);
@@ -23,7 +23,7 @@ export function resolveOperationTargets(operation:Operation,pool:Fact[],allowEmp
  const initial=[...selected];
  for(const f of pool){
   if(selected.some(t=>t.id===f.id)||f.predicate==='memory_operation')continue;
-  const sameSlot=(t:Fact)=>canonical(t.subject)===canonical(f.subject)&&canonical(t.scope)===canonical(f.scope)&&propertyFamily(t.predicate,t.content)===propertyFamily(f.predicate,f.content);
+  const sameSlot=(t:Fact)=>canonical(t.subject)===canonical(f.subject)&&sameScope(t,f)&&propertyFamily(t.predicate,t.content)===propertyFamily(f.predicate,f.content);
   const propertyBoundary=operation.type==='forget'&&operation.boundary==='property'&&initial.some(sameSlot);
   const equivalent=f.state==='active'&&f.kind!=='event'&&initial.some(t=>t.value&&canonical(t.value)===canonical(f.value)&&sameSlot(t));
   if(propertyBoundary||equivalent){selected.push(f);evidence.push({target_id:f.id,via:propertyBoundary?'property_boundary':'equivalent_value'});}
@@ -37,8 +37,8 @@ export function resolveOperationTargets(operation:Operation,pool:Fact[],allowEmp
 export function bindingCandidates(operation:Operation,facts:Fact[],limit=24):Fact[]{
  return facts.filter(f=>f.predicate!=='memory_operation'&&canonical(f.subject)===canonical(operation.subject)).map(f=>{
   const sameProperty=propertyFamily(f.predicate,f.content)===propertyFamily(operation.predicate);
-  const sameScope=canonical(f.scope)===canonical(operation.scope);
+  const matchingScope=sameScope(f,operation);
   const lexical=overlap(operation.source.quote,`${f.subject} ${f.predicate} ${f.scope} ${f.content}`);
-  return {f,score:(sameProperty?4:0)+(sameProperty&&sameScope?6:0)+lexical*2,relevant:sameProperty||lexical>.15};
+  return {f,score:(sameProperty?4:0)+(sameProperty&&matchingScope?6:0)+lexical*2,relevant:sameProperty||lexical>.15};
  }).filter(x=>x.relevant).sort((a,b)=>b.score-a.score||a.f.id.localeCompare(b.f.id)).slice(0,Math.max(0,Math.min(32,limit))).map(x=>x.f);
 }

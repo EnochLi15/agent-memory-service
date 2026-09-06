@@ -39,7 +39,7 @@ test('selective rerank skips complete direct evidence but keeps ambiguous and co
  const ambiguous=ranked.map(r=>({...r,score:.02}));assert.equal(rerankDecision({...req,top_k:1},intent(req.query),ambiguous,compact,c).reason,'ambiguous_candidates');
  assert.equal(rerankDecision(req,intent(req.query),ranked,{data:compact.data.slice(0,1)},c).reason,'too_few_candidates');
 });
-async function fixture(fn:(s:TenantStore,c:ReturnType<typeof config>,dir:string)=>Promise<void>){const dir=mkdtempSync(join(tmpdir(),'query-policy-')),c={...config(),dataDir:dir},s=new TenantStore(dir,'u');s.setMeta('source_format','dual-source-v2');try{await fn(s,c,dir);}finally{s.close();rmSync(dir,{recursive:true,force:true});}}
+async function fixture(fn:(s:TenantStore,c:ReturnType<typeof config>,dir:string)=>Promise<void>){const dir=mkdtempSync(join(tmpdir(),'query-policy-')),c={...config(),dataDir:dir},s=new TenantStore(dir,'u');s.setMeta('source_format','dual-source-v2-s1');try{await fn(s,c,dir);}finally{s.close();rmSync(dir,{recursive:true,force:true});}}
 test('conditional retrieval uses only visible grounded paths and returns evidence without invented conclusions',()=>fixture(async(s,c)=>{
  chain.forEach(f=>s.put(f));const q={user_id:'u',query:"What hobby does Alice's friend enjoy?",top_k:32};const frame=collectCandidates(s,q,null,c);
  assert.ok(frame.trace.relation_expansion?.hits.some(h=>h.id==='bh'));assert.ok(!frame.trace.relation_expansion?.hits.some(h=>h.id==='noise'));

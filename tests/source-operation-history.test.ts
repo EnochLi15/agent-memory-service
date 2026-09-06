@@ -39,7 +39,7 @@ test('v7 erases historical assertions and cross-session echoes atomically while 
  const dir=mkdtempSync(join(tmpdir(),'history-source-'));let store=new TenantStore(dir,'u');const x=new Extractor(config,models as any);
  try{
   for(const req of [a,b]){const revision=store.revision(),p=await x.prepare(req,store.snapshot(req.session_id),AbortSignal.timeout(2000));store.commit(req,hash(JSON.stringify(req)),p,revision);}
-  assert.equal(store.meta('source_format'),'dual-source-v7');
+  assert.equal(store.meta('source_format'),'dual-source-v7-s1');
   const sourceId=hash(['u','a','1'].join('\0')),row=store.db.prepare('SELECT body FROM messages WHERE id=?').get(sourceId) as any;
   const hidden=JSON.parse(row.body);hidden.searchable=false;store.db.prepare('UPDATE messages SET body=? WHERE id=?').run(JSON.stringify(hidden),sourceId);
   const before=store.snapshot('s'),prepared=await x.prepare(c,before,AbortSignal.timeout(2000));

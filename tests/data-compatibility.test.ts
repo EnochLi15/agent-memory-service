@@ -1,5 +1,5 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+import {mkdtempSync,rmSync,readFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {createHash} from 'node:crypto';
 import {buildServer} from '../dist/server.js';import {configFromEnv} from '../dist/config.js';import {TenantStore} from '../dist/storage.js';
 
 test('a misspelled mode cannot silently select offline behavior',()=>{
@@ -31,4 +31,21 @@ test('populated unversioned data cannot be opened as a fresh store',()=>{
  const dir=mkdtempSync(join(tmpdir(),'unversioned-memory-'));const store=new TenantStore(dir,'u');
  store.db.prepare('INSERT INTO facts(id,body) VALUES (?,?)').run('legacy','{}');store.close();
  try{assert.throws(()=>new TenantStore(dir,'u'),{code:'SOURCE_FORMAT'});}finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test('legacy plaintext scope formats are refused without rewriting their database',()=>{
+ for(const format of ['dual-source-v2','facts-only-v3','dual-source-v10']){
+  const dir=mkdtempSync(join(tmpdir(),'legacy-scope-format-')),store=new TenantStore(dir,'u');
+  store.setMeta('source_format',format);store.db.prepare('INSERT INTO facts VALUES (?,?)').run('old',JSON.stringify({scope:'private legacy context',state:'erased'}));store.close();
+  const path=join(dir,createHash('sha256').update('u').digest('hex'),'memory.sqlite'),before=readFileSync(path);
+  try{assert.throws(()=>new TenantStore(dir,'u'),{code:'SOURCE_FORMAT'});assert.deepEqual(readFileSync(path),before);}finally{rmSync(dir,{recursive:true,force:true});}
+ }
+});
+
+test('legacy prepared writes cannot create a falsely compatible store',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'legacy-scope-write-')),store=new TenantStore(dir,'u');
+ try{
+  assert.throws(()=>store.commit({request_id:'a',user_id:'u',session_id:'s',messages:[]},'hash',{sourceFormat:'dual-source-v10'},0),{code:'SOURCE_FORMAT'});
+  assert.equal(store.revision(),0);assert.equal(store.meta('source_format'),null);assert.equal(store.receipt('a','hash'),null);
+ }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import {createHash} from 'node:crypto';
 
 export const messageSchema = z.object({ role: z.string(), content: z.string(), timestamp: z.string().datetime({ offset: true }) });
 export const addSchema = z.object({ request_id: z.string(), user_id: z.string(), session_id: z.string(), messages: z.array(messageSchema) });
@@ -31,6 +32,7 @@ export type Extraction = z.infer<typeof extractionSchema>;
 export type TemporalEvidence={expression:string;anchor:string|null;start:string|null;end_exclusive:string|null;precision:'day'|'month'|'year'|'week'|'unknown';resolution:'resolved'|'unresolved'|'ordering';reason?:string};
 export type MemoryEvent={id:string;type:'remember'|'update'|'correct'|'retract'|'forget'|'restore'|'reflection';category:string;slot_hash:string;source_ids:string[];before_ids:string[];after_ids:string[];ordinal:number;observed_at:string;time_basis:'source'|'ordering';revision:number;actor?:'user'|'participant'|'observation'};
 export type Fact = Omit<ExtractedFact, 'sources'> & {
+  scopeHash?:string;
   erasure_exemptions?: {key:string;quote:string}[];
   event_time?:TemporalEvidence;
   transition_time?:Pick<TemporalEvidence,'start'|'end_exclusive'|'precision'>;
@@ -40,12 +42,12 @@ export type Fact = Omit<ExtractedFact, 'sources'> & {
 };
 export type StoredMessage = Message & { id: string; session_id: string; ordinal: number; searchable: boolean; partial?: boolean; time_basis?: 'source' | 'ordering'; redacted?: boolean; external_id?:string };
 export type Passage = {id:string;source_id:string;speaker:string;external_id?:string;fragments:{start:number;end:number;text:string}[];fact_ids:string[];content:string;vector:number[]|null;observed_at:string;time_basis:'source'|'ordering';revision:number;state:'active'|'erased'};
-export type ErasureBoundary={subject:string;predicate:string;scope:string;boundary:string;valueHash:string;tokenCount?:number;anchorHashes?:string[];allowedValueHashes?:string[];revision:number};
+export type ErasureBoundary={scopeHash?:string;keyHash?:string;subject:string;predicate:string;scope:string;boundary:string;valueHash:string;tokenCount?:number;anchorHashes?:string[];allowedValueHashes?:string[];revision:number};
 export type ErasurePlan={fingerprint:string;decisions:{fact_id:string;key:string;effect:'erase'|'retain';quote:string}[]};
 export type SourceErasurePlan={fingerprint:string;decisions:{index:number;parts:{text:string;effect:'erase'|'retain'}[];reason:string}[]};
 export type TransitionPlan={fingerprint:string;decisions:{index:number;relation:'compatible'|'exclusive'|'uncertain';old_source_slot:number;new_source_slot:number;reason:string}[]};
 export type Snapshot = { revision: number; facts: Fact[]; tail: StoredMessage[]; anchor: string | null; erasureBoundaries?:ErasureBoundary[];erasureSources?:StoredMessage[] };
-export type Prepared = { sourceCoveragePlan?:import('./source-coverage.js').SourceCoveragePlan; sourceOperationPlan?:import('./source-operation-routing.js').RoutedPlan; facts: Fact[]; operations: Operation[]; messages: StoredMessage[]; passages?:Passage[]; sourceFormat?:'dual-source-v2'|'facts-only-v2'|'dual-source-v3'|'facts-only-v3'|'dual-source-v4'|'facts-only-v4'|'dual-source-v5'|'facts-only-v5'|'dual-source-v6'|'facts-only-v6'|'dual-source-v7'|'facts-only-v7'|'dual-source-v8'|'facts-only-v8'|'dual-source-v9'|'facts-only-v9'|'dual-source-v10'; erasurePlan?:ErasurePlan;sourceErasurePlan?:SourceErasurePlan;transitionPlan?:TransitionPlan; anchor: string | null; degraded: string[]; embeddingSpace: string };
+export type Prepared = { sourceCoveragePlan?:import('./source-coverage.js').SourceCoveragePlan; sourceOperationPlan?:import('./source-operation-routing.js').RoutedPlan; facts: Fact[]; operations: Operation[]; messages: StoredMessage[]; passages?:Passage[]; sourceFormat?:'dual-source-v2-s1'|'facts-only-v2-s1'|'dual-source-v3-s1'|'facts-only-v3-s1'|'dual-source-v4-s1'|'facts-only-v4-s1'|'dual-source-v5-s1'|'facts-only-v5-s1'|'dual-source-v6-s1'|'facts-only-v6-s1'|'dual-source-v7-s1'|'facts-only-v7-s1'|'dual-source-v8-s1'|'facts-only-v8-s1'|'dual-source-v9-s1'|'facts-only-v9-s1'|'dual-source-v10-s1'; erasurePlan?:ErasurePlan;sourceErasurePlan?:SourceErasurePlan;transitionPlan?:TransitionPlan; anchor: string | null; degraded: string[]; embeddingSpace: string };
 export type Candidate = { fact: Fact; score: number; signals: string[] };
 export type QueryIntent = { historical: boolean; trajectory: boolean; list: boolean; asOf: string | null; entities: string[]; operation?:boolean; mode?:'current'|'historical'|'list'|'operation'|'trajectory'; temporal?:boolean };
 
@@ -65,15 +67,21 @@ export function propertyFamily(predicate:string,content=''):string {
   return p;
 }
 export function slot(f: Pick<Fact, 'subject' | 'predicate' | 'scope'>): string { return [canonical(f.subject),propertyFamily(f.predicate),canonical(f.scope)].join('\u001f'); }
+type ScopeIdentity={scope:string;scopeHash?:string};
+/** Opaque stored scopes remain comparable to explicit incoming coordinates.
+ * The hash is internal metadata, never accepted in extraction/HTTP schemas. */
+export function scopeKey(f:ScopeIdentity):string{return f.scopeHash??createHash('sha256').update(canonical(f.scope)).digest('hex');}
+export function sameScope(a:ScopeIdentity,b:ScopeIdentity):boolean{return scopeKey(a)===scopeKey(b);}
+export function sameSlot(a:Pick<Fact,'subject'|'predicate'|'scope'>&{scopeHash?:string},b:Pick<Fact,'subject'|'predicate'|'scope'>&{scopeHash?:string}):boolean{return canonical(a.subject)===canonical(b.subject)&&propertyFamily(a.predicate)===propertyFamily(b.predicate)&&sameScope(a,b);}
 /** The same scope guard is used before model repair and again inside commit. */
 export function operationScopeProblem(operation:Operation,targets:Pick<Fact,'subject'|'scope'|'predicate'>[]):'OPERATION_SCOPE'|'OPERATION_TARGET'|'AMBIGUOUS_OPERATION'|null {
-  if(targets.some(f=>canonical(f.subject)!==canonical(operation.subject)||(operation.scope&&canonical(f.scope)!==canonical(operation.scope))))return 'OPERATION_SCOPE';
-  if(new Set(targets.map(f=>canonical(f.scope))).size>1)return 'AMBIGUOUS_OPERATION';
+  if(targets.some(f=>canonical(f.subject)!==canonical(operation.subject)||(operation.scope&&!sameScope(f,operation))))return 'OPERATION_SCOPE';
+  if(new Set(targets.map(scopeKey)).size>1)return 'AMBIGUOUS_OPERATION';
   if(['correct','update'].includes(operation.type)&&targets.some(f=>propertyFamily(f.predicate)!==propertyFamily(operation.predicate)))return 'OPERATION_TARGET';
   return null;
 }
 export function replacementMatches(f:Pick<Fact,'subject'|'scope'|'predicate'>,target:Pick<Fact,'subject'|'scope'|'predicate'>):boolean {
-  return canonical(f.subject)===canonical(target.subject)&&canonical(f.scope)===canonical(target.scope)&&propertyFamily(f.predicate)===propertyFamily(target.predicate);
+  return canonical(f.subject)===canonical(target.subject)&&sameScope(f,target)&&propertyFamily(f.predicate)===propertyFamily(target.predicate);
 }
 /** Necessary wording guard shared by verification and commit, not semantic authorization. */
 export function hasRestoreWording(quote:string):boolean{return /remember.*again|store.*again|重新.*记|再次.*记/i.test(quote);}

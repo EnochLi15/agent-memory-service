@@ -217,7 +217,7 @@ export class Extractor {
       const ordered=snapshot.facts.filter(f=>f.predicate!=='memory_operation').map(f=>({f,score:overlap(chunkText,`${f.subject} ${f.predicate} ${f.value} ${f.content}`)+(f.state==='active'&&f.cardinality==='single'?.08:0)})).sort((a,b)=>b.score-a.score).slice(0,120).map(x=>x.f);
       const aliases=new Map(ordered.map((f,i)=>[`m${i}`,f.id]));
       const knownIds=new Set(snapshot.facts.map(f=>f.id));
-      const relevant=ordered.map((f,i)=>({id:`m${i}`,content:f.content,subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,state:f.state,modality:f.modality}));
+      const relevant=ordered.map((f,i)=>({id:`m${i}`,content:f.content,subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,...(f.scopeHash?{scopeHash:f.scopeHash}:{}),state:f.state,modality:f.modality}));
       const visibleIds=new Set(ordered.map(f=>f.id));let extraCandidates=0;
       const expandTargets=(proposal:Extraction):void=>{
         // The checker can see a related historical record outside the initial
@@ -227,7 +227,7 @@ export class Extractor {
         for(const f of [...snapshot.facts.filter(f=>related.has(f.id)),...proposal.operations.flatMap(o=>bindingCandidates(o,snapshot.facts))]){
           if(visibleIds.has(f.id)||extraCandidates>=32)continue;
           const id=`m${aliases.size}`;aliases.set(id,f.id);visibleIds.add(f.id);extraCandidates++;
-          relevant.push({id,content:f.content,subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,state:f.state,modality:f.modality});
+          relevant.push({id,content:f.content,subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,...(f.scopeHash?{scopeHash:f.scopeHash}:{}),state:f.state,modality:f.modality});
         }
       };
       const repairForgetContext=(proposal:Extraction)=>{
