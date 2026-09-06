@@ -66,3 +66,14 @@ test('compact successful checks retain coverage and reference enforcement',()=>{
  raw.message_checks[0]!.fact_indices=[];assert.equal(verificationIssues(raw,req,proposal).length,1);
  assert.throws(()=>verificationIssues({...raw,message_checks:[{index:0,disposition:'missing'}]},req,proposal),/grounded/);
 });
+
+test('known semantic rejection survives malformed later checks without a favorable protocol resample',async()=>{
+ const p=extractionSchema.parse({facts:[{content:'My browser is Safari.',subject:'user',predicate:'browser',value:'Safari',sources:[{index:0,quote:'My browser is Firefox.'}]}],operations:[]});
+ const m=new Models(configFromEnv({}));let calls=0;
+ m.json=async()=>{
+  calls++;
+  return {fact_checks:[{index:0,supported:calls>1,modality_supported:true,source_index:0,quote:'My browser is Firefox.',reason:'The stated browser is Firefox, not Safari.'}],operation_checks:[],replacement_checks:calls===1?[{fact_index:0,target_id:'',supported:false,reason:'Invented replacement verdict'}]:[],message_checks:[{index:0,disposition:'represented',fact_indices:[0]}]};
+ };
+ const issues=await m.verify(p,req,[],[],AbortSignal.timeout(1000));
+ assert.equal(calls,1);assert.match(issues[0]!,/^fact 0:/);
+});

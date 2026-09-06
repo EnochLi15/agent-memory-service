@@ -24,6 +24,9 @@ export class Models {
       catch{throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not complete evidence verification within the request budget');}
       try{return verificationIssues(raw,req,proposal);}
       catch(error){
+        // A malformed later check cannot erase an already validated rejection.
+        // Repair that proposal; the repaired proposal still needs full checking.
+        if(error instanceof VerificationProtocolError&&error.findings.length)return error.findings;
         // Retry protocol errors only. Semantic rejection returns findings directly
         // and cannot be discarded by sampling a second checker verdict.
         if(!(error instanceof VerificationProtocolError)||attempt===1||signal.aborted)throw error;

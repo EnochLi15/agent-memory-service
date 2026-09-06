@@ -8,14 +8,14 @@ Check EVERY proposed fact independently of message coverage. Its content, actor,
 Return JSON with exactly these arrays:
 fact_checks:[{index:number,supported:boolean,modality_supported:boolean,source_index:number,quote:string,reason?:string}] for EVERY proposed fact, using its zero-based index. A supported check must cite a nonempty quote contained in that fact's declared source quote, at source_index. For rejected facts include a concise reason; quote may be empty if no evidence supports the claim. Successful checks need no reason;
 operation_checks:[{index:number,authorized:boolean,target_matches:boolean,source_quote:string,reason:string}] for EVERY proposed operation, using its zero-based index and a verbatim human source quote (empty if no real authorization);
-replacement_checks:[{fact_index:number,target_id:string,supported:boolean,reason:string}] for EVERY supersedes reference;
+replacement_checks:[{fact_index:number,target_id:string,supported:boolean,reason:string}] for exactly the REPLACEMENT_TARGETS listed in the input. When that list is empty return []. An empty supersedes array is not a reference; never invent a target or a check for it;
 message_checks:[{index:number,disposition:"not_memorable"|"represented"|"missing",fact_indices:number[],operation_indices:number[],quote:string,reason:string}] for EVERY PARTICIPANT_INDEX.
 not_memorable: no specific personal fact or real memory instruction requires storage (generic questions/greetings); use empty reference arrays and empty quote.
 represented: ALL memorable content in this message is already covered by PROPOSAL. Cite zero-based fact_indices or operation_indices from PROPOSAL which actually cite this message in their sources/source. At least one reference is required. An empty proposal can NEVER represent a personal statement. quote may be empty.
 missing: some memorable content is absent, regardless of whether other content is represented. Quote the missing human statement verbatim, without adding surrounding quotation marks; use empty reference arrays. Never use not_memorable for a personal plan merely because it has no explicit remember command. For message_checks use a compact format: omit empty fact_indices, operation_indices and quote. Successful represented/not_memorable checks need no reason. A not_memorable check therefore needs only index and disposition. For missing include the verbatim quote and a short reason. Never omit a participant check or a required represented reference. Do not return replacement facts or perform mutations.`;
 
 class VerificationProtocolError extends ServiceError {
- constructor(message:string){super('EVIDENCE_VALIDATION',message);}
+ constructor(message:string,readonly findings:string[]=[]){super('EVIDENCE_VALIDATION',message);}
 }
 export {VerificationProtocolError};
 
@@ -30,21 +30,22 @@ export function humanQuote(req:AddRequest,index:number,quote:string):boolean{
 export function verificationIssues(raw:unknown,req:AddRequest,proposal:Extraction):string[]{
  const out=raw as Record<string,unknown>;if(!out||!Array.isArray(out.fact_checks)||!Array.isArray(out.operation_checks)||!Array.isArray(out.replacement_checks)||!Array.isArray(out.message_checks))throw new VerificationProtocolError('Missing structured verification arrays');
  const issues:string[]=[],facts=new Set<number>(),operations=new Set<number>(),messages=new Set<number>(),replacements=new Set<string>();
+ const invalid=(message:string):never=>{throw new VerificationProtocolError(message,[...issues]);};
  const expectedMessages=new Set(participantIndices(req));const expectedReplacements=new Set(proposal.facts.flatMap((f,index)=>f.supersedes.map(id=>`${index}:${id}`)));
  for(const c of out.fact_checks as any[]){
-  if(!c||!Number.isInteger(c.index)||!proposal.facts[c.index]||facts.has(c.index)||typeof c.supported!=='boolean'||typeof c.modality_supported!=='boolean'||!Number.isInteger(c.source_index)||typeof c.quote!=='string'||(c.reason!==undefined&&typeof c.reason!=='string'))throw new VerificationProtocolError('Invalid fact verification');
+  if(!c||!Number.isInteger(c.index)||!proposal.facts[c.index]||facts.has(c.index)||typeof c.supported!=='boolean'||typeof c.modality_supported!=='boolean'||!Number.isInteger(c.source_index)||typeof c.quote!=='string'||(c.reason!==undefined&&typeof c.reason!=='string'))invalid('Invalid fact verification');
   facts.add(c.index);const fact=proposal.facts[c.index]!;
   const grounded=expectedMessages.has(c.source_index)&&humanQuote(req,c.source_index,c.quote)&&fact.sources.some(s=>s.index===c.source_index&&s.quote.includes(c.quote));
   if(!c.supported||!c.modality_supported||!grounded)issues.push(`fact ${c.index}: ${c.reason||'Claim, modality or declared human evidence is unsupported'}`);
  }
  for(const c of out.operation_checks as any[]){
-  if(!c||!Number.isInteger(c.index)||!proposal.operations[c.index]||operations.has(c.index)||typeof c.authorized!=='boolean'||typeof c.target_matches!=='boolean'||typeof c.source_quote!=='string'||typeof c.reason!=='string')throw new VerificationProtocolError('Invalid operation verification');
+  if(!c||!Number.isInteger(c.index)||!proposal.operations[c.index]||operations.has(c.index)||typeof c.authorized!=='boolean'||typeof c.target_matches!=='boolean'||typeof c.source_quote!=='string'||typeof c.reason!=='string')invalid('Invalid operation verification');
   operations.add(c.index);const op=proposal.operations[c.index]!;
   if(!c.authorized||!c.target_matches||!humanQuote(req,op.source.index,c.source_quote))issues.push(`operation ${c.index}: ${c.reason||'No supported authorization and target binding'}`);
  }
  for(const c of out.replacement_checks as any[]){
   const key=`${c?.fact_index}:${c?.target_id}`;
-  if(!c||!expectedReplacements.has(key)||replacements.has(key)||typeof c.supported!=='boolean'||typeof c.reason!=='string')throw new VerificationProtocolError('Invalid replacement verification');
+  if(!c||!expectedReplacements.has(key)||replacements.has(key)||typeof c.supported!=='boolean'||typeof c.reason!=='string')invalid('Invalid replacement verification');
   replacements.add(key);if(!c.supported)issues.push(`replacement fact ${c.fact_index}: ${c.reason}`);
  }
  for(const item of out.message_checks as any[]){
@@ -52,23 +53,23 @@ export function verificationIssues(raw:unknown,req:AddRequest,proposal:Extractio
   const shape=c&&Number.isInteger(c.index)&&['not_memorable','represented','missing'].includes(c.disposition)&&Array.isArray(c.fact_indices)&&Array.isArray(c.operation_indices)&&typeof c.quote==='string'&&typeof c.reason==='string';
   // Harmless extra assistant checks cannot substitute for participant verdicts.
   if(shape&&req.messages[c.index]&&!expectedMessages.has(c.index)&&c.disposition==='not_memorable'&&!c.fact_indices.length&&!c.operation_indices.length)continue;
-  if(!shape||!expectedMessages.has(c.index)||messages.has(c.index))throw new VerificationProtocolError('Invalid message verification');
+  if(!shape||!expectedMessages.has(c.index)||messages.has(c.index))invalid('Invalid message verification');
   messages.add(c.index);
   if(c.disposition==='represented'){
    const fs=c.fact_indices as number[],os=c.operation_indices as number[];
    if(!fs.length&&!os.length||new Set(fs).size!==fs.length||new Set(os).size!==os.length||fs.some(i=>!Number.isInteger(i)||!proposal.facts[i]?.sources.some(s=>s.index===c.index&&humanQuote(req,c.index,s.quote)))||os.some(i=>!Number.isInteger(i)||proposal.operations[i]?.source.index!==c.index||!humanQuote(req,c.index,proposal.operations[i]!.source.quote)))issues.push(`message ${c.index}: proposed coverage lacks valid source-linked proposal references; add or correct evidence for this participant message, or classify it as not_memorable if it truly has no personal information`);
   }else{
-   if(c.fact_indices.length||c.operation_indices.length)throw new VerificationProtocolError('Only represented messages may carry proposal references');
+   if(c.fact_indices.length||c.operation_indices.length)invalid('Only represented messages may carry proposal references');
    if(c.disposition==='missing'){
-    if(!humanQuote(req,c.index,c.quote))throw new VerificationProtocolError('Missing evidence is not grounded in a human statement');
+    if(!humanQuote(req,c.index,c.quote))invalid('Missing evidence is not grounded in a human statement');
     issues.push(`message ${c.index}: ${c.reason}; missing statement: ${c.quote}`);
    }
   }
  }
- if(facts.size!==proposal.facts.length||operations.size!==proposal.operations.length||replacements.size!==expectedReplacements.size||messages.size!==expectedMessages.size)throw new VerificationProtocolError('Incomplete verification coverage');
+ if(facts.size!==proposal.facts.length||operations.size!==proposal.operations.length||replacements.size!==expectedReplacements.size||messages.size!==expectedMessages.size)invalid('Incomplete verification coverage');
  return issues;
 }
 export function verificationInput(req:AddRequest,proposal:Extraction,facts:Fact[],unrepresented:number[]){
  const targetIds=new Set([...proposal.operations.flatMap(o=>o.target_ids),...proposal.facts.flatMap(f=>f.supersedes)]);
- return {NEW_MESSAGES:req.messages.map((m,index)=>({index,...m})),PARTICIPANT_INDEX:participantIndices(req),PROPOSAL:proposal,TARGET_FACTS:facts.filter(f=>targetIds.has(f.id)).map(f=>({id:f.id,subject:f.subject,predicate:f.predicate,scope:f.scope,content:f.content,state:f.state,modality:f.modality})),OMISSION_HINTS:unrepresented};
+ return {NEW_MESSAGES:req.messages.map((m,index)=>({index,...m})),PARTICIPANT_INDEX:participantIndices(req),REPLACEMENT_TARGETS:proposal.facts.flatMap((f,fact_index)=>f.supersedes.map(target_id=>({fact_index,target_id}))),PROPOSAL:proposal,TARGET_FACTS:facts.filter(f=>targetIds.has(f.id)).map(f=>({id:f.id,subject:f.subject,predicate:f.predicate,scope:f.scope,content:f.content,state:f.state,modality:f.modality})),OMISSION_HINTS:unrepresented};
 }
