@@ -10,7 +10,7 @@ import {messageAnchors,normalizeFactTime} from './temporal.js';
 import {humanQuote} from './verification.js';
 import {VerificationSession} from './verification-session.js';
 import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,type RepairScope} from './repair.js';
-import {sourceErasureWork,decodeSourceErasure,SOURCE_ERASURE_PROMPT} from './source-erasure.js';
+import {sourceErasureWork,sourceErasureBatches,decodeSourceErasure,SOURCE_ERASURE_PROMPT} from './source-erasure.js';
 import {erasureWork,decodeErasure,ERASURE_PROMPT} from './erasure.js';
 import {transitionWork,decodeTransitions,TRANSITION_PROMPT} from './transitions.js';
 
@@ -326,9 +326,14 @@ export class Extractor {
       const work=sourceErasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[],snapshot.erasureSources??[],messages);
       if(work.candidates.length){
         if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Source erasure requires semantic verification');
-        let raw:unknown;try{raw=await this.models.json(SOURCE_ERASURE_PROMPT,JSON.stringify({CANDIDATES:work.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'source_erasure',trace:traceIdentity});}
-        catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Source erasure unavailable within shared model budget');}
-        sourceErasurePlan=decodeSourceErasure(raw,work);
+        const decisions:NonNullable<Prepared['sourceErasurePlan']>['decisions']=[];
+        for(const batch of sourceErasureBatches(work)){
+          let raw:unknown;try{raw=await this.models.json(SOURCE_ERASURE_PROMPT,JSON.stringify({CANDIDATES:batch.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'source_erasure',trace:traceIdentity});}
+          catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Source erasure unavailable within shared model budget');}
+          const checked=decodeSourceErasure(raw,batch);
+          decisions.push(...checked.decisions.map(d=>({...d,index:d.index+batch.offset})));
+        }
+        sourceErasurePlan=decodeSourceErasure({decisions},work);
       }else sourceErasurePlan={fingerprint:work.fingerprint,decisions:[]};
     }
     let transitionPlan:Prepared['transitionPlan'];

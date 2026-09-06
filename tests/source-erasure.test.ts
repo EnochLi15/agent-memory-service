@@ -1,7 +1,7 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {Extractor,hash} from '../dist/extraction.js';import {TenantStore} from '../dist/storage.js';import {configFromEnv} from '../dist/config.js';
-import {decodeSourceErasure,maskSource,sourceErasureWork} from '../dist/source-erasure.js';
+import {decodeSourceErasure,maskSource,sourceErasureWork,sourceErasureBatches} from '../dist/source-erasure.js';
 import {valueDigest} from '../dist/erasure.js';
 const config=configFromEnv({MEMORY_MODE:'enhanced',MEMORY_ERASURE_BINDING:'true',MEMORY_SOURCE_ERASURE:'true'});
 const request=(id:string,text:string)=>({request_id:id,user_id:'u',session_id:'s',messages:[{role:'user',content:text,timestamp:'2026-01-01T00:00:00Z'}]});
@@ -78,7 +78,7 @@ test('v4 cannot silently reuse a pre-existing v3 directory',async()=>{
 test('candidate capacity fails instead of truncating source coverage',()=>{
  const r=request('capacity','hi'),boundary={subject:'user',predicate:'appointment',scope:'',boundary:'value',valueHash:valueDigest('Pham'),tokenCount:1,revision:1};
  const m=(i:number,text='Pham')=>({id:String(i),session_id:'s',ordinal:i,role:'user',content:text,timestamp:'2026-01-01T00:00:00Z',searchable:true});
- assert.throws(()=>sourceErasureWork(r,[],[],[],[boundary],[],Array.from({length:65},(_,i)=>m(i))),/capacity/);
+ assert.throws(()=>sourceErasureWork(r,[],[],[],[boundary],[],Array.from({length:257},(_,i)=>m(i))),/capacity/);
  assert.throws(()=>sourceErasureWork(r,[],[],[],[boundary],[],[m(0,'Pham '.repeat(14000))]),/capacity/);
 });
 test('explicit restoration of the authorized value survives v4 source checks without reviving old raw text',()=>fixture(async(f:any)=>{
@@ -87,4 +87,24 @@ test('explicit restoration of the authorized value survives v4 source checks wit
  const p={facts:[fact(r.messages[0].content)],operations:[{type:'restore',target_ids:[target.id],subject:'user',predicate:'appointment',scope:'dentist',value:target.value,source:{index:0,quote:r.messages[0].content}}]};
  f.commit(r,await f.prepare(r,p));assert.ok(f.store.facts().some((x:any)=>x.state==='active'&&x.value===target.value));
  const old=f.store.db.prepare('SELECT body FROM messages WHERE id=?').get(target.source_ids[0]);assert.doesNotMatch(old.body,/Pham/);
+}));
+
+test('source batches obey payload limits and preserve every original candidate index',()=>{
+ const r=request('batch-capacity','hi'),boundary={subject:'user',predicate:'appointment',scope:'',boundary:'value',valueHash:valueDigest('Pham'),tokenCount:1,revision:1};
+ const messages=Array.from({length:100},(_,i)=>({id:String(i),session_id:'s',ordinal:i,role:'user',content:'Pham '+('word '.repeat(100)),timestamp:'2026-01-01T00:00:00Z',searchable:true}));
+ const work=sourceErasureWork(r,[],[],[],[boundary],[],messages),batches=sourceErasureBatches(work);assert.ok(batches.length>1);
+ assert.deepEqual(batches.flatMap(b=>b.candidates),work.candidates);
+ for(const batch of batches){assert.ok(batch.candidates.length<=64);assert.ok(JSON.stringify({CANDIDATES:batch.candidates.map((c,index)=>({index,...c}))}).length<=64000);}
+ const decisions=batches.flatMap(b=>decodeSourceErasure({decisions:b.candidates.map((c,index)=>({index,parts:[{text:c.text,effect:'erase'}],reason:'Authorized.'}))},b).decisions.map(d=>({...d,index:d.index+b.offset})));
+ assert.equal(decodeSourceErasure({decisions},work).decisions.length,100);assert.throws(()=>decodeSourceErasure({decisions:decisions.slice(0,-1)},work),/Incomplete/);
+});
+for(const rejectTail of [false,true])test(`large source cleanup is atomic across batches; reject final batch=${rejectTail}`,()=>fixture(async(f:any)=>{
+ const r=request('bulk-seed',seedText);
+ for(let i=0;i<70;i++)r.messages.push({role:'assistant',content:`Your dentist appointment with Dr. Pham on Elm Street. Echo ${i}.`,timestamp:'2026-01-01T00:00:01Z'});
+ f.commit(r,await f.prepare(r,{facts:[fact(seedText)],operations:[]}));
+ const target=f.store.facts()[0],del=request('bulk-delete','Forget my dentist appointment.'),before=f.store.snapshot('s');let batches=0;
+ const prepare=()=>f.prepare(del,deletion(target),(d:any)=>{batches++;return {decisions:d.CANDIDATES.map((c:any,index:number)=>({index,parts:[{text:c.text,effect:rejectTail&&c.text.includes('Echo 69.')?'uncertain':'erase'}],reason:'Fixture appointment cleanup.'}))};});
+ if(rejectTail){await assert.rejects(prepare,/Uncertain/);assert.deepEqual(f.store.snapshot('s'),before);assert.equal(f.store.receipt(del.request_id,hash(JSON.stringify(del))),null);}
+ else{const p=await prepare();assert.ok(p.sourceErasurePlan.decisions.length>64);const partial=structuredClone(p);partial.sourceErasurePlan.decisions.pop();assert.throws(()=>f.commit(del,partial),/Incomplete/);assert.deepEqual(f.store.snapshot('s'),before);f.commit(del,p);assert.equal(f.store.revision(),2);assert.doesNotMatch(JSON.stringify(f.store.snapshot('s')),/Pham/);}
+ assert.ok(batches>=2);
 }));

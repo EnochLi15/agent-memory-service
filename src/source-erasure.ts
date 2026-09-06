@@ -35,9 +35,25 @@ export function sourceErasureWork(req:AddRequest,prior:Fact[],incoming:Fact[],op
  // Nominate an entire source message so nearby pronouns and command echoes
  // are adjudicated too; the exact partition must preserve unrelated clauses.
  for(const m of [...oldSources,...newSources])nominate('source',m.id,0,m.content,{role:m.role},newSources.some(x=>x.id===m.id));
- if(candidates.length>64||JSON.stringify(candidates).length>64000)throw new ServiceError('EVIDENCE_VALIDATION','Source erasure exceeds bounded candidate capacity');
+ if(candidates.length>256||JSON.stringify(candidates).length>256000||candidates.some(c=>JSON.stringify({CANDIDATES:[{index:0,...c}]}).length>64000))throw new ServiceError('EVIDENCE_VALIDATION',`Source erasure exceeds bounded candidate capacity (${candidates.length} candidates)`);
  const fingerprint=digest(JSON.stringify({req,prior:prior.map(meaning),incoming:incoming.map(meaning),operations,existing,oldSources,newSources,candidates}));
  return {fingerprint,candidates};
+}
+/** Partition complete source work without weakening the global commit plan.
+ * Each model sees local indexes; the caller maps validated rows back to the
+ * original indexes. All calls share the existing request deadline. */
+export function sourceErasureBatches(work:ReturnType<typeof sourceErasureWork>){
+ const batches:{offset:number;fingerprint:string;candidates:typeof work.candidates}[]=[];
+ let offset=0,candidates:typeof work.candidates=[];
+ for(const candidate of work.candidates){
+  const next=[...candidates,candidate];
+  const size=JSON.stringify({CANDIDATES:next.map((c,index)=>({index,...c}))}).length;
+  if(candidates.length&&(next.length>64||size>64000)){batches.push({offset,fingerprint:work.fingerprint,candidates});offset+=candidates.length;candidates=[];}
+  if(JSON.stringify({CANDIDATES:[{index:0,...candidate}]}).length>64000)throw new ServiceError('EVIDENCE_VALIDATION','One source erasure candidate exceeds bounded batch capacity');
+  candidates.push(candidate);
+ }
+ if(candidates.length)batches.push({offset,fingerprint:work.fingerprint,candidates});
+ return batches;
 }
 export function decodeSourceErasure(raw:unknown,work:ReturnType<typeof sourceErasureWork>):SourceErasurePlan{
  const rows=(raw as any)?.decisions;if(!Array.isArray(rows)||rows.length!==work.candidates.length)throw new ServiceError('EVIDENCE_VALIDATION','Incomplete source erasure decisions');
