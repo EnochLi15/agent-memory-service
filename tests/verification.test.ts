@@ -29,7 +29,7 @@ test('extra assistant acknowledgements cannot substitute for required participan
 test('semantic rejection repairs an otherwise structurally valid proposal; repeated rejection fails before commit',async()=>{
  let calls=0,checks=0;const config=configFromEnv({MEMORY_MODE:'enhanced'});const snapshot={facts:[],tail:[],anchor:null,revision:0};
  const good={content:'My browser is Firefox.',subject:'user',predicate:'default_browser',value:'Firefox',sources:[{index:0,quote:'My browser is Firefox.'}]};
- const x=new Extractor(config,{json:async()=>{calls++;return calls===1?{facts:[],operations:[]}:{append_facts:[good]};},verify:async()=>{checks++;return checks===1?['message 0: Missing browser setup']:[];},embedBatch:async()=>{throw Error('fixture embedding unavailable');}} as any);
+ const x=new Extractor(config,{json:async()=>{calls++;return calls===1?{facts:[],operations:[]}:{append_facts:[{...good,modality:"confirmed"}]};},verify:async()=>{checks++;return checks===1?['message 0: Missing browser setup']:[];},embedBatch:async()=>{throw Error('fixture embedding unavailable');}} as any);
  const p=await x.prepare(req,snapshot,AbortSignal.timeout(1000));assert.equal(calls,2);assert.equal(checks,2);assert.equal(p.facts[0]?.value,'Firefox');
  const bad=new Extractor(config,{json:async(system:string)=>system.includes('PATCH_SCHEMA')?{}:{facts:[],operations:[]},verify:async()=>['message 0: Missing required information']} as any);
  await assert.rejects(bad.prepare(req,snapshot,AbortSignal.timeout(1000)),/semantic verification/);

@@ -8,6 +8,7 @@ import { entities, overlap, tokens, speakerPrefix } from './text.js';
 import {preparePassages,sourceSpans} from './passages.js';
 import {messageAnchors,normalizeFactTime} from './temporal.js';
 import {humanQuote} from './verification.js';
+import {VerificationSession} from './verification-session.js';
 import {PATCH_PROMPT,applyRepair,scopeForFindings,type RepairScope} from './repair.js';
 
 export function hash(s: string): string { return createHash('sha256').update(s).digest('hex'); }
@@ -171,7 +172,7 @@ export class Extractor {
       // Reserve time for grounded fallback, local embedding and atomic commit.
       // This inner budget never extends the caller's absolute request deadline.
       const modelSignal=AbortSignal.any([signal,AbortSignal.timeout(Math.min(95000,Math.max(500,this.config.addTimeout-25000)))]);
-      let semanticallyRejected=false;
+      let semanticallyRejected=false;const verificationSession=new VerificationSession(this.config.incrementalVerification);
       try {
         let issue='';let failedProposal:unknown;let repairScope:RepairScope|undefined;let accepted:Extraction|undefined;
         for(let attempt=0;attempt<2;attempt++){
@@ -237,12 +238,12 @@ export class Extractor {
             for(const o of valid.data.operations)o.target_ids=o.target_ids.map(id=>aliases.get(id)??id);
             bindNewFactHandles(valid.data,req);degraded.push('source_span_partial');
             if(bindOperationSelectors(valid.data,req,snapshot).length)throw new ServiceError('OPERATION_TARGET','Partial recovery left unresolved target bindings');
-            const findings=await this.models.verify(valid.data,req,[...snapshot.facts,...proposalFacts(valid.data,req)],missingPersonalSources(req,valid.data),modelSignal);
+            const findings=await this.models.verify(valid.data,req,[...snapshot.facts,...proposalFacts(valid.data,req)],missingPersonalSources(req,valid.data),modelSignal,verificationSession);
             if(findings.length)throw new ServiceError('EVIDENCE_VALIDATION','Partial recovery failed semantic verification');
             accepted=valid.data;break;
           }
           if(invalid.length||badOps.length){issue='Every source quote must be an exact substring of the indicated NEW_MESSAGES content. Operations must cite a USER message, or a named real participant changing their own facts. An unlabelled assistant reply never authorizes changes. Never copy CONTEXT_ONLY as a new source. Fix all facts/operations and return the full object. Invalid fact spans: '+JSON.stringify(invalid.slice(0,8));continue;}
-          const findings=await this.models.verify(valid.data,req,bindingPool,missingPersonalSources(req,valid.data),modelSignal);
+          const findings=await this.models.verify(valid.data,req,bindingPool,missingPersonalSources(req,valid.data),modelSignal,verificationSession);
           if(findings.length){semanticallyRejected=true;repairScope=scopeForFindings(valid.data,findings);issue='Semantic verification rejected the proposal. Repair these specific failures while preserving supported unrelated facts. '+JSON.stringify(findings)+'. Return the complete corrected object.';continue;}
           accepted=valid.data;break;
         }

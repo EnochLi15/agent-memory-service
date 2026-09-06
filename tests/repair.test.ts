@@ -13,13 +13,13 @@ test('removing a referenced target cannot silently redirect a dependency or dele
  const p=applyRepair(base(),{fact_edits:[{index:1,remove:true},{index:2,changes:{depends_on:[]}}],operation_edits:[{index:0,remove:true}]},all);assert.equal(p.operations.length,0);assert.equal(p.facts[1]!.value,'derived');
 });
 test('appended slots are based on original length and remapped after deletions',()=>{
- const p=applyRepair(base(),{fact_edits:[{index:0,remove:true}],append_facts:[fact('new item',4)],operation_edits:[{index:0,changes:{target_ids:['new:3']}}]},all);
+ const p=applyRepair(base(),{fact_edits:[{index:0,remove:true}],append_facts:[{...fact('new item',4),modality:'confirmed'}],operation_edits:[{index:0,changes:{target_ids:['new:3']}}]},all);
  assert.equal(p.facts[2]!.value,'new item');assert.deepEqual(p.operations[0]!.target_ids,['new:2']);
 });
 test('a localized missing message cannot modify unrelated facts or add content from other messages',()=>{
  const original=base(),scope=scopeForFindings(original,['message 1: Missing detail']);assert.deepEqual(scope,{fact_indices:[1],operation_indices:[],source_indices:[1]});
  assert.throws(()=>applyRepair(original,{fact_edits:[{index:0,remove:true}]},scope),/unflagged/);
- assert.throws(()=>applyRepair(original,{append_facts:[fact('wrong source',0)]},scope),/sources/);
+ assert.throws(()=>applyRepair(original,{append_facts:[{...fact('wrong source',0),modality:'confirmed'}]},scope),/sources/);
  assert.throws(()=>applyRepair(original,{fact_edits:[{index:1,changes:{sources:[{index:0,quote:'unrelated'}]}}]},scope),/sources/);
  assert.throws(()=>applyRepair(original,{operation_edits:[{index:0,remove:true}]},scope),/unflagged/);
  const patched=applyRepair(original,{fact_edits:[{index:1,changes:{value:'more precise'}}]},scope);assert.deepEqual(patched.facts[0],original.facts[0]);assert.deepEqual(patched.facts[2],original.facts[2]);
@@ -28,4 +28,12 @@ test('duplicate edits, full-object regeneration and unknown fields are rejected'
  assert.throws(()=>applyRepair(base(),{fact_edits:[{index:0,changes:{value:'x'}},{index:0,changes:{value:'y'}}]},all),/unflagged|unavailable/);
  assert.throws(()=>applyRepair(base(),{facts:[],operations:[]},all),/patch/);
  assert.throws(()=>applyRepair(base(),{fact_edits:[{index:0,changes:{database_id:'other'}}]},all),/patch/);
+});
+test('an appended plan must explicitly preserve modality instead of silently defaulting to confirmed',()=>{
+ const plan={...fact("I'll use these tips next time.",4),predicate:'listening_plan'};
+ assert.throws(()=>applyRepair(base(),{append_facts:[plan]},all),/patch/);
+ const p=applyRepair(base(),{append_facts:[{...plan,modality:'tentative'}]},all);
+ assert.equal(p.facts.at(-1)!.modality,'tentative');
+ const edited=applyRepair(p,{fact_edits:[{index:3,changes:{content:'I plan to use these tips next time.'}}]},{fact_indices:[3],operation_indices:[],source_indices:[4]});
+ assert.equal(edited.facts.at(-1)!.modality,'tentative');
 });

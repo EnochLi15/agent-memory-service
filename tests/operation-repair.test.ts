@@ -42,7 +42,7 @@ test('a complete personal-state message cannot disappear behind a later unrelate
  const req={request_id:'coverage',user_id:'u',session_id:'s',messages:[{role:'user',content:'I set up an auto-invest of $250 every two weeks into the index fund.',timestamp:'2026-02-01T00:00:00Z'},{role:'user',content:'I might visit the island for photos.',timestamp:'2026-02-01T00:00:01Z'}]};
  const fund={content:req.messages[0].content,subject:'user',predicate:'auto_invest',value:'$250 every two weeks',sources:[{index:0,quote:req.messages[0].content}]};
  const travel={content:req.messages[1].content,subject:'user',predicate:'travel_plan',value:'island',sources:[{index:1,quote:req.messages[1].content}],modality:'tentative'};
- let calls=0;const x=new Extractor({...config,mode:'enhanced'},{verify:async(_p:any,_r:any,_f:any,omitted:number[])=>omitted.map(index=>'message '+index+': Missing personal source'),json:async()=>{calls++;return calls===1?{facts:[travel],operations:[]}:{append_facts:[fund]};},embedBatch:async()=>{throw Error('fixture embedding unavailable');}} as any);
+ let calls=0;const x=new Extractor({...config,mode:'enhanced'},{verify:async(_p:any,_r:any,_f:any,omitted:number[])=>omitted.map(index=>'message '+index+': Missing personal source'),json:async()=>{calls++;return calls===1?{facts:[travel],operations:[]}:{append_facts:[{...fund,modality:"confirmed"}]};},embedBatch:async()=>{throw Error('fixture embedding unavailable');}} as any);
  const p=await x.prepare(req,store.snapshot('s'),AbortSignal.timeout(1000));assert.equal(calls,2);assert.ok(p.facts.some((f:any)=>f.value==='$250 every two weeks'));
 }));
 

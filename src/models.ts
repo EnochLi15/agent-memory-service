@@ -6,7 +6,8 @@ import { appendFileSync } from 'node:fs';
 import type { Config } from './config.js';
 import { ServiceError } from './types.js';
 import type {AddRequest,Extraction,Fact} from './types.js';
-import {VERIFICATION_PROMPT,verificationInput,verificationIssues,VerificationProtocolError} from './verification.js';
+import {VERIFICATION_PROMPT,verificationInput,VerificationProtocolError} from './verification.js';
+import {VerificationSession} from './verification-session.js';
 function audit(record:Record<string,unknown>):void {
   if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
 }
@@ -16,27 +17,32 @@ export class Models {
   constructor(private config: Config) {
     this.client = new OpenAI({ apiKey: config.llmKey || 'local', baseURL: config.llmBase, maxRetries: 0, timeout: config.addTimeout });
   }
-  async verify(proposal:Extraction,req:AddRequest,facts:Fact[],omitted:number[],signal:AbortSignal):Promise<string[]>{
-    const input=JSON.stringify(verificationInput(req,proposal,facts,omitted));let repair='';
+  async verify(proposal:Extraction,req:AddRequest,facts:Fact[],omitted:number[],signal:AbortSignal,session=new VerificationSession()):Promise<string[]>{
+    const plan=session.plan(req,proposal,facts,{base:this.config.llmBase,model:this.config.llmModel,effort:this.config.llmReasoningEffort,prompt:VERIFICATION_PROMPT});
+    if(plan.blockedFindings.length)return plan.blockedFindings;
+    const scope=plan.scope;
+    const counts={facts:scope.fact_indices.length,operations:scope.operation_indices.length,replacements:scope.replacements.length,messages:scope.message_indices.length,reused:plan.reused};
+    if(!counts.facts&&!counts.operations&&!counts.replacements&&!counts.messages)return session.evaluate(plan,{fact_checks:[],operation_checks:[],replacement_checks:[],message_checks:[]});
+    const input=JSON.stringify(verificationInput(req,proposal,facts,omitted,scope));let repair='';
     for(let attempt=0;attempt<2;attempt++){
       let raw:unknown;
-      try{raw=await this.json(VERIFICATION_PROMPT,input+repair,signal);}
+      try{raw=await this.json(VERIFICATION_PROMPT,input+repair,signal,{verification_scope:counts});}
       catch{throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not complete evidence verification within the request budget');}
-      try{return verificationIssues(raw,req,proposal);}
+      try{return session.evaluate(plan,raw);}
       catch(error){
         // A malformed later check cannot erase an already validated rejection.
-        // Repair that proposal; the repaired proposal still needs full checking.
+        // Repair that proposal; merged checks must still cover the full proposal.
         if(error instanceof VerificationProtocolError&&error.findings.length)return error.findings;
         // Retry protocol errors only. Semantic rejection returns findings directly
         // and cannot be discarded by sampling a second checker verdict.
         if(!(error instanceof VerificationProtocolError)||attempt===1||signal.aborted)throw error;
-        repair='\nPROTOCOL_REPAIR: '+JSON.stringify({error:error.message,previous:raw})+'. Return the complete checks using the required dispositions and actual proposal/source references. Preserve semantic failures; do not change the proposal.';
+        repair='\nPROTOCOL_REPAIR: '+JSON.stringify({error:error.message,previous:raw})+'. Return exactly all checks requested by CHECK_SCOPE using the required dispositions and actual proposal/source references. Preserve semantic failures; do not change the proposal.';
       }
     }
     throw new ServiceError('EVIDENCE_VALIDATION','Incomplete evidence verification');
   }
 
-  async json(system: string, user: string, signal: AbortSignal): Promise<unknown> {
+  async json(system: string, user: string, signal: AbortSignal,context?:{verification_scope:{facts:number;operations:number;replacements:number;messages:number;reused:number}}): Promise<unknown> {
     // Streaming prevents idle gateway disconnects during long structured generations.
     // Nothing is published until the entire JSON object is validated and committed.
     let last:unknown;
@@ -51,8 +57,8 @@ export class Models {
         for await(const chunk of stream){content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
         if(!content||finish!=='stop')throw new ServiceError('MODEL_OUTPUT','Incomplete model output');
         const parsed=JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
-        audit({kind:'generation',purpose:system.startsWith('Rank evidence')?'rerank':system.startsWith('Validate memory evidence')?'verification':system.includes('PATCH_SCHEMA')?'repair':'extraction',model:this.config.llmModel,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage});return parsed;
-      }catch(error){audit({kind:'generation',model:this.config.llmModel,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,error_type:error instanceof Error?error.name:'unknown'});last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
+        audit({kind:'generation',purpose:system.startsWith('Rank evidence')?'rerank':system.startsWith('Validate memory evidence')?'verification':system.includes('PATCH_SCHEMA')?'repair':'extraction',model:this.config.llmModel,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage,...context});return parsed;
+      }catch(error){audit({kind:'generation',purpose:system.startsWith('Rank evidence')?'rerank':system.startsWith('Validate memory evidence')?'verification':system.includes('PATCH_SCHEMA')?'repair':'extraction',model:this.config.llmModel,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,error_type:error instanceof Error?error.name:'unknown',...context});last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
     }
     throw last;
   }

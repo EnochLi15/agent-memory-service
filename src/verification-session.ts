@@ -1,0 +1,112 @@
+import {createHash} from 'node:crypto';
+import {ServiceError,type AddRequest,type Extraction,type Fact} from './types.js';
+import {participantIndices,verificationIssues,VerificationProtocolError,type VerificationScope} from './verification.js';
+
+const arrays=['fact_checks','operation_checks','replacement_checks','message_checks'] as const;
+type CheckArray=typeof arrays[number];
+type Check=Record<string,any>;
+type Checks=Record<CheckArray,Check[]>;
+const empty=():Checks=>({fact_checks:[],operation_checks:[],replacement_checks:[],message_checks:[]});
+const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const checkKey=(type:CheckArray,c:Check)=>type==='replacement_checks'?`${type}:${c.fact_index}:${c.target_id}`:`${type}:${c.index}`;
+type Plan={scope:VerificationScope;cached:Checks;fingerprints:Map<string,string|null>;blockedFindings:string[];req:AddRequest;proposal:Extraction;reused:number};
+
+/** Owned by one prepare() call, never kept on the shared Models instance.
+ * Only validated checks become certificates. Semantic failures remain failures
+ * until their evidence fingerprint changes; they cannot be favorably resampled. */
+export class VerificationSession {
+ constructor(private readonly reusePassed=true){}
+ #context='';
+ #passed=new Map<string,{fingerprint:string;check:Check}>();
+ #failed=new Map<string,{fingerprint:string;finding:string}>();
+ #active:Plan|undefined;
+
+ plan(req:AddRequest,proposal:Extraction,facts:Fact[],identity:unknown):Plan{
+  const context=digest({req,identity});
+  if(context!==this.#context){this.#context=context;this.#passed.clear();this.#failed.clear();}
+  const fingerprints=new Map<string,string|null>();
+  const byId=new Map(facts.map(f=>[f.id,f]));
+  const memo=new Map<string,string|null>(),visiting=new Set<string>();
+  const reference=(id:string):string|null=>{
+   if(memo.has(id))return memo.get(id)!;
+   const fact=byId.get(id);if(!fact||visiting.has(id))return null;
+   visiting.add(id);
+   // Include sources, state, temporal metadata and revision, but not embeddings.
+   const {vector,...semantic}=fact;
+   const refs=[...fact.depends_on,...fact.supersedes].map(reference);
+   const value=refs.some(x=>x===null)?null:digest({semantic,refs});
+   visiting.delete(id);memo.set(id,value);return value;
+  };
+  const withReferences=(value:unknown,ids:string[]):string|null=>{
+   const refs=ids.map(reference);return refs.some(x=>x===null)?null:digest({value,refs});
+  };
+  const factPrints=proposal.facts.map((f,index)=>{
+   const value=withReferences(f,[...f.depends_on,...f.supersedes]);fingerprints.set(`fact_checks:${index}`,value);return value;
+  });
+  const opPrints=proposal.operations.map((o,index)=>{
+   const related=proposal.facts.flatMap((f,i)=>f.sources.some(s=>s.index===o.source.index)||f.supersedes.some(id=>o.target_ids.includes(id))?[[i,factPrints[i]]]:[]);
+   const value=related.some(x=>x[1]===null)?null:withReferences({operation:o,related},o.target_ids);fingerprints.set(`operation_checks:${index}`,value);return value;
+  });
+  const replacements=proposal.facts.flatMap((f,fact_index)=>f.supersedes.map(target_id=>{
+   fingerprints.set(`replacement_checks:${fact_index}:${target_id}`,factPrints[fact_index]??null);return {fact_index,target_id};
+  }));
+  for(const index of participantIndices(req)){
+   const factItems=proposal.facts.flatMap((f,i)=>f.sources.some(s=>s.index===index)?[[i,factPrints[i]]]:[]);
+   const opItems=proposal.operations.flatMap((o,i)=>o.source.index===index?[[i,opPrints[i]]]:[]);
+   fingerprints.set(`message_checks:${index}`,[...factItems,...opItems].some(x=>x[1]===null)?null:digest({message:req.messages[index],factItems,opItems}));
+  }
+  const cached=empty(),needed=new Set<string>(),blockedFindings:string[]=[];
+  for(const [key,fingerprint] of fingerprints){
+   if(fingerprint===null){
+    const [type,index]=key.split(':');const label=type==='fact_checks'?'fact':type==='operation_checks'?'operation':type==='message_checks'?'message':'replacement fact';
+    blockedFindings.push(`${label} ${index}: Verification dependency evidence is missing or cyclic`);
+   }
+   const failed=this.#failed.get(key);if(fingerprint&&failed?.fingerprint===fingerprint)blockedFindings.push(failed.finding);
+   const passed=this.#passed.get(key);
+   if(this.reusePassed&&fingerprint&&passed?.fingerprint===fingerprint)cached[key.split(':')[0] as CheckArray].push(structuredClone(passed.check));
+   else needed.add(key);
+  }
+  const scope:VerificationScope={fact_indices:proposal.facts.flatMap((_,i)=>needed.has(`fact_checks:${i}`)?[i]:[]),operation_indices:proposal.operations.flatMap((_,i)=>needed.has(`operation_checks:${i}`)?[i]:[]),replacements:replacements.filter(c=>needed.has(`replacement_checks:${c.fact_index}:${c.target_id}`)),message_indices:participantIndices(req).filter(i=>needed.has(`message_checks:${i}`))};
+  const plan:Plan={scope,cached,fingerprints,blockedFindings:[...new Set(blockedFindings)],req:structuredClone(req),proposal:structuredClone(proposal),reused:arrays.reduce((n,k)=>n+cached[k].length,0)};
+  this.#active=plan;return plan;
+ }
+
+ evaluate(plan:Plan,raw:unknown):string[]{
+  if(this.#active!==plan)throw new ServiceError('EVIDENCE_VALIDATION','Verification session changed during an in-flight check');
+  const merged=empty();
+  if(!raw||typeof raw!=='object')throw new VerificationProtocolError('Missing structured verification arrays');
+  for(const type of arrays){
+   const values=(raw as Record<string,unknown>)[type];
+   if(!Array.isArray(values))throw new VerificationProtocolError('Missing structured verification arrays');
+   merged[type]=[...values,...plan.cached[type]];
+  }
+  let findings:string[];
+  try{findings=verificationIssues(merged,plan.req,plan.proposal);}
+  catch(error){
+   if(error instanceof VerificationProtocolError)this.rememberFailures(plan,error.findings);
+   // No positive certificate is created from a malformed protocol response.
+   throw error;
+  }
+  const rejected=this.rememberFailures(plan,findings);
+  for(const type of arrays)for(const check of merged[type]){
+   const key=checkKey(type,check),fingerprint=plan.fingerprints.get(key);
+   if(fingerprint&&!rejected.has(key)){this.#passed.set(key,{fingerprint,check:structuredClone(check)});this.#failed.delete(key);}
+  }
+  return findings;
+ }
+
+ private rememberFailures(plan:Plan,findings:string[]):Set<string>{
+  const rejected=new Set<string>();
+  for(const finding of findings){
+   const match=finding.match(/^(fact|operation|replacement fact|message) (\d+):/);if(!match)continue;
+   const type=match[1]==='fact'?'fact_checks':match[1]==='operation'?'operation_checks':match[1]==='message'?'message_checks':'replacement_checks';
+   const prefix=`${type}:${match[2]}`;
+   for(const [key,fingerprint] of plan.fingerprints){
+    if(key!==prefix&&!(type==='replacement_checks'&&key.startsWith(prefix+':')))continue;
+    rejected.add(key);this.#passed.delete(key);
+    if(fingerprint)this.#failed.set(key,{fingerprint,finding});
+   }
+  }
+  return rejected;
+ }
+}
