@@ -156,3 +156,12 @@ test('two-round mode remains bounded and cannot resample an unchanged rejected p
  assert.deepEqual(counts,{extraction:1,repair:2,verification:1});
  for(const value of ['0','3','1.5','NaN'])assert.throws(()=>configFromEnv({MEMORY_MAX_REPAIR_ROUNDS:value}),/MEMORY_MAX_REPAIR_ROUNDS/);
 });
+
+test('retention context is visible without target operations and invalidates cached coverage on state changes',async()=>{
+ const model=new Models(configFromEnv({})),state=new VerificationSession(),request={...req,messages:[{...req.messages[0],content:'Keep my browser preference.'}]},empty=extractionSchema.parse({facts:[],operations:[]});
+ const active={id:'browser',subject:'user',predicate:'browser',scope:'',content:'I use Firefox.',value:'Firefox',state:'active',modality:'confirmed',source_ids:['historical'],depends_on:[],supersedes:[]};let calls=0;
+ model.json=async(_prompt,input)=>{calls++;const d=JSON.parse(input);assert.equal(d.TARGET_FACTS.length,0);const rows=d.EXISTING_ACTIVE_FACTS;assert.ok(Array.isArray(rows));return {fact_checks:[],operation_checks:[],replacement_checks:[],message_checks:[rows.length?{index:0,disposition:'not_memorable'}:{index:0,disposition:'missing',quote:request.messages[0].content,reason:'Existing active record is absent'}]};};
+ assert.deepEqual(await model.verify(empty,request,[active] as any,[],AbortSignal.timeout(1000),state,[{slot:0}]),[]);assert.equal(calls,1);
+ assert.deepEqual(await model.verify(empty,request,[active] as any,[],AbortSignal.timeout(1000),state,[{slot:0}]),[]);assert.equal(calls,1);
+ const findings=await model.verify(empty,request,[{...active,state:'erased'}] as any,[],AbortSignal.timeout(1000),state,[{slot:0}]);assert.equal(calls,2);assert.match(findings[0],/^message 0:/);
+});

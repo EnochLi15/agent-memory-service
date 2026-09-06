@@ -1,3 +1,4 @@
+import {sourceOperationNeedsBatches,sourceOperationWholeInput,prepareSourceBatches,validateSourceBatchPlan} from './source-operation-batches.js';
 import {sourceOperationWork,sourceOperationInput,sourceRejectionFindings,SOURCE_OPERATION_PROMPT,SOURCE_OPERATION_HISTORY_PROMPT,decodeSourceOperations,resolvedSourceInstructions,validateSourceOperations} from './source-operations.js';
 import { createHash } from 'node:crypto';
 import type { Config } from './config.js';
@@ -171,9 +172,11 @@ export class Extractor {
     let sourceOperationPlan:Prepared['sourceOperationPlan'];
     if(this.config.sourceOperations){
       const work=sourceOperationWork(req,snapshot.facts,sourceHistory);
-      if(work.enabled){
+      if(work.enabled&&this.config.sourceOperationBatches&&sourceOperationNeedsBatches(work)){
+        sourceOperationPlan=await prepareSourceBatches(work,modelSignal,(prompt,input,s,purpose)=>this.models.json(prompt,input,s,{purpose,trace:traceIdentity}));
+      }else if(work.enabled){
         let raw:unknown;
-        try{raw=await this.models.json(this.config.sourceOperationHistory?SOURCE_OPERATION_HISTORY_PROMPT:SOURCE_OPERATION_PROMPT,JSON.stringify(sourceOperationInput(work)),modelSignal,{purpose:'source_operation',trace:traceIdentity});}
+        try{raw=await this.models.json(this.config.sourceOperationHistory?SOURCE_OPERATION_HISTORY_PROMPT:SOURCE_OPERATION_PROMPT,JSON.stringify(this.config.sourceOperationBatches?sourceOperationWholeInput(work):sourceOperationInput(work)),modelSignal,{purpose:'source_operation',trace:traceIdentity});}
         catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Source operation review unavailable within shared budget');}
         sourceOperationPlan=decodeSourceOperations(raw,work);
       }else sourceOperationPlan={fingerprint:work.fingerprint,decisions:work.instructions.map(i=>({instruction:i.slot,action:'ordinary',target_slots:[],cuts:[]}))};
@@ -339,6 +342,7 @@ export class Extractor {
       if(!this.config.experimental?.rawOnly&&src.every(m=>m.role!=='user'&&!speakerPrefix(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim())))f.modality='quoted';
       facts.push({ ...attributes,event_time:eventTime,source_spans:sourceSpans(f,messages),modality:f.modality,time_basis:src[0]!.time_basis,id:factId(req,i),source_ids:[...new Set(src.map(m=>m.id))],source_quotes:proposalSources.map(s=>s.quote),created_at:src[0]!.timestamp,observed_at:src[0]!.timestamp,state:'active',vector:null,entities:entities(f.content),revision:snapshot.revision+1 });
     }
+    if(sourceOperationPlan&&this.config.sourceOperationBatches&&sourceOperationWork(req,snapshot.facts,sourceHistory).enabled)validateSourceBatchPlan(sourceOperationPlan,sourceOperationWork(req,snapshot.facts,sourceHistory));
     if(sourceOperationPlan)validateSourceOperations(sourceOperationPlan,req,snapshot.facts,facts,messages,sourceHistory);
     const useErasure=this.config.erasureBinding&&!this.config.experimental?.rawOnly;
     let erasurePlan:Prepared['erasurePlan'];
@@ -394,7 +398,7 @@ export class Extractor {
         if (facts.some(f=>f.content.length>=3500)) degraded.push('long_evidence_lexical');
       } catch(error) { if (signal.aborted) throw error; degraded.push('embedding_lexical'); }
     }
-    const sourceFormat=`${this.config.sourceIndex&&!this.config.experimental?.rawOnly?'dual-source':'facts-only'}-v${useErasure?(this.config.sourceOperationHistory?7:this.config.sourceOperations?6:this.config.semanticTransitions?5:this.config.sourceErasure?4:3):2}` as Prepared['sourceFormat'];
+    const sourceFormat=`${this.config.sourceIndex&&!this.config.experimental?.rawOnly?'dual-source':'facts-only'}-v${useErasure?(this.config.sourceOperationBatches?8:this.config.sourceOperationHistory?7:this.config.sourceOperations?6:this.config.semanticTransitions?5:this.config.sourceErasure?4:3):2}` as Prepared['sourceFormat'];
     return { ...(sourceOperationPlan?{sourceOperationPlan}:{}),facts,operations:parsed.operations,messages,passages,sourceFormat,...(erasurePlan?{erasurePlan}:{}),...(sourceErasurePlan?{sourceErasurePlan}:{}),...(transitionPlan?{transitionPlan}:{}),anchor,degraded,embeddingSpace:this.config.embeddingSpace };
   }
 }

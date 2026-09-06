@@ -45,7 +45,7 @@ export type ErasurePlan={fingerprint:string;decisions:{fact_id:string;key:string
 export type SourceErasurePlan={fingerprint:string;decisions:{index:number;parts:{text:string;effect:'erase'|'retain'}[];reason:string}[]};
 export type TransitionPlan={fingerprint:string;decisions:{index:number;relation:'compatible'|'exclusive'|'uncertain';old_source_slot:number;new_source_slot:number;reason:string}[]};
 export type Snapshot = { revision: number; facts: Fact[]; tail: StoredMessage[]; anchor: string | null; erasureBoundaries?:ErasureBoundary[];erasureSources?:StoredMessage[] };
-export type Prepared = { sourceOperationPlan?:import('./source-operations.js').SourceOperationPlan; facts: Fact[]; operations: Operation[]; messages: StoredMessage[]; passages?:Passage[]; sourceFormat?:'dual-source-v2'|'facts-only-v2'|'dual-source-v3'|'facts-only-v3'|'dual-source-v4'|'facts-only-v4'|'dual-source-v5'|'facts-only-v5'|'dual-source-v6'|'facts-only-v6'|'dual-source-v7'|'facts-only-v7'; erasurePlan?:ErasurePlan;sourceErasurePlan?:SourceErasurePlan;transitionPlan?:TransitionPlan; anchor: string | null; degraded: string[]; embeddingSpace: string };
+export type Prepared = { sourceOperationPlan?:import('./source-operation-batches.js').BatchedPlan; facts: Fact[]; operations: Operation[]; messages: StoredMessage[]; passages?:Passage[]; sourceFormat?:'dual-source-v2'|'facts-only-v2'|'dual-source-v3'|'facts-only-v3'|'dual-source-v4'|'facts-only-v4'|'dual-source-v5'|'facts-only-v5'|'dual-source-v6'|'facts-only-v6'|'dual-source-v7'|'facts-only-v7'|'dual-source-v8'|'facts-only-v8'; erasurePlan?:ErasurePlan;sourceErasurePlan?:SourceErasurePlan;transitionPlan?:TransitionPlan; anchor: string | null; degraded: string[]; embeddingSpace: string };
 export type Candidate = { fact: Fact; score: number; signals: string[] };
 export type QueryIntent = { historical: boolean; trajectory: boolean; list: boolean; asOf: string | null; entities: string[]; operation?:boolean; mode?:'current'|'historical'|'list'|'operation'|'trajectory'; temporal?:boolean };
 
@@ -75,3 +75,5 @@ export function operationScopeProblem(operation:Operation,targets:Pick<Fact,'sub
 export function replacementMatches(f:Pick<Fact,'subject'|'scope'|'predicate'>,target:Pick<Fact,'subject'|'scope'|'predicate'>):boolean {
   return canonical(f.subject)===canonical(target.subject)&&canonical(f.scope)===canonical(target.scope)&&propertyFamily(f.predicate)===propertyFamily(target.predicate);
 }
+/** Necessary wording guard shared by verification and commit, not semantic authorization. */
+export function hasRestoreWording(quote:string):boolean{return /remember.*again|store.*again|重新.*记|再次.*记/i.test(quote);}

@@ -1,3 +1,5 @@
+import {validateSourceBatchPlan} from './source-operation-batches.js';
+import {hasRestoreWording} from './types.js';
 import {validateSourceOperations} from './source-operations.js';
 // Transactional evolution of mem0 vector_stores/memory.ts and storage/SQLiteManager.ts.
 // One tenant owns one connection; history, facts, vectors, FTS, sources and receipts commit together.
@@ -69,7 +71,7 @@ export class TenantStore {
   snapshot(session:string):Snapshot {
     const rows=this.db.prepare('SELECT body FROM messages WHERE session_id=? ORDER BY ordinal DESC LIMIT 10').all(session) as Row[];
     const boundaries=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
-    return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null,...(/-v[34567]$/.test(this.meta('source_format')??'')?{erasureBoundaries:boundaries}:{}),...(/-v[4567]$/.test(this.meta('source_format')??'')?{erasureSources:(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage)}:{})};
+    return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null,...(/-v[345678]$/.test(this.meta('source_format')??'')?{erasureBoundaries:boundaries}:{}),...(/-v[45678]$/.test(this.meta('source_format')??'')?{erasureSources:(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage)}:{})};
   }
   private put(f:Fact):void {
     // Extraction proposals carry a sources array, but persisted facts have one
@@ -83,13 +85,14 @@ export class TenantStore {
   commit(req:AddRequest,payloadHash:string,prepared:Prepared,expectedRevision:number,failAt?:string):Receipt {
     // A rejected/rolled-back transaction must not mutate a fingerprinted plan
     // or its transient target records in the caller's prepared object.
-    if(/-v[34567]$/.test(prepared.sourceFormat??''))prepared=structuredClone(prepared);
+    if(/-v[345678]$/.test(prepared.sourceFormat??''))prepared=structuredClone(prepared);
     return this.db.transaction(()=>{
       const already=this.receipt(req.request_id,payloadHash); if(already)return already;
       if(this.revision()!==expectedRevision)throw new ServiceError('REVISION_CONFLICT','Concurrent mutation; retry request');
       if(prepared.operations.some(o=>retirementEffectMismatch(o,req)))throw new ServiceError('OPERATION_INTENT','Retraction cannot satisfy an erasure request');
-      const semanticErasure=/-v[34567]$/.test(prepared.sourceFormat??''),sourceErasure=/-v[4567]$/.test(prepared.sourceFormat??''),semanticTransitions=/-v[567]$/.test(prepared.sourceFormat??'');
-      const sourceActions=/-v[67]$/.test(prepared.sourceFormat??'')?validateSourceOperations(prepared.sourceOperationPlan,req,this.facts(),prepared.facts,prepared.messages,prepared.sourceFormat?.endsWith('-v7')?this.snapshot(req.session_id).erasureSources??[]:[]):undefined;
+      const semanticErasure=/-v[345678]$/.test(prepared.sourceFormat??''),sourceErasure=/-v[45678]$/.test(prepared.sourceFormat??''),semanticTransitions=/-v[5678]$/.test(prepared.sourceFormat??'');
+      const sourceActions=/-v[678]$/.test(prepared.sourceFormat??'')?validateSourceOperations(prepared.sourceOperationPlan,req,this.facts(),prepared.facts,prepared.messages,/-v[78]$/.test(prepared.sourceFormat??'')?this.snapshot(req.session_id).erasureSources??[]:[]):undefined;
+      if(prepared.sourceFormat?.endsWith('-v8')&&sourceActions?.work.enabled)validateSourceBatchPlan(prepared.sourceOperationPlan!,sourceActions.work);
       const transitions=semanticTransitions?validateTransitions(prepared.transitionPlan,transitionWork(req,this.facts(),prepared.facts,prepared.operations)):undefined;
       let sourceCuts=new Map<string,{start:number;end:number}[]>();const reviewedSources=new Set<string>();
       const forcedErased=new Set<string>();
@@ -158,7 +161,7 @@ export class TenantStore {
         const actionFamily=propertyFamily(operation.predicate,target[0]?.content??'');
         operationTargets.set(operation,target.map(f=>f.id));
         if(operation.type==='restore'){
-          if(!/remember.*again|store.*again|重新.*记|再次.*记/i.test(operation.source.quote))throw new ServiceError('RESTORE','Explicit reauthorization required');
+          if(!hasRestoreWording(operation.source.quote))throw new ServiceError('RESTORE','Explicit reauthorization required');
           const markerRows=this.db.prepare('SELECT id,body FROM markers').all() as {id:number;body:string}[];
           for(const row of markerRows){const m=JSON.parse(row.body) as Marker;if(slot(m)===slot(operation)){if(!operation.value)throw new ServiceError('RESTORE','Explicit new value required');m.allowedValueHashes=[...new Set([...(m.allowedValueHashes??[]),valueDigest(operation.value)])];this.db.prepare('UPDATE markers SET body=? WHERE id=?').run(JSON.stringify(m),row.id);}}
           continue;

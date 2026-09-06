@@ -5,7 +5,7 @@ import OpenAI from 'openai';
 import { appendFileSync } from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
 import type { Config } from './config.js';
-import { ServiceError } from './types.js';
+import { ServiceError,hasRestoreWording } from './types.js';
 import {modelFailure} from './model-failure.js';
 import type {AddRequest,Extraction,Fact} from './types.js';
 import {VERIFICATION_PROMPT,verificationInput,VerificationProtocolError} from './verification.js';
@@ -17,7 +17,7 @@ import {TRANSITION_RESPONSE_FORMAT} from './transitions.js';
 function audit(record:Record<string,unknown>):void {
   if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
 }
-type GenerationPurpose='extraction'|'verification'|'repair'|'rerank'|'erasure_binding'|'source_erasure'|'source_erasure_repair'|'state_transition'|'source_operation';
+type GenerationPurpose='extraction'|'verification'|'repair'|'rerank'|'erasure_binding'|'source_erasure'|'source_erasure_repair'|'state_transition'|'source_operation'|'source_operation_screen'|'source_operation_closure';
 type GenerationContext={purpose?:GenerationPurpose;verification_format?:string;verification_scope?:{facts:number;operations:number;replacements:number;messages:number;reused:number};trace?:{user_id:string;request_id:string}};
 
 export class Models {
@@ -25,15 +25,20 @@ export class Models {
   constructor(private config: Config) {
     this.client = new OpenAI({ apiKey: config.llmKey || 'local', baseURL: config.llmBase, maxRetries: 0, timeout: config.addTimeout });
   }
-  private stageModel(purpose:GenerationPurpose):string{return purpose==='rerank'?this.config.llmModel:this.config.llmStageModels[purpose==='erasure_binding'||purpose==='source_erasure'||purpose==='source_erasure_repair'||purpose==='state_transition'||purpose==='source_operation'?'verification':purpose]??this.config.llmModel;}
+  private stageModel(purpose:GenerationPurpose):string{return purpose==='rerank'?this.config.llmModel:this.config.llmStageModels[purpose==='erasure_binding'||purpose==='source_erasure'||purpose==='source_erasure_repair'||purpose==='state_transition'||purpose==='source_operation'||purpose==='source_operation_screen'||purpose==='source_operation_closure'?'verification':purpose]??this.config.llmModel;}
   async verify(proposal:Extraction,req:AddRequest,facts:Fact[],omitted:number[],signal:AbortSignal,session=new VerificationSession(),resolvedSourceActions:unknown[]=[]):Promise<string[]>{
-    const compact=this.config.verificationFormat==='compact',prompt=(compact?COMPACT_VERIFICATION_PROMPT:VERIFICATION_PROMPT)+(resolvedSourceActions.length?'\nRESOLVED_SOURCE_ACTIONS were independently authorized against exact source targets before this proposal. They are pending atomic source removals, separate from fact operations. Do not demand duplicate fact-ID operations for these exact instructions. Still check every remaining personal assertion and instruction in those messages. A message with only resolved source instructions and no other memorable information may be not_memorable. Never use this context to authorize changing an unrelated fact. A proposed negative fact that restates a rejected assistant value still retains that detail: mark it unsupported. Removing rejected-claim summaries is not a coverage failure. Preserve independent user facts, including real preferences or routines.':'');
-    const plan=session.plan(req,proposal,facts,{base:this.config.llmBase,model:this.stageModel('verification'),effort:this.config.llmReasoningEffort,prompt,resolvedSourceActions,responseFormat:this.config.verificationResponseFormat,...(this.config.verificationResponseFormat==='json_schema'?{schema:COMPACT_VERIFICATION_RESPONSE_FORMAT.json_schema}:{})});
+    const invalidRestores=proposal.operations.flatMap((o,index)=>o.type==='restore'&&!hasRestoreWording(o.source.quote)?[`operation ${index}: Restore needs an explicit instruction to remember again. Keeping an existing active fact unchanged is not restoration. Remove this unsupported operation; do not invent reauthorization or alter unrelated facts.`]:[]);
+    if(invalidRestores.length)return invalidRestores;
+    const currentSources=new Set(req.messages.map((_,index)=>createHash('sha256').update(`${req.user_id}\0${req.request_id}\0${index}`).digest('hex')));
+    const changedTargets=new Set([...proposal.operations.flatMap(o=>o.target_ids),...proposal.facts.flatMap(f=>f.supersedes)]);
+    const retentionContext=resolvedSourceActions.length?facts.filter(f=>f.state==='active'&&!changedTargets.has(f.id)&&!f.source_ids.some(id=>currentSources.has(id))).map(f=>({id:f.id,subject:f.subject,predicate:f.predicate,scope:f.scope,content:f.content,value:f.value,state:f.state,modality:f.modality})):[];
+    const compact=this.config.verificationFormat==='compact',prompt=(compact?COMPACT_VERIFICATION_PROMPT:VERIFICATION_PROMPT)+(resolvedSourceActions.length?'\nRESOLVED_SOURCE_ACTIONS were independently authorized against exact source targets before this proposal. They are pending atomic source removals, separate from fact operations. Do not demand duplicate fact-ID operations for these exact instructions. Still check every remaining personal assertion and instruction in those messages. A message with only resolved source instructions and no other memorable information may be not_memorable. Never use this context to authorize changing an unrelated fact. A proposed negative fact that restates a rejected assistant value still retains that detail: mark it unsupported. Removing rejected-claim summaries is not a coverage failure. Preserve independent user facts, including real preferences or routines. When a resolved source rejection is accompanied only by a request to KEEP specific already-active existing facts unchanged, those retention clauses require no additional fact or operation: use not_memorable if nothing else requires new storage or mutation. Check EXISTING_ACTIVE_FACTS for the exact owner/property/value and active state first; an absent record cannot use this exception. This exception does not cover a new personal assertion, a missing/erased record, a changed value, a future plan or another unresolved memory instruction. Do not demand restore for retaining an active record; restore needs explicit new authorization to remember again.':'');
+    const plan=session.plan(req,proposal,facts,{base:this.config.llmBase,model:this.stageModel('verification'),effort:this.config.llmReasoningEffort,prompt,resolvedSourceActions,retentionContext,responseFormat:this.config.verificationResponseFormat,...(this.config.verificationResponseFormat==='json_schema'?{schema:COMPACT_VERIFICATION_RESPONSE_FORMAT.json_schema}:{})});
     if(plan.blockedFindings.length)return plan.blockedFindings;
     const scope=plan.scope;
     const counts={facts:scope.fact_indices.length,operations:scope.operation_indices.length,replacements:scope.replacements.length,messages:scope.message_indices.length,reused:plan.reused};
     if(!counts.facts&&!counts.operations&&!counts.replacements&&!counts.messages)return session.evaluate(plan,{fact_checks:[],operation_checks:[],replacement_checks:[],message_checks:[]});
-    const data={...verificationInput(req,proposal,facts,omitted,scope),...(resolvedSourceActions.length?{RESOLVED_SOURCE_ACTIONS:resolvedSourceActions}:{})};
+    const data={...verificationInput(req,proposal,facts,omitted,scope),...(resolvedSourceActions.length?{RESOLVED_SOURCE_ACTIONS:resolvedSourceActions,EXISTING_ACTIVE_FACTS:retentionContext}:{})};
     const input=JSON.stringify(compact?{...data,VERIFICATION_PROTOCOL:COMPACT_VERIFICATION_PROTOCOL,PROPOSAL:{...proposal,facts:proposal.facts.map(f=>({...f,sources:f.sources.map((s,source_slot)=>({...s,source_slot}))}))},REPLACEMENT_TARGETS:scope.replacements.map((r,check_index)=>({...r,check_index}))}:data);let repair='';
     for(let attempt=0;attempt<2;attempt++){
       let raw:unknown;
