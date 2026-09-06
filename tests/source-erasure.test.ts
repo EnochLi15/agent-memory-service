@@ -1,7 +1,8 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {Extractor,hash} from '../dist/extraction.js';import {TenantStore} from '../dist/storage.js';import {configFromEnv} from '../dist/config.js';
-import {decodeSourceErasure,maskSource} from '../dist/source-erasure.js';
+import {decodeSourceErasure,maskSource,sourceErasureWork} from '../dist/source-erasure.js';
+import {valueDigest} from '../dist/erasure.js';
 const config=configFromEnv({MEMORY_MODE:'enhanced',MEMORY_ERASURE_BINDING:'true',MEMORY_SOURCE_ERASURE:'true'});
 const request=(id:string,text:string)=>({request_id:id,user_id:'u',session_id:'s',messages:[{role:'user',content:text,timestamp:'2026-01-01T00:00:00Z'}]});
 const fact=(quote:string,subject='user',scope='dentist')=>({content:quote,subject,predicate:'appointment',value:"dentist appointment with Dr. Pham's office on Elm Street",scope,sources:[{index:0,quote}]});
@@ -43,7 +44,7 @@ test('missing or uncertain source partitions cannot be committed and later echoe
  const later=request('later','Your appointment was with Dr. Pham on Elm Street.');later.messages[0].role='assistant';
  f.commit(later,await f.prepare(later,{facts:[],operations:[]}));
  assert.doesNotMatch(JSON.stringify(f.store.snapshot('s')),/Your appointment was with Dr/);
- const unrelated=request('other','Kevin has an appointment with Dr. Pham on Elm Street.');
+ const unrelated=request('other','My colleague Kevin has an appointment with Dr. Pham on Elm Street. It is his, not mine.');
  f.commit(unrelated,await f.prepare(unrelated,{facts:[fact(unrelated.messages[0].content,'Kevin','Kevin dentist')],operations:[]}));
  assert.ok(f.store.facts().some((x:any)=>x.subject==='Kevin'&&x.state==='active'));
 }));
@@ -73,3 +74,17 @@ test('v4 cannot silently reuse a pre-existing v3 directory',async()=>{
  const extractor=new Extractor(config,{} as any);
  await assert.rejects(()=>extractor.prepare(request('x','hello'),{revision:1,facts:[],tail:[],anchor:null},AbortSignal.timeout(1000)),(e:any)=>e.code==='SOURCE_FORMAT');
 });
+
+test('candidate capacity fails instead of truncating source coverage',()=>{
+ const r=request('capacity','hi'),boundary={subject:'user',predicate:'appointment',scope:'',boundary:'value',valueHash:valueDigest('Pham'),tokenCount:1,revision:1};
+ const m=(i:number,text='Pham')=>({id:String(i),session_id:'s',ordinal:i,role:'user',content:text,timestamp:'2026-01-01T00:00:00Z',searchable:true});
+ assert.throws(()=>sourceErasureWork(r,[],[],[],[boundary],[],Array.from({length:65},(_,i)=>m(i))),/capacity/);
+ assert.throws(()=>sourceErasureWork(r,[],[],[],[boundary],[],[m(0,'Pham '.repeat(14000))]),/capacity/);
+});
+test('explicit restoration of the authorized value survives v4 source checks without reviving old raw text',()=>fixture(async(f:any)=>{
+ const target=await seed(f),del=request('delete','Forget my dentist appointment.');f.commit(del,await f.prepare(del,deletion(target)));
+ const r=request('restore',"Remember my dentist appointment with Dr. Pham's office on Elm Street again.");
+ const p={facts:[fact(r.messages[0].content)],operations:[{type:'restore',target_ids:[target.id],subject:'user',predicate:'appointment',scope:'dentist',value:target.value,source:{index:0,quote:r.messages[0].content}}]};
+ f.commit(r,await f.prepare(r,p));assert.ok(f.store.facts().some((x:any)=>x.state==='active'&&x.value===target.value));
+ const old=f.store.db.prepare('SELECT body FROM messages WHERE id=?').get(target.source_ids[0]);assert.doesNotMatch(old.body,/Pham/);
+}));
