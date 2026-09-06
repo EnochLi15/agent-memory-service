@@ -110,3 +110,24 @@ test('repeating a completed property deletion is a safe no-op but an unrelated m
  await assert.rejects(()=>x.prepare(request('Forget my bank account.'),store.snapshot('s'),AbortSignal.timeout(1000)),/bind/);
  await assert.rejects(()=>x.prepare(request('Forget my access code NEW-123.'),store.snapshot('s'),AbortSignal.timeout(1000)),/bind/);
 }));
+
+test('repairing one non-authorizing witness preserves a sibling valid forget',()=>fixture(async({store,snapshot,fact}:any)=>{
+ const manager=snapshot.facts.find((f:any)=>f.predicate==='manager');assert.ok(manager);
+ const content='Forget my access code. Forget my manager. I have a new manager.';
+ const response={facts:[],operations:[...proposal('Forget my access code.',[fact.id]).operations,{type:'forget',target_ids:[manager.id],subject:'user',predicate:'manager',value:'Alice',scope:'',boundary:'value',source:{index:0,quote:'I have a new manager.'}}]};
+ let calls=0,scope:any,feedback='';
+ const x=new Extractor(config,{json:async(_s:string,input:string)=>{
+  if(++calls===1)return structuredClone(response);
+  const data=JSON.parse(input);scope=data.REPAIR_SCOPE;feedback=data.REPAIR_FEEDBACK;
+  return {operation_edits:[{index:1,changes:{source:{index:0,quote:'Forget my manager.'}}}]};
+ },verify:async(p:any)=>{assert.equal(p.operations.length,2);return [];},embedBatch:async(xs:string[])=>xs.map(()=>[1,0])} as any);
+ const p=await x.prepare(request(content),snapshot,AbortSignal.timeout(1000));
+ assert.equal(calls,2);assert.deepEqual(scope.operation_indices,[1]);assert.deepEqual(scope.fact_indices,[]);assert.match(feedback,/operation 1:/);assert.match(feedback,/authorizing/);
+ store.commit(request(content),hash(JSON.stringify(request(content))),p,store.revision());assert.equal(store.facts().find((f:any)=>f.id===fact.id).state,'erased');assert.equal(store.facts().find((f:any)=>f.id===manager.id).state,'erased');
+}));
+test('a witness repair cannot remove an unflagged valid deletion',()=>fixture(async({store,snapshot,fact}:any)=>{
+ const manager=snapshot.facts.find((f:any)=>f.predicate==='manager');
+ const content='Forget my access code. Forget my manager. I have a new manager.';
+ let calls=0;const x=new Extractor(config,{json:async()=>++calls===1?{facts:[],operations:[...proposal('Forget my access code.',[fact.id]).operations,{type:'forget',target_ids:[manager.id],subject:'user',predicate:'manager',value:'Alice',scope:'',boundary:'value',source:{index:0,quote:'I have a new manager.'}}]}:{operation_edits:[{index:0,remove:true},{index:1,remove:true}]}} as any);
+ await assert.rejects(x.prepare(request(content),snapshot,AbortSignal.timeout(1000)),/unflagged operation/);assert.equal(calls,2);assert.deepEqual(store.snapshot('s'),snapshot);
+}));
