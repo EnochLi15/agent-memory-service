@@ -1,7 +1,7 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {Extractor,hash} from '../dist/extraction.js';import {TenantStore} from '../dist/storage.js';import {configFromEnv} from '../dist/config.js';
-import {extractionSchema} from '../dist/types.js';import {missingForgetObligations} from '../dist/operation-intent.js';import {retrieve} from '../dist/retrieval.js';
+import {extractionSchema} from '../dist/types.js';import {missingForgetObligations,realControl,authorizesForget} from '../dist/operation-intent.js';import {retrieve} from '../dist/retrieval.js';
 const config=configFromEnv({MEMORY_MODE:'enhanced'}),date='2026-01-01T00:00:00Z';
 const request=(text:string)=>({request_id:'retire',user_id:'u',session_id:'s',messages:[{role:'user',content:text,timestamp:date}]});
 const command='No need to track anything about the tablet.';
@@ -53,5 +53,40 @@ test('transaction independently rejects a prepared retraction substituted for a 
   const p=await x.prepare(req,store.snapshot('s'),AbortSignal.timeout(1000));p.operations[0]!.type='retract';
   assert.throws(()=>store.commit(req,hash(JSON.stringify(req)),p,0),(e:any)=>e.code==='OPERATION_INTENT');
   assert.equal(store.revision(),0);assert.equal(store.facts().length,0);assert.equal(store.passages().length,0);assert.equal(store.receipt(req.request_id,hash(JSON.stringify(req))),null);
+ }finally{store.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('second-person no-longer-needed tracking is direct retirement, preserving negative and reported boundaries',()=>{
+ const text="I had a dentist appointment with Dr. Pham on April 9th, so you don't need to keep track of that anymore.";
+ const quote="you don't need to keep track of that anymore";
+ const r=request(text),p=extractionSchema.parse({facts:[],operations:[{type:'forget',target_ids:['m0'],subject:'user',predicate:'appointment',source:{index:0,quote}}]});
+ assert.equal(realControl(text),true);assert.equal(authorizesForget(p.operations[0]!,r),true);
+ assert.equal(missingForgetObligations(r,{facts:[],operations:[]}).length,1);
+ assert.equal(missingForgetObligations(r,p).length,0);
+ assert.equal(realControl('You do not need to retain my appointment anymore.'),true);
+ for(const s of [
+  'You do not need to stop tracking my appointment.',
+  "You don't need to forget my appointment.",
+  "If I cancel, you don't need to keep track of my appointment anymore.",
+  'She said: "You do not need to retain my appointment anymore."',
+  '"You do not need to retain my appointment anymore."',
+  'The dentist appointment is completed.',
+ ])assert.equal(realControl(s),false,s);
+});
+
+test('a valid same-message tracking retirement reaches verification without being told to remove its operation',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'tracking-retirement-')),store=new TenantStore(dir,'u');let calls=0,checks=0;
+ const before="I had a dentist appointment with Dr. Pham on April 9th";
+ const command="you don't need to keep track of that anymore";
+ const r=request('My work laptop uses Firefox. '+before+', so '+command+'.');
+ const proposal=extractionSchema.parse({facts:[fact('My work laptop uses Firefox.','browser','Firefox','work laptop'),fact(before,'appointment','Dr. Pham on April 9th','dentist')],operations:[{type:'forget',target_ids:['new:1'],subject:'user',predicate:'appointment',scope:'dentist',boundary:'property',source:{index:0,quote:command}}]});
+ const x=new Extractor(config,{json:async()=>{calls++;assert.equal(calls,1,'A valid retirement must not consume a repair removing it');return structuredClone(proposal);},verify:async(p:any)=>{checks++;assert.equal(p.operations[0].type,'forget');return [];},embedBatch:async(xs:string[])=>xs.map(()=>[1,0])} as any);
+ try{
+  const p=await x.prepare(r,store.snapshot('s'),AbortSignal.timeout(1000));assert.equal(checks,1);
+  store.commit(r,hash(JSON.stringify(r)),p,0);
+  assert.equal(store.facts().filter(f=>f.state==='erased').length,1);
+  assert.ok(store.passages().every(p=>!p.content.includes('Dr. Pham')));
+  const evidence=JSON.stringify(retrieve(store,{user_id:'u',query:'Dr. Pham April dentist Firefox',top_k:100},null,config).data);
+  assert.doesNotMatch(evidence,/Dr\. Pham/);assert.match(evidence,/Firefox/);
  }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
