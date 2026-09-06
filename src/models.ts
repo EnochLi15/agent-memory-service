@@ -100,6 +100,7 @@ export class Models {
   async embedBatch(texts: string[], action: 'add' | 'search', signal: AbortSignal): Promise<number[][]> {
     if (!texts.length) return [];
     const started=performance.now();
+    try{
     if(this.config.embeddingDigest){
       const tags=await fetch(`${this.config.embeddingBase}/api/tags`,{signal:AbortSignal.any([signal,AbortSignal.timeout(5000)])});
       if(!tags.ok)throw new ServiceError('EMBEDDING_IDENTITY','Could not verify local model digest');
@@ -124,5 +125,9 @@ export class Models {
       return vector.map(x => x / norm);
     });
     audit({kind:'embedding',action,model:this.config.embeddingModel,count:texts.length,elapsed_ms:performance.now()-started,prompt_eval_count:data.prompt_eval_count??null,outcome:'ok'});return vectors;
+    }catch(error){
+      audit({kind:'embedding',action,model:this.config.embeddingModel,count:texts.length,elapsed_ms:performance.now()-started,outcome:'error',...modelFailure(error,signal,false,null),...(error instanceof ServiceError?{error_code:error.code}:{})});
+      throw error;
+    }
   }
 }
