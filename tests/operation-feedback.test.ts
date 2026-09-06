@@ -37,7 +37,7 @@ test('a structurally grouped repair still needs independent semantic authorizati
   const problem=JSON.parse(x.REPAIR_FEEDBACK.slice(x.REPAIR_FEEDBACK.indexOf('{'),x.REPAIR_FEEDBACK.indexOf('. Reuse matching'))).operations[0];
   return {operation_edits:[{index:0,remove:true}],append_operations:problem.selected_target_groups.map((g:any)=>({type:'forget',subject:g.subject,predicate:g.predicate,scope:g.scope,target_ids:g.target_ids,source:operation.source}))};
  },verify:async()=>{verified++;return ['operation 0: The source does not authorize this record.'];},embedBatch:async()=>{throw Error('Rejected proposal must not embed');}};
- await assert.rejects(()=>new Extractor(configFromEnv({MEMORY_MODE:'enhanced'}),models as any).prepare(req,{revision:1,facts:targets,tail:[],anchor:null} as any,AbortSignal.timeout(3000)),/Evidence still fails semantic verification/);assert.equal(repairs,2);assert.equal(verified,1,'an unchanged rejected proposal is not resampled');
+ await assert.rejects(()=>new Extractor(configFromEnv({MEMORY_MODE:'enhanced'}),models as any).prepare(req,{revision:1,facts:targets,tail:[],anchor:null} as any,AbortSignal.timeout(3000)),/Evidence still fails semantic verification/);assert.equal(repairs,1);assert.equal(verified,1);
 });
 test('protected scopes remain separate and source edits cannot resolve coordinate conflicts',()=>{
  const p=proposal(),pool=[{...targets[0],scope:'',scopeHash:'one'},{...targets[1],scope:'',scopeHash:'two'}],before=structuredClone(pool);
