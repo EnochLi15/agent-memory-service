@@ -13,7 +13,7 @@ import {bindingCandidates,resolveOperationTargets} from './binding.js';
 import { entities, overlap, tokens, speakerPrefix } from './text.js';
 import {preparePassages,sourceSpans} from './passages.js';
 import {messageAnchors,normalizeFactTime} from './temporal.js';
-import {humanQuote,participantIndices} from './verification.js';
+import {forgetScopeContext,humanQuote,participantIndices} from './verification.js';
 import {SOURCE_REFERENCE_PROTOCOL,SOURCE_REFERENCE_PROMPT,sourceReferenceMessages,decodeSourceReferences} from './source-references.js';
 import {GROUPED_EXTRACTION_PROTOCOL,GROUPED_EXTRACTION_PROMPT,decodeGroupedExtraction} from './extraction-groups.js';
 import {VerificationSession} from './verification-session.js';
@@ -220,7 +220,11 @@ export class Extractor {
       const relevant=ordered.map((f,i)=>({id:`m${i}`,content:f.content,subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,state:f.state,modality:f.modality}));
       const visibleIds=new Set(ordered.map(f=>f.id));let extraCandidates=0;
       const expandTargets=(proposal:Extraction):void=>{
-        for(const operation of proposal.operations)for(const f of bindingCandidates(operation,snapshot.facts)){
+        // The checker can see a related historical record outside the initial
+        // retrieval window. Give repair a usable alias for it under the same
+        // existing 32-record expansion limit, before generic binding neighbors.
+        const related=new Set(forgetScopeContext(proposal,snapshot.facts).flatMap(c=>c.facts.map(f=>f.id)));
+        for(const f of [...snapshot.facts.filter(f=>related.has(f.id)),...proposal.operations.flatMap(o=>bindingCandidates(o,snapshot.facts))]){
           if(visibleIds.has(f.id)||extraCandidates>=32)continue;
           const id=`m${aliases.size}`;aliases.set(id,f.id);visibleIds.add(f.id);extraCandidates++;
           relevant.push({id,content:f.content,subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,state:f.state,modality:f.modality});
@@ -336,7 +340,7 @@ export class Extractor {
           if(invalid.length||badOps.length){issue='Every source quote must be an exact substring of the indicated NEW_MESSAGES content. Operations must cite a USER message, or a named real participant changing their own facts. An unlabelled assistant reply never authorizes changes. Never copy CONTEXT_ONLY as a new source. Fix all facts/operations and return the full object. Invalid fact spans: '+JSON.stringify(invalid.slice(0,8));continue;}
           const rejectionFindings=sourceRejectionFindings(sourceOperationPlan,req,valid.data.facts,sourceHistory);
           const findings=rejectionFindings.length?rejectionFindings:await this.models.verify(valid.data,req,bindingPool,missingPersonalSources(req,valid.data),modelSignal,verificationSession,sourceActions);
-          if(findings.length){semanticallyRejected=true;repairScope=scopeForFindings(valid.data,findings);issue='Semantic verification rejected the proposal. Repair these specific failures while preserving supported unrelated facts. '+JSON.stringify(findings)+'. Return the complete corrected object.';continue;}
+          if(findings.length){expandTargets(valid.data);semanticallyRejected=true;repairScope=scopeForFindings(valid.data,findings);issue='Semantic verification rejected the proposal. Repair these specific failures while preserving supported unrelated facts. '+JSON.stringify(findings)+'. Return the complete corrected object.';continue;}
           accepted=valid.data;break;
         }
         if(!accepted&&issue.startsWith('Unknown target'))throw new ServiceError('OPERATION_TARGET','Unknown memory operation target after repair');

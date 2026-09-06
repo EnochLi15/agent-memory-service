@@ -199,3 +199,21 @@ test('missing historical erasure coverage stays rejected until the proposal chan
  assert.match((await verify(m,p,state,r,pool as any)).join(' '),/Historical food preference/);assert.equal(calls,1);
  p.operations.push(extractionSchema.parse({facts:[],operations:[op('old','favorite_dish')]}).operations[0]);assert.deepEqual(await verify(m,p,state,r,pool as any),[]);assert.equal(calls,2);
 });
+
+test('a historical omission outside initial retrieval is exposed to the existing bounded repair',async()=>{
+ const r={...req,messages:[{...req.messages[0],content:"Forget Priya's food details, please do not track her restaurant notes or sauce subscription anymore."}]};
+ const selected={...oldFact('selected'),subject:'Priya',predicate:'subscription',scope:'',value:'sauce subscription',content:r.messages[0].content};
+ const historical={...oldFact('historical'),subject:'Priya',predicate:'spice_preference_difference',scope:'curry',value:'different spices',content:'Different spice spectrum.'};
+ const distractors=Array.from({length:121},(_,i)=>({...oldFact('d'+i),subject:'other'+i,content:r.messages[0].content}));
+ const snapshot={facts:[selected,...distractors,historical],tail:[],anchor:null,revision:1} as any;
+ const config=configFromEnv({MEMORY_MODE:'enhanced',MEMORY_MAX_REPAIR_ROUNDS:'2'}),m=new Models(config);let repairs=0,checks=0;
+ m.json=async(_s,input,_signal,ctx)=>{
+  const d=JSON.parse(input);
+  if(ctx?.purpose==='extraction'){assert.ok(!d.EXISTING_FACTS.some((f:any)=>f.predicate===historical.predicate));return {facts:[],operations:[{type:'forget',target_ids:['selected'],subject:selected.subject,predicate:selected.predicate,scope:'',value:selected.value,boundary:'property',source:{index:0,quote:r.messages[0].content}}]};}
+  if(ctx?.purpose==='repair'){repairs++;const exposed=d.EXISTING_FACTS.find((f:any)=>f.predicate===historical.predicate);assert.ok(exposed,'repair must receive the historical record and its usable alias');assert.ok(/^m\d+$/.test(exposed.id));
+   return {append_operations:[{type:'forget',target_ids:[exposed.id],subject:historical.subject,predicate:historical.predicate,scope:historical.scope,value:historical.value,boundary:'property',source:{index:0,quote:r.messages[0].content}}]};}
+  checks++;const out=success(d);if(checks===1)out.message_checks=[{index:0,disposition:'missing',quote:r.messages[0].content,reason:'Historical spice preference difference was omitted.'}];return out;
+ };
+ m.embedBatch=async xs=>xs.map(()=>[1,0]);
+ const prepared=await new Extractor(config,m).prepare(r,snapshot,AbortSignal.timeout(3000));assert.equal(repairs,1);assert.equal(checks,2);assert.ok(prepared.operations.some(o=>o.target_ids.includes('historical')));
+});
