@@ -7,7 +7,8 @@ import {bindingCandidates,resolveOperationTargets} from './binding.js';
 import { entities, overlap, tokens, speakerPrefix } from './text.js';
 import {preparePassages,sourceSpans} from './passages.js';
 import {messageAnchors,normalizeFactTime} from './temporal.js';
-import {humanQuote} from './verification.js';
+import {humanQuote,participantIndices} from './verification.js';
+import {GROUPED_EXTRACTION_PROTOCOL,GROUPED_EXTRACTION_PROMPT,decodeGroupedExtraction} from './extraction-groups.js';
 import {VerificationSession} from './verification-session.js';
 import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,type RepairScope} from './repair.js';
 import {sourceErasureWork,sourceErasureBatches,sourceErasureInput,sourceQuoteProblems,applySourceQuoteRepairs,SOURCE_QUOTE_REPAIR_PROMPT,decodeSourceErasureResponse,decodeSourceErasure,SOURCE_ERASURE_PROMPT} from './source-erasure.js';
@@ -181,7 +182,9 @@ export class Extractor {
           relevant.push({id,content:f.content,subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,state:f.state,modality:f.modality});
         }
       };
-      const user=JSON.stringify({OBSERVATION_DATE:anchor,EXISTING_FACTS:relevant,CONTEXT_ONLY:snapshot.tail.map(m=>({role:m.role,content:m.content})),NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))});
+      const grouped=this.config.extractionFormat==='message_groups';
+      const extractionPrompt=grouped?GROUPED_EXTRACTION_PROMPT:EXTRACTION_PROMPT;
+      const user=JSON.stringify({...(grouped?{EXTRACTION_PROTOCOL:GROUPED_EXTRACTION_PROTOCOL,PARTICIPANT_INDEX:participantIndices(req)}:{}),OBSERVATION_DATE:anchor,EXISTING_FACTS:relevant,CONTEXT_ONLY:snapshot.tail.map(m=>({role:m.role,content:m.content})),NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))});
       // Reserve time for grounded fallback, local embedding and atomic commit.
       // This inner budget never extends the caller's absolute request deadline.
       let semanticallyRejected=false;const verificationSession=new VerificationSession(this.config.incrementalVerification);
@@ -195,9 +198,17 @@ export class Extractor {
           // validation pass, whose indices may include newly appended facts.
           repairScope=undefined;
           const repairSystem=issue?(patchMode?PATCH_PROMPT:'\nRepair the malformed proposal; return the complete extraction schema.'):'';
-          const repairInput=issue?JSON.stringify({...JSON.parse(user),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:failedProposal,...(patchMode?{REPAIR_SCOPE:scope,REPLACEMENT_TARGET_GROUPS:replacementTargetGroups(prior.data!,relevant),FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
-          const output=await this.models.json(patchMode?PATCH_PROMPT:EXTRACTION_PROMPT+repairSystem,repairInput,modelSignal,{purpose:issue?'repair':'extraction',trace:traceIdentity});
+          const repairInput=issue?JSON.stringify({...JSON.parse(user),...(grouped&&patchMode?{EXTRACTION_PROTOCOL:'flat-patch-v1'}:{}),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:failedProposal,...(patchMode?{REPAIR_SCOPE:scope,REPLACEMENT_TARGET_GROUPS:replacementTargetGroups(prior.data!,relevant),FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
+          const output=await this.models.json(patchMode?PATCH_PROMPT:extractionPrompt+repairSystem,repairInput,modelSignal,{purpose:issue?'repair':'extraction',trace:traceIdentity});
           let raw:unknown=output;
+          if(grouped&&!patchMode){
+            try{raw=decodeGroupedExtraction(output,req);}
+            catch(error){
+              failedProposal=output;
+              if(attempt===this.config.maxRepairRounds)throw new ServiceError('EVIDENCE_VALIDATION','Grouped extraction could not cover every participant within bounded repair rounds');
+              issue=(error instanceof Error?error.message:'Invalid grouped extraction')+'. Return the complete message_groups schema and preserve every participant index.';continue;
+            }
+          }
           if(patchMode){
             try{raw=applyRepair(prior.data!,output,scope);}
             catch(error){if(issue.startsWith('Unknown target')||issue.startsWith('Operation target binding'))throw new ServiceError('OPERATION_TARGET','Invalid target/scope repair patch');throw error;}
@@ -286,7 +297,7 @@ export class Extractor {
         parsed=accepted;
       } catch (error) {
         if (signal.aborted || (error instanceof ServiceError && ['OPERATION_TARGET','OPERATION_SCOPE','OPERATION_INTENT','EVIDENCE_VALIDATION','VERIFICATION_UNAVAILABLE'].includes(error.code))) throw error;
-        if(semanticallyRejected)throw new ServiceError('EVIDENCE_VALIDATION','A rejected proposal could not be repaired within the request budget');
+        if(semanticallyRejected)throw new ServiceError('EVIDENCE_VALIDATION',modelSignal.aborted?'A rejected proposal could not be repaired before the request deadline':'A rejected proposal could not be repaired after a model or protocol failure');
         degraded.push('extraction_offline'); parsed = offlineExtract(req,snapshot);
       }
     }

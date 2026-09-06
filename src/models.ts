@@ -6,6 +6,7 @@ import { appendFileSync } from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
 import type { Config } from './config.js';
 import { ServiceError } from './types.js';
+import {modelFailure} from './model-failure.js';
 import type {AddRequest,Extraction,Fact} from './types.js';
 import {VERIFICATION_PROMPT,verificationInput,VerificationProtocolError} from './verification.js';
 import {VerificationSession} from './verification-session.js';
@@ -66,19 +67,19 @@ export class Models {
     const model=this.stageModel(purpose),structured=['verification','erasure_binding','source_erasure','source_erasure_repair','state_transition'].includes(purpose)&&this.config.verificationResponseFormat==='json_schema';
     const formatAudit=['verification','erasure_binding','source_erasure','source_erasure_repair','state_transition'].includes(purpose)?{verification_response_format:structured?'json_schema':'json_object'}:{};let last:unknown;
     for(let attempt=0;attempt<2;attempt++){
-      const started=performance.now();let usage:unknown=null,content='';
+      const started=performance.now();let usage:unknown=null,content='',finish:string|null=null,streamStarted=false,refusalDetected=false;
       try{
         const stream=await this.client.chat.completions.create({
           model,...(this.config.llmReasoningEffort?{reasoning_effort:this.config.llmReasoningEffort}:{}),messages:[{role:'system',content:system},{role:'user',content:user}],
           response_format:structured?(purpose==='source_erasure_repair'?SOURCE_QUOTE_REPAIR_RESPONSE_FORMAT:purpose==='state_transition'?TRANSITION_RESPONSE_FORMAT:purpose==='source_erasure'?SOURCE_ERASURE_RESPONSE_FORMAT:purpose==='erasure_binding'?ERASURE_RESPONSE_FORMAT:COMPACT_VERIFICATION_RESPONSE_FORMAT):{type:'json_object'},max_completion_tokens:10000,stream:true,stream_options:{include_usage:true},
         },{signal});
-        let finish:string|null=null;
-        for await(const chunk of stream){content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
+        streamStarted=true;
+        for await(const chunk of stream){refusalDetected ||= !!chunk.choices[0]?.delta?.refusal;content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
         if(!content||finish!=='stop')throw new ServiceError('MODEL_OUTPUT','Incomplete model output');
         const parsed=JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
         saveTrace({attempt,outcome:'ok',output:parsed});
         audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage,output_chars:content.length});return parsed;
-      }catch(error){saveTrace({attempt,outcome:'error',output_text:content,error_type:error instanceof Error?error.name:'unknown'});audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,error_type:error instanceof Error?error.name:'unknown'});last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
+      }catch(error){const failure=modelFailure(error,signal,streamStarted,finish,refusalDetected);saveTrace({attempt,outcome:'error',output_text:content,...failure});audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,...failure});last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
     }
     throw last;
   }
