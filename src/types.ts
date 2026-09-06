@@ -6,6 +6,8 @@ export const addSchema = z.object({ request_id: z.string(), user_id: z.string(),
 export const searchSchema = z.object({ query: z.string(), user_id: z.string(), top_k: z.number().finite().nonnegative(), options: z.array(z.unknown()).optional() });
 export type Message = z.infer<typeof messageSchema>;
 export type AddRequest = z.infer<typeof addSchema>;
+/** Shared identity for preparation, reference binding and model-input links. */
+export const factId=(req:AddRequest,index:number):string=>createHash('sha256').update(`${req.user_id}\0${req.request_id}\0fact\0${index}`).digest('hex');
 export type SearchRequest = z.infer<typeof searchSchema>;
 export type Receipt = { success: true; request_id: string; user_id: string; session_id: string };
 export type SearchResponse = { data: { id: string; content: string; score: number; created_at: string }[] };

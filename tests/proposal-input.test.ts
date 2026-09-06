@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {Models} from '../dist/models.js';
 import {configFromEnv} from '../dist/config.js';
 import {extractionSchema} from '../dist/types.js';
+import {createHash} from 'node:crypto';import {verificationInput} from '../dist/verification.js';
 import {VerificationSession} from '../dist/verification-session.js';
 import {indexedProposal} from '../dist/proposal-input.js';
 import {applyRepair,scopeForFindings} from '../dist/repair.js';
@@ -32,4 +33,21 @@ test('input labels cannot change patch permissions or become editable fact metad
  assert.throws(()=>applyRepair(p,{fact_edits:[{index:62,changes:{modality:'confirmed'}}]},scope),/unflagged/);
  assert.throws(()=>applyRepair(p,{fact_edits:[{index:63,changes:{fact_index:62}}]},scope));
  assert.throws(()=>applyRepair(p,{operation_edits:[{index:0,changes:{operation_index:9}}]},{fact_indices:[],operation_indices:[0],source_indices:[0]}));
+});
+
+test('verification proposal directly links current fact positions to exact deletion targets after an unrelated removal',()=>{
+ const request={...req,request_id:'shifted-facts'};
+ const id=(i:number)=>createHash('sha256').update(`${request.user_id}\0${request.request_id}\0fact\0${i}`).digest('hex');
+ const p=extractionSchema.parse({facts:[
+  {content:'Can you suggest a recipe?',subject:'user',predicate:'question',value:'recipe',sources:[{index:0,quote:req.messages[0].content}]},
+  {content:'Morgan likes curry.',subject:'Morgan',predicate:'food',value:'curry',sources:[{index:0,quote:req.messages[0].content}]},
+  {content:'Morgan likes soup.',subject:'Morgan',predicate:'food',value:'soup',sources:[{index:0,quote:req.messages[0].content}]}
+ ],operations:[{type:'forget',target_ids:['new:1'],subject:'Morgan',predicate:'food',source:{index:0,quote:req.messages[0].content}}]});
+ const shifted=applyRepair(p,{fact_edits:[{index:0,remove:true}]},{fact_indices:[0],operation_indices:[],source_indices:[0]});
+ assert.deepEqual(shifted.operations[0]!.target_ids,['new:0']);
+ shifted.operations[0]!.target_ids=[id(0)];
+ const before=structuredClone(shifted),rows=verificationInput(request,shifted,[],[]).PROPOSAL.facts;
+ assert.equal(rows[0].fact_index,0);assert.equal(rows[0].fact_id,id(0));assert.deepEqual(rows[0].forget_operation_indices,[0]);
+ assert.equal(rows[1].fact_id,id(1));assert.deepEqual(rows[1].forget_operation_indices,[],'same subject/property alone cannot count as deletion coverage');
+ assert.deepEqual(shifted,before);assert.equal('fact_id' in shifted.facts[0],false);
 });

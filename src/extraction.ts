@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import {sourceFormatFor,type Config} from './config.js';
 import { Models } from './models.js';
 import { EXTRACTION_PROMPT } from './prompts.js';
-import { addSchema, extractionSchema, canonical, operationScopeProblem, replacementMatches, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation } from './types.js';
+import { factId, addSchema, extractionSchema, canonical, operationScopeProblem, replacementMatches, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation } from './types.js';
 import {bindingCandidates,resolveOperationTargets} from './binding.js';
 import { entities, overlap, tokens, speakerPrefix } from './text.js';
 import {preparePassages,sourceSpans} from './passages.js';
@@ -134,7 +134,6 @@ function resolveSource(source:{index:number;quote:string;start?:number},req:AddR
   const local=[...declared.content.matchAll(new RegExp(escaped,'giu'))];
   if(local.length===1)source.quote=local[0]![0];
 }
-const factId=(req:AddRequest,index:number):string=>hash(`${req.user_id}\0${req.request_id}\0fact\0${index}`);
 function before(a:{index:number;quote:string;start?:number},b:{index:number;quote:string;start?:number},req:AddRequest):boolean{
   if(!sourceMatches(a,req)||!sourceMatches(b,req))return false;
   if(a.index!==b.index)return a.index<b.index;
