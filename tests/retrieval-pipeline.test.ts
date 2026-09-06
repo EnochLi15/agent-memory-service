@@ -21,7 +21,7 @@ async function fixture(fn:any){
 }
 test('source vectors recover an unextracted detail with no lexical query overlap',()=>fixture(async({store,config}:any)=>{
  const r=req('raw','I carried a cerulean umbrella through the monsoon.');
- const x=new Extractor({...config,mode:'enhanced'},{json:async()=>({facts:[],operations:[]}),embedBatch:async(texts:string[])=>texts.map(()=>[1,0])} as any);
+ const x=new Extractor({...config,mode:'enhanced'},{verify:async()=>[],json:async()=>({facts:[],operations:[]}),embedBatch:async(texts:string[])=>texts.map(()=>[1,0])} as any);
  const p=await x.prepare(r,store.snapshot('s'),AbortSignal.timeout(1000));store.commit(r,hash(JSON.stringify(r)),p,store.revision());
  const q={user_id:'u',query:'rain protection hue',top_k:5};
  const frame=collectCandidates(store,q,[1,0],config);assert.ok(frame.ranked.some((c:any)=>c.signals.includes('source-semantic')));
@@ -31,14 +31,14 @@ test('source vectors recover an unextracted detail with no lexical query overlap
 }));
 test('long messages keep bounded source passages and details omitted by extraction',()=>fixture(async({store,config}:any)=>{
  const content='This is generic background. '.repeat(150)+'I repaired the lantern with a cobalt screwdriver.';
- const r=req('long',content);const x=new Extractor({...config,mode:'enhanced'},{json:async()=>({facts:[],operations:[]}),embedBatch:async()=>{throw Error('offline');}} as any);
+ const r=req('long',content);const x=new Extractor({...config,mode:'enhanced'},{verify:async()=>[],json:async()=>({facts:[],operations:[]}),embedBatch:async()=>{throw Error('offline');}} as any);
  const p=await x.prepare(r,store.snapshot('s'),AbortSignal.timeout(1000));store.commit(r,hash(JSON.stringify(r)),p,store.revision());
  assert.ok(store.passages().every((p:any)=>p.content.length<=900));
  assert.match(JSON.stringify(retrieve(store,{user_id:'u',query:'cobalt screwdriver',top_k:5},null,config)),/cobalt screwdriver/);
 }));
 test('forget erases source intervals and vectors while preserving independent unextracted detail',()=>fixture(async({store,config}:any)=>{
  const content='My access code is ZX-482, and my umbrella is cerulean.';
- const r=req('mixed',content);const x=new Extractor({...config,mode:'enhanced'},{json:async()=>({facts:[{content:'My access code is ZX-482.',subject:'user',predicate:'access_code',value:'ZX-482',sources:[{index:0,quote:'My access code is ZX-482'}]}],operations:[]}),embedBatch:async(texts:string[])=>texts.map(()=>[1,0])} as any);
+ const r=req('mixed',content);const x=new Extractor({...config,mode:'enhanced'},{verify:async()=>[],json:async()=>({facts:[{content:'My access code is ZX-482.',subject:'user',predicate:'access_code',value:'ZX-482',sources:[{index:0,quote:'My access code is ZX-482'}]}],operations:[]}),embedBatch:async(texts:string[])=>texts.map(()=>[1,0])} as any);
  const p=await x.prepare(r,store.snapshot('s'),AbortSignal.timeout(1000));store.commit(r,hash(JSON.stringify(r)),p,store.revision());
  const deletion=req('erase','Forget my access code.');
  const offline=new Extractor(config,{} as any);const prepared=await offline.prepare(deletion,store.snapshot('s'),AbortSignal.timeout(1000));

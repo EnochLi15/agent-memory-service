@@ -8,6 +8,7 @@ import {TenantStore} from '../dist/storage.js';
 import {configFromEnv} from '../dist/config.js';
 import {retrieve} from '../dist/retrieval.js';
 import {buildServer} from '../dist/server.js';
+import {realControl} from '../dist/operation-intent.js';
 
 const date='2026-01-01T00:00:00Z';
 const config=configFromEnv({MEMORY_MODE:'enhanced'});
@@ -19,7 +20,7 @@ async function fixture(fn:any){
  const req=request('My access code is ZX-482. My manager is Alice.','initial');
  const prepared=await offline.prepare(req,store.snapshot('s'),AbortSignal.timeout(1000));store.commit(req,hash(JSON.stringify(req)),prepared,0);
  const snapshot=store.snapshot('s');const fact=snapshot.facts.find(f=>f.predicate==='access_code')!;
- const prepare=(content:string,response:any)=>new Extractor(config,{json:async()=>structuredClone(response),embedBatch:async()=>{throw Error('test embedding unavailable');}} as any).prepare(request(content),snapshot,AbortSignal.timeout(1000));
+ const prepare=(content:string,response:any)=>new Extractor(config,{verify:async()=>[],json:async()=>structuredClone(response),embedBatch:async()=>{throw Error('test embedding unavailable');}} as any).prepare(request(content),snapshot,AbortSignal.timeout(1000));
  try{await fn({store,snapshot,fact,prepare});}finally{store.close();rmSync(dir,{recursive:true,force:true});}
 }
 
@@ -31,10 +32,14 @@ test('polite retirement intents survive model validation and erase evidence whil
  assert.doesNotMatch(JSON.stringify(evidence),/ZX-482/);assert.match(JSON.stringify(evidence),/Alice/);
 }));
 test('retirement paraphrase is handled even when the model emits empty arrays',()=>fixture(async({prepare,fact}:any)=>{
- for(const content of ['I do not need my access code stored anymore.','I no longer need you to remember my access code.']){
+ for(const content of ['I do not need my access code stored anymore.','I no longer need you to remember my access code.','No need to track my access code anymore.']){
   const p=await prepare(content,{facts:[],operations:[]});assert.equal(p.operations.length,1,content);assert.ok(p.operations[0].target_ids.includes(fact.id));
  }
 }));
+test('stop-tracking directives retain negation, quotation and conditional boundaries',()=>{
+ assert.equal(realControl('No need to track anything about the tablet.'),true);
+ for(const text of ['Do not stop tracking my tablet.','If I sell it, no need to track the tablet.', 'Alice said: no need to track the tablet.', '"No need to track the tablet."'])assert.equal(realControl(text),false,text);
+});
 test('unresolved real commands cannot degrade to a successful empty operation list',()=>fixture(async({prepare}:any)=>{
  await assert.rejects(()=>prepare('Please forget my gym schedule.',{facts:[],operations:[]}),/operation|target|bind/i);
 }));
@@ -55,7 +60,7 @@ test('unrelated quotation does not veto a separate real command',()=>fixture(asy
 test('same-chunk handles bind only earlier sourced facts and are erased in the transaction',()=>fixture(async({store,snapshot}:any)=>{
  const req=request('My salary is 85000. Forget my salary.');
  const response={facts:[{content:'My salary is 85000.',subject:'user',predicate:'salary',value:'85000',sources:[{index:0,quote:'My salary is 85000.'}]}],operations:[{type:'forget',target_ids:['new:0'],subject:'user',predicate:'salary',value:'85000',source:{index:0,quote:'Forget my salary.'}}]};
- const x=new Extractor(config,{json:async()=>structuredClone(response),embedBatch:async()=>{throw Error('no embedding');}} as any);
+ const x=new Extractor(config,{verify:async()=>[],json:async()=>structuredClone(response),embedBatch:async()=>{throw Error('no embedding');}} as any);
  const p=await x.prepare(req,snapshot,AbortSignal.timeout(1000));assert.equal(p.operations[0].target_ids[0],p.facts[0].id);
  store.commit(req,hash(JSON.stringify(req)),p,store.revision());assert.doesNotMatch(JSON.stringify(store.facts()),/85000/);
  const reversed=request('Forget my salary. My salary is 85000.','forward');
@@ -80,12 +85,12 @@ test('same-value records in another scope survive deletion and mixed-source reda
  // A model may copy a mixed sentence as the retained neighbor's source. Its
  // atomic content is valid, but its support must not carry the erased context.
  response.facts[1]!.sources[0]!.quote=req.messages[0]!.content;
- const x=new Extractor(config,{json:async()=>structuredClone(response),embedBatch:async()=>{throw Error('no embedding');}} as any);
+ const x=new Extractor(config,{verify:async()=>[],json:async()=>structuredClone(response),embedBatch:async()=>{throw Error('no embedding');}} as any);
  const p=await x.prepare(req,snapshot,AbortSignal.timeout(1000));store.commit(req,hash(JSON.stringify(req)),p,store.revision());
  const target=store.facts().find((f:any)=>f.scope==='Red');
  const deletion=request('Forget my access code for project Red.','scope-delete');
  const op=proposal(deletion.messages[0]!.content,[target.id]);Object.assign(op.operations[0]!,{scope:'Red',value:'SHARED-821'});
- const prepared=await new Extractor(config,{json:async()=>structuredClone(op)} as any).prepare(deletion,store.snapshot('s'),AbortSignal.timeout(1000));
+ const prepared=await new Extractor(config,{verify:async()=>[],json:async()=>structuredClone(op)} as any).prepare(deletion,store.snapshot('s'),AbortSignal.timeout(1000));
  store.commit(deletion,hash(JSON.stringify(deletion)),prepared,store.revision());
  assert.equal(store.facts().find((f:any)=>f.scope==='Red'&&f.predicate==='access_code').state,'erased');
  const kept=store.facts().find((f:any)=>f.scope==='Blue');assert.equal(kept.state,'active');assert.equal(kept.value,'SHARED-821');

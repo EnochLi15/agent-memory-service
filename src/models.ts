@@ -5,6 +5,8 @@ import OpenAI from 'openai';
 import { appendFileSync } from 'node:fs';
 import type { Config } from './config.js';
 import { ServiceError } from './types.js';
+import type {AddRequest,Extraction,Fact} from './types.js';
+import {VERIFICATION_PROMPT,verificationInput,verificationIssues,VerificationProtocolError} from './verification.js';
 function audit(record:Record<string,unknown>):void {
   if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
 }
@@ -14,6 +16,23 @@ export class Models {
   constructor(private config: Config) {
     this.client = new OpenAI({ apiKey: config.llmKey || 'local', baseURL: config.llmBase, maxRetries: 0, timeout: config.addTimeout });
   }
+  async verify(proposal:Extraction,req:AddRequest,facts:Fact[],omitted:number[],signal:AbortSignal):Promise<string[]>{
+    const input=JSON.stringify(verificationInput(req,proposal,facts,omitted));let repair='';
+    for(let attempt=0;attempt<2;attempt++){
+      let raw:unknown;
+      try{raw=await this.json(VERIFICATION_PROMPT,input+repair,signal);}
+      catch{throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not complete evidence verification within the request budget');}
+      try{return verificationIssues(raw,req,proposal);}
+      catch(error){
+        // Retry protocol errors only. Semantic rejection returns findings directly
+        // and cannot be discarded by sampling a second checker verdict.
+        if(!(error instanceof VerificationProtocolError)||attempt===1||signal.aborted)throw error;
+        repair='\nPROTOCOL_REPAIR: '+JSON.stringify({error:error.message,previous:raw})+'. Return the complete checks using the required dispositions and actual proposal/source references. Preserve semantic failures; do not change the proposal.';
+      }
+    }
+    throw new ServiceError('EVIDENCE_VALIDATION','Incomplete evidence verification');
+  }
+
   async json(system: string, user: string, signal: AbortSignal): Promise<unknown> {
     // Streaming prevents idle gateway disconnects during long structured generations.
     // Nothing is published until the entire JSON object is validated and committed.
@@ -29,7 +48,7 @@ export class Models {
         for await(const chunk of stream){content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
         if(!content||finish!=='stop')throw new ServiceError('MODEL_OUTPUT','Incomplete model output');
         const parsed=JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
-        audit({kind:'generation',purpose:system.startsWith('Rank evidence')?'rerank':'extraction',model:this.config.llmModel,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage});return parsed;
+        audit({kind:'generation',purpose:system.startsWith('Rank evidence')?'rerank':system.startsWith('Validate memory evidence')?'verification':'extraction',model:this.config.llmModel,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage});return parsed;
       }catch(error){audit({kind:'generation',model:this.config.llmModel,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,error_type:error instanceof Error?error.name:'unknown'});last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
     }
     throw last;

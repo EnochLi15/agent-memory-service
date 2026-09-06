@@ -17,7 +17,7 @@ async function fixture(fn:any){
  const dir=mkdtempSync(join(tmpdir(),'temporal-events-'));const store=new TenantStore(dir,'u');const config=configFromEnv({});let counter=0;
  const prepare=async(messages:any[],facts?:any[],operations:any[]=[])=>{
   const req={request_id:String(++counter),user_id:'u',session_id:'s',messages};
-  const x=new Extractor(facts?{...config,mode:'enhanced'}:config,{json:async()=>({facts:structuredClone(facts),operations:structuredClone(operations)}),embedBatch:async()=>{throw Error('test embedding unavailable');}} as any);
+  const x=new Extractor(facts?{...config,mode:'enhanced'}:config,{verify:async()=>[],json:async()=>({facts:structuredClone(facts),operations:structuredClone(operations)}),embedBatch:async()=>{throw Error('test embedding unavailable');}} as any);
   const p=await x.prepare(req,store.snapshot('s'),AbortSignal.timeout(1000));return {req,p};
  };
  const commit=({req,p}:any)=>store.commit(req,hash(JSON.stringify(req)),p,store.revision());

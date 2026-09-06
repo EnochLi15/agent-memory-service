@@ -4,7 +4,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { canonical, slot, propertyFamily, ServiceError, type AddRequest, type MemoryEvent, type Operation, type Fact, type Passage, type Prepared, type Receipt, type Snapshot, type StoredMessage, type QueryIntent } from './types.js';
+import { canonical, slot, propertyFamily, operationScopeProblem, replacementMatches, ServiceError, type AddRequest, type MemoryEvent, type Operation, type Fact, type Passage, type Prepared, type Receipt, type Snapshot, type StoredMessage, type QueryIntent } from './types.js';
 import { tokens } from './text.js';
 import {redactPassage} from './passages.js';
 import {eventCategory} from './events.js';
@@ -112,8 +112,8 @@ export class TenantStore {
         let target=operation.target_ids.length ? pool.filter(f=>operation.target_ids.includes(f.id)) : pool.filter(f=>slot(f)===slot(operation) && (!operation.value || canonical(f.value)===canonical(operation.value)));
         if(operation.target_ids.some(id=>!target.some(f=>f.id===id)))throw new ServiceError('OPERATION_TARGET','Operation target is unavailable at its source position');
         if(target.some(f=>f.predicate==='memory_operation'))throw new ServiceError('OPERATION_TARGET','An operation trace is not the underlying property');
-        if(target.some(f=>canonical(f.subject)!==canonical(operation.subject)||(operation.scope&&canonical(f.scope)!==canonical(operation.scope))))throw new ServiceError('OPERATION_SCOPE','Operation target is outside its subject or scope');
-        if(new Set(target.map(f=>canonical(f.scope))).size>1)throw new ServiceError('AMBIGUOUS_OPERATION','Operation spans multiple unresolved scopes');
+        const scopeProblem=operationScopeProblem(operation,target);
+        if(scopeProblem)throw new ServiceError(scopeProblem,'Operation target does not match its subject, property or scope');
         if(operation.type==='forget'&&target.some(f=>f.state==='erased')){
           const priorMarkers=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
           for(const f of target.filter(f=>f.state==='erased')){
@@ -155,6 +155,7 @@ export class TenantStore {
       const mergedIds=new Map<string,string>();
       for(const incoming of prepared.facts){
         const f={...incoming,revision};
+        for(const id of f.supersedes){const old=all.find(x=>x.id===id);if(old&&!replacementMatches(f,old))throw new ServiceError('FACT_TARGET','Replacement targets a different subject, property or scope');}
         if(f.state==='erased'||f.state==='retracted'||f.state==='superseded'){this.put(f);all.push(f);for(const id of f.source_ids)suppressedSources.add(id);continue;}
         // An exact old-value replay cannot resurrect forgotten material.
         if(markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)) && ((slot(m)===slot(f) && (m.boundary==='property'||m.valueHash===valueDigest(f.value)))||containsValue(f.content,m)))){for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}continue;}

@@ -60,3 +60,13 @@ export function propertyFamily(predicate:string,content=''):string {
   return p;
 }
 export function slot(f: Pick<Fact, 'subject' | 'predicate' | 'scope'>): string { return [canonical(f.subject),propertyFamily(f.predicate),canonical(f.scope)].join('\u001f'); }
+/** The same scope guard is used before model repair and again inside commit. */
+export function operationScopeProblem(operation:Operation,targets:Pick<Fact,'subject'|'scope'|'predicate'>[]):'OPERATION_SCOPE'|'OPERATION_TARGET'|'AMBIGUOUS_OPERATION'|null {
+  if(targets.some(f=>canonical(f.subject)!==canonical(operation.subject)||(operation.scope&&canonical(f.scope)!==canonical(operation.scope))))return 'OPERATION_SCOPE';
+  if(new Set(targets.map(f=>canonical(f.scope))).size>1)return 'AMBIGUOUS_OPERATION';
+  if(['correct','update'].includes(operation.type)&&targets.some(f=>propertyFamily(f.predicate)!==propertyFamily(operation.predicate)))return 'OPERATION_TARGET';
+  return null;
+}
+export function replacementMatches(f:Pick<Fact,'subject'|'scope'|'predicate'>,target:Pick<Fact,'subject'|'scope'|'predicate'>):boolean {
+  return canonical(f.subject)===canonical(target.subject)&&canonical(f.scope)===canonical(target.scope)&&propertyFamily(f.predicate)===propertyFamily(target.predicate);
+}
