@@ -12,6 +12,7 @@ import {VerificationSession} from './verification-session.js';
 import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,type RepairScope} from './repair.js';
 import {sourceErasureWork,decodeSourceErasure,SOURCE_ERASURE_PROMPT} from './source-erasure.js';
 import {erasureWork,decodeErasure,ERASURE_PROMPT} from './erasure.js';
+import {transitionWork,decodeTransitions,TRANSITION_PROMPT} from './transitions.js';
 
 export function hash(s: string): string { return createHash('sha256').update(s).digest('hex'); }
 import {retirementEffectMismatch,currentRelationRemoval,realControl,instructionSpans,authorizesForget,missingForgetObligations,missingPersonalSources} from './operation-intent.js';
@@ -323,6 +324,16 @@ export class Extractor {
         sourceErasurePlan=decodeSourceErasure(raw,work);
       }else sourceErasurePlan={fingerprint:work.fingerprint,decisions:[]};
     }
+    let transitionPlan:Prepared['transitionPlan'];
+    if(useErasure&&this.config.semanticTransitions){
+      const work=transitionWork(req,snapshot.facts,facts,parsed.operations);
+      if(work.candidates.length){
+        if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Implicit transitions require semantic verification');
+        let raw:unknown;try{raw=await this.models.json(TRANSITION_PROMPT,JSON.stringify({NEW_MESSAGES:req.messages,CANDIDATES:work.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'state_transition'});}
+        catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Implicit transition verification unavailable within shared model budget');}
+        transitionPlan=decodeTransitions(raw,work);
+      }else transitionPlan={fingerprint:work.fingerprint,decisions:[]};
+    }
     const passages=this.config.sourceIndex&&!this.config.experimental?.rawOnly?preparePassages(messages,facts,parsed.operations,snapshot.revision+1):[];
     if (this.config.mode !== 'offline' && (facts.length||passages.length)) {
       try {
@@ -332,6 +343,7 @@ export class Extractor {
         if (facts.some(f=>f.content.length>=3500)) degraded.push('long_evidence_lexical');
       } catch(error) { if (signal.aborted) throw error; degraded.push('embedding_lexical'); }
     }
-    return { facts,operations:parsed.operations,messages,passages,sourceFormat:this.config.sourceIndex&&!this.config.experimental?.rawOnly?(useErasure?(this.config.sourceErasure?'dual-source-v4':'dual-source-v3'):'dual-source-v2'):(useErasure?(this.config.sourceErasure?'facts-only-v4':'facts-only-v3'):'facts-only-v2'),...(erasurePlan?{erasurePlan}:{}),...(sourceErasurePlan?{sourceErasurePlan}:{}),anchor,degraded,embeddingSpace:this.config.embeddingSpace };
+    const sourceFormat=`${this.config.sourceIndex&&!this.config.experimental?.rawOnly?'dual-source':'facts-only'}-v${useErasure?(this.config.semanticTransitions?5:this.config.sourceErasure?4:3):2}` as Prepared['sourceFormat'];
+    return { facts,operations:parsed.operations,messages,passages,sourceFormat,...(erasurePlan?{erasurePlan}:{}),...(sourceErasurePlan?{sourceErasurePlan}:{}),...(transitionPlan?{transitionPlan}:{}),anchor,degraded,embeddingSpace:this.config.embeddingSpace };
   }
 }

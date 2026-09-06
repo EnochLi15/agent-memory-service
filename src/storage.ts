@@ -13,6 +13,7 @@ import {retirementEffectMismatch} from './operation-intent.js';
 import {erasureAnchors,sourceErasureWork,validateSourceErasure,maskSource} from './source-erasure.js';
 import {valueWords,valueDigest,containsValue,valueOccurrences,boundaryKey,retainedAgainst,erasureWork,validateErasurePlan} from './erasure.js';
 import type {ErasureBoundary} from './types.js';
+import {transitionKey,transitionWork,validateTransitions} from './transitions.js';
 
 const digest = (s:string):string => createHash('sha256').update(s).digest('hex');
 type Row = { body:string };
@@ -67,7 +68,7 @@ export class TenantStore {
   snapshot(session:string):Snapshot {
     const rows=this.db.prepare('SELECT body FROM messages WHERE session_id=? ORDER BY ordinal DESC LIMIT 10').all(session) as Row[];
     const boundaries=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
-    return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null,...(/-v[34]$/.test(this.meta('source_format')??'')?{erasureBoundaries:boundaries}:{}),...(this.meta('source_format')?.endsWith('-v4')?{erasureSources:(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage)}:{})};
+    return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null,...(/-v[345]$/.test(this.meta('source_format')??'')?{erasureBoundaries:boundaries}:{}),...(/-v[45]$/.test(this.meta('source_format')??'')?{erasureSources:(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage)}:{})};
   }
   private put(f:Fact):void {
     // Extraction proposals carry a sources array, but persisted facts have one
@@ -81,12 +82,13 @@ export class TenantStore {
   commit(req:AddRequest,payloadHash:string,prepared:Prepared,expectedRevision:number,failAt?:string):Receipt {
     // A rejected/rolled-back transaction must not mutate a fingerprinted plan
     // or its transient target records in the caller's prepared object.
-    if(/-v[34]$/.test(prepared.sourceFormat??''))prepared=structuredClone(prepared);
+    if(/-v[345]$/.test(prepared.sourceFormat??''))prepared=structuredClone(prepared);
     return this.db.transaction(()=>{
       const already=this.receipt(req.request_id,payloadHash); if(already)return already;
       if(this.revision()!==expectedRevision)throw new ServiceError('REVISION_CONFLICT','Concurrent mutation; retry request');
       if(prepared.operations.some(o=>retirementEffectMismatch(o,req)))throw new ServiceError('OPERATION_INTENT','Retraction cannot satisfy an erasure request');
-      const semanticErasure=/-v[34]$/.test(prepared.sourceFormat??''),sourceErasure=prepared.sourceFormat?.endsWith('-v4');
+      const semanticErasure=/-v[345]$/.test(prepared.sourceFormat??''),sourceErasure=/-v[45]$/.test(prepared.sourceFormat??''),semanticTransitions=prepared.sourceFormat?.endsWith('-v5');
+      const transitions=semanticTransitions?validateTransitions(prepared.transitionPlan,transitionWork(req,this.facts(),prepared.facts,prepared.operations)):undefined;
       let sourceCuts=new Map<string,{start:number;end:number}[]>();const reviewedSources=new Set<string>();
       const forcedErased=new Set<string>();
       const retained=new Map<string,NonNullable<Fact['erasure_exemptions']>>();
@@ -194,6 +196,11 @@ export class TenantStore {
         if(f.modality==='confirmed'&&f.cardinality==='single'){
           const date=f.valid_from??f.observed_at;
           for(const old of same.filter(old=>old.modality==='confirmed')){
+            if(transitions&&!f.supersedes.includes(old.id)){
+              const relation=transitions.get(transitionKey(f.id,old.id));
+              if(!relation)throw new ServiceError('EVIDENCE_VALIDATION','Unverified implicit state transition');
+              if(relation==='compatible')continue;
+            }
             const oldDate=old.valid_from??old.observed_at;
             const bounds=(fact:Fact):[number,number]=>{const start=Date.parse(fact.event_time?.start??fact.valid_from??fact.observed_at);return [start,fact.event_time?.end_exclusive?Date.parse(fact.event_time.end_exclusive):start+1];};
             const [a,b]=bounds(old),[c,d]=bounds(f);

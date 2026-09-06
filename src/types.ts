@@ -43,8 +43,9 @@ export type Passage = {id:string;source_id:string;speaker:string;external_id?:st
 export type ErasureBoundary={subject:string;predicate:string;scope:string;boundary:string;valueHash:string;tokenCount?:number;anchorHashes?:string[];allowedValueHashes?:string[];revision:number};
 export type ErasurePlan={fingerprint:string;decisions:{fact_id:string;key:string;effect:'erase'|'retain';quote:string}[]};
 export type SourceErasurePlan={fingerprint:string;decisions:{index:number;parts:{text:string;effect:'erase'|'retain'}[];reason:string}[]};
+export type TransitionPlan={fingerprint:string;decisions:{index:number;relation:'compatible'|'exclusive';old_quote:string;new_quote:string;reason:string}[]};
 export type Snapshot = { revision: number; facts: Fact[]; tail: StoredMessage[]; anchor: string | null; erasureBoundaries?:ErasureBoundary[];erasureSources?:StoredMessage[] };
-export type Prepared = { facts: Fact[]; operations: Operation[]; messages: StoredMessage[]; passages?:Passage[]; sourceFormat?:'dual-source-v2'|'facts-only-v2'|'dual-source-v3'|'facts-only-v3'|'dual-source-v4'|'facts-only-v4'; erasurePlan?:ErasurePlan;sourceErasurePlan?:SourceErasurePlan; anchor: string | null; degraded: string[]; embeddingSpace: string };
+export type Prepared = { facts: Fact[]; operations: Operation[]; messages: StoredMessage[]; passages?:Passage[]; sourceFormat?:'dual-source-v2'|'facts-only-v2'|'dual-source-v3'|'facts-only-v3'|'dual-source-v4'|'facts-only-v4'|'dual-source-v5'|'facts-only-v5'; erasurePlan?:ErasurePlan;sourceErasurePlan?:SourceErasurePlan;transitionPlan?:TransitionPlan; anchor: string | null; degraded: string[]; embeddingSpace: string };
 export type Candidate = { fact: Fact; score: number; signals: string[] };
 export type QueryIntent = { historical: boolean; trajectory: boolean; list: boolean; asOf: string | null; entities: string[]; operation?:boolean; mode?:'current'|'historical'|'list'|'operation'|'trajectory'; temporal?:boolean };
 
