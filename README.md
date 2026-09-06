@@ -38,3 +38,16 @@ MEMORY_MODE=offline MEMORY_DATA_DIR=.data HOST=127.0.0.1 PORT=8088 npm start
 静态契约位于 `contracts/`，权威版本由独立 eval 仓库维护。来源与改动见 [UPSTREAM.md](UPSTREAM.md)；实际复用代码位于 `src/mem0/`。本项目不是对 mem0 SDK 的 HTTP 包装。
 
 测试：`npm run build && npm test`。运行参数见 `.env.example`。容器、黑盒验收和完整实验结果由 workspace 编排，service 本身可独立构建部署。
+
+
+### Source-level erasure (v4 candidate)
+
+Set `MEMORY_SOURCE_ERASURE=true` together with `MEMORY_ERASURE_BINDING=true` to validate raw-message paraphrases as well as facts. This uses fresh `dual-source-v4` / `facts-only-v4` directories. Existing v2/v3 ingestion cannot be reused. The default remains disabled.
+
+Source candidates include whole messages, including unlinked assistant replies, and related fact content. Exact value matches and hashed non-stopword anchors nominate candidates; the verification model then distinguishes the authorized erased information from independent people, contexts and neighboring clauses. Every source decision partitions the entire original message into exact erase/retain substrings. Missing coverage, changed text, split Unicode characters, uncertainty and stale plans reject the write. Mixed fact claims require review rather than automatic content rewriting.
+
+The source phase shares the existing total model deadline. It is logged as `source_erasure`; strict mode uses its own JSON schema. Up to 64 candidates / 64,000 serialized candidate characters are accepted; exceeding capacity fails explicitly. There is no semantic resampling or offline bypass.
+
+Commit rechecks all original source bodies, facts, boundaries and operations. Raw text is whitespace-masked at original UTF-16 positions, passages are cut and their vectors invalidated, affected source quotes are cleaned, and derived facts remain subject to lifecycle invalidation. All changes and marker anchors roll back with the receipt. Later messages are checked using the persisted hashed anchors.
+
+Candidate discovery still depends on word overlap or an exact value. Completely different wording and cross-message references need further coverage work. Hash anchors are lookup metadata, not a claim of resistance to guessing. This is a candidate implementation; complete benchmark quality, costs and deployment gates remain separate.

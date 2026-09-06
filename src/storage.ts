@@ -10,6 +10,7 @@ import {redactPassage} from './passages.js';
 import {eventCategory} from './events.js';
 import {resolveOperationTargets} from './binding.js';
 import {retirementEffectMismatch} from './operation-intent.js';
+import {erasureAnchors,sourceErasureWork,validateSourceErasure,maskSource} from './source-erasure.js';
 import {valueWords,valueDigest,containsValue,valueOccurrences,boundaryKey,retainedAgainst,erasureWork,validateErasurePlan} from './erasure.js';
 import type {ErasureBoundary} from './types.js';
 
@@ -66,7 +67,7 @@ export class TenantStore {
   snapshot(session:string):Snapshot {
     const rows=this.db.prepare('SELECT body FROM messages WHERE session_id=? ORDER BY ordinal DESC LIMIT 10').all(session) as Row[];
     const boundaries=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
-    return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null,...(this.meta('source_format')?.endsWith('-v3')?{erasureBoundaries:boundaries}:{})};
+    return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null,...(/-v[34]$/.test(this.meta('source_format')??'')?{erasureBoundaries:boundaries}:{}),...(this.meta('source_format')?.endsWith('-v4')?{erasureSources:(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage)}:{})};
   }
   private put(f:Fact):void {
     // Extraction proposals carry a sources array, but persisted facts have one
@@ -80,12 +81,13 @@ export class TenantStore {
   commit(req:AddRequest,payloadHash:string,prepared:Prepared,expectedRevision:number,failAt?:string):Receipt {
     // A rejected/rolled-back transaction must not mutate a fingerprinted plan
     // or its transient target records in the caller's prepared object.
-    if(prepared.sourceFormat?.endsWith('-v3'))prepared=structuredClone(prepared);
+    if(/-v[34]$/.test(prepared.sourceFormat??''))prepared=structuredClone(prepared);
     return this.db.transaction(()=>{
       const already=this.receipt(req.request_id,payloadHash); if(already)return already;
       if(this.revision()!==expectedRevision)throw new ServiceError('REVISION_CONFLICT','Concurrent mutation; retry request');
       if(prepared.operations.some(o=>retirementEffectMismatch(o,req)))throw new ServiceError('OPERATION_INTENT','Retraction cannot satisfy an erasure request');
-      const semanticErasure=prepared.sourceFormat?.endsWith('-v3');
+      const semanticErasure=/-v[34]$/.test(prepared.sourceFormat??''),sourceErasure=prepared.sourceFormat?.endsWith('-v4');
+      let sourceCuts=new Map<string,{start:number;end:number}[]>();const reviewedSources=new Set<string>();
       const forcedErased=new Set<string>();
       const retained=new Map<string,NonNullable<Fact['erasure_exemptions']>>();
       if(semanticErasure){
@@ -93,6 +95,14 @@ export class TenantStore {
         const work=erasureWork(req,this.facts(),prepared.facts,prepared.operations,boundaries);
         validateErasurePlan(prepared.erasurePlan,work);
         for(const d of prepared.erasurePlan!.decisions){if(d.effect==='erase')forcedErased.add(d.fact_id);else retained.set(d.fact_id,[...(retained.get(d.fact_id)??[]),{key:d.key,quote:d.quote}]);}
+      }
+      if(sourceErasure){
+        const boundaries=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
+        const oldSources=(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage);
+        const work=sourceErasureWork(req,this.facts(),prepared.facts,prepared.operations,boundaries,oldSources,prepared.messages);
+        const validated=validateSourceErasure(prepared.sourceErasurePlan,work);sourceCuts=validated.cuts;
+        for(const id of validated.erasedFacts)forcedErased.add(id);
+        for(const c of work.candidates)if(c.kind==='source')reviewedSources.add(c.id);
       }
       const revision=expectedRevision+1;
       if(prepared.sourceFormat){
@@ -150,7 +160,7 @@ export class TenantStore {
           if(f.state==='erased')continue;
           for(const id of f.source_ids)suppressedSources.add(id);
           if(operation.type==='forget'){
-            const marker:Marker={subject:f.subject,predicate:f.predicate,scope:f.scope,boundary:operation.boundary,valueHash:valueDigest(f.value),tokenCount:valueWords(f.value).length,allowedValueHashes:[],revision};
+            const marker:Marker={subject:f.subject,predicate:f.predicate,scope:f.scope,boundary:operation.boundary,valueHash:valueDigest(f.value),tokenCount:valueWords(f.value).length,allowedValueHashes:[],revision,...(sourceErasure?{anchorHashes:erasureAnchors(f)}:{})};
             this.db.prepare('INSERT INTO markers(body) VALUES (?)').run(JSON.stringify(marker));
             erasedIds.add(f.id);for(const id of f.source_ids)redactedSources.add(id);
             rememberErasedQuotes(f);
@@ -209,10 +219,29 @@ export class TenantStore {
         // searchable evidence or return through the next session's tail.
         for(const row of this.db.prepare('SELECT body FROM messages').all() as Row[]){const m=JSON.parse(row.body) as StoredMessage;if(markers.some(marker=>containsValue(m.content,marker))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
       }
+      if(sourceErasure){
+        // A short nonlexical value may have no model candidate; its authorized
+        // target/source span and command still have deterministic deletion proof.
+        for(const f of this.facts().filter(f=>f.state==='erased'))for(const span of f.source_spans??[]){
+          if(!reviewedSources.has(span.source_id))sourceCuts.set(span.source_id,[...(sourceCuts.get(span.source_id)??[]),{start:span.start,end:span.end}]);
+        }
+        for(const o of prepared.operations.filter(o=>o.type==='forget')){const m=prepared.messages[o.source.index];if(m&&!reviewedSources.has(m.id)){const start=m.content.indexOf(o.source.quote);if(start>=0)sourceCuts.set(m.id,[...(sourceCuts.get(m.id)??[]),{start,end:start+o.source.quote.length}]);}}
+        const originals=new Map((this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>{const m=JSON.parse(r.body) as StoredMessage;return [m.id,m] as const;}));
+        for(const f of all.filter(f=>f.state!=='erased')){
+          const quotes:string[]=[];
+          for(const q of f.source_quotes){let located=false;
+            for(const id of f.source_ids){const m=originals.get(id);if(!m)continue;
+              for(let start=m.content.indexOf(q);start>=0;start=m.content.indexOf(q,start+Math.max(1,q.length))){located=true;const safe=maskSource(q,sourceCuts.get(id)??[],start).trim();if(safe)quotes.push(safe);}
+            }if(!located)quotes.push(q);
+          }
+          if(f.source_quotes.length&&!quotes.length)throw new ServiceError('EVIDENCE_VALIDATION','Source erasure removed every witness for a retained fact');
+          f.source_quotes=[...new Set(quotes)];this.put(f);
+        }
+      }
       // Retained neighbors must not carry a forgotten value inside a mixed quote.
       for(const f of all){
         if(f.state==='erased')continue;
-        if(semanticErasure){
+        if(semanticErasure&&!sourceErasure){
           // Independence certifies only the witnessed clause, never a mixed
           // source quote which also repeats the erased neighbor.
           f.source_quotes=[...new Set(f.source_quotes.flatMap(q=>{
@@ -221,7 +250,7 @@ export class TenantStore {
             return safe.filter(w=>colliding.every(m=>!containsValue(w,m)||f.erasure_exemptions?.some(x=>x.key===boundaryKey(m)&&x.quote===w)));
           }))];this.put(f);
         }
-        const quotes=f.source_quotes.filter(q=>{
+        const quotes=sourceErasure?f.source_quotes:f.source_quotes.filter(q=>{
           const sharesErasedSpan=f.source_ids.some(id=>[...(erasedQuotes.get(id)??[])].some(erased=>q.includes(erased)||erased.includes(q)));
           return !sharesErasedSpan&&!markers.some(m=>markerConcerns(m,f)&&containsValue(q,m)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)));
         });
@@ -238,13 +267,15 @@ export class TenantStore {
         const erased=p.fact_ids.map(id=>byId.get(id)).filter((f):f is Fact=>!!f&&f.state==='erased');
         for(const f of erased){
           const spans=f.source_spans?.filter(s=>s.source_id===p.source_id)??[];
-          if(spans.length)redactPassage(p,spans);else{p.fragments=[];p.content='';p.vector=null;p.state='erased';}
+          if(sourceErasure&&reviewedSources.has(p.source_id)){}
+          else if(spans.length)redactPassage(p,spans);else{p.fragments=[];p.content='';p.vector=null;p.state='erased';}
         }
         p.fact_ids=p.fact_ids.filter(id=>!erased.some(f=>f.id===id));
+        if(sourceErasure)redactPassage(p,sourceCuts.get(p.source_id)??[]);
         // Even unextracted echoes must not reintroduce a forgotten literal. A
         // different scoped record needs positively linked surviving facts.
         const linked=p.fact_ids.map(id=>byId.get(id)).filter((f):f is Fact=>!!f);
-        if(semanticErasure&&markers.some(m=>containsValue(p.content,m))){
+        if(semanticErasure&&!sourceErasure&&markers.some(m=>containsValue(p.content,m))){
           // Every occurrence needs its own independently witnessed original
           // span. Remove unprotected literal echoes, not unrelated unextracted
           // neighbors. Whole erased fact spans were already removed above.
@@ -260,11 +291,15 @@ export class TenantStore {
         }
         if(newPassageIds.has(p.id)||JSON.stringify(p)!==previous){p.revision=revision;this.putPassage(p);}
       }
+      if(sourceErasure)for(const id of sourceCuts.keys())suppressedSources.add(id);
       for(const sourceId of suppressedSources){
         const row=this.db.prepare('SELECT body FROM messages WHERE id=?').get(sourceId) as Row|undefined;if(!row)continue;
         const m=JSON.parse(row.body) as StoredMessage;
         m.searchable=!!m.partial&&all.filter(f=>f.source_ids.includes(sourceId)).every(f=>f.state==='active'||f.state==='conflicted')&&!prepared.operations.some(o=>prepared.messages[o.source.index]?.id===sourceId);
-        if(redactedSources.has(sourceId) || all.some(f=>f.state==='erased'&&f.source_ids.includes(sourceId)) || prepared.operations.some(o=>o.type==='forget'&&prepared.messages[o.source.index]?.id===sourceId)){
+        if(sourceErasure){
+          const cuts=sourceCuts.get(sourceId)??[];
+          if(cuts.length){m.content=maskSource(m.content,cuts);m.redacted=true;m.partial=true;m.searchable=/[\p{L}\p{N}]/u.test(m.content);}
+        }else if(redactedSources.has(sourceId) || all.some(f=>f.state==='erased'&&f.source_ids.includes(sourceId)) || prepared.operations.some(o=>o.type==='forget'&&prepared.messages[o.source.index]?.id===sourceId)){
           m.redacted=true;m.searchable=false;m.content=all.filter(f=>(f.state==='active'||f.state==='conflicted')&&f.source_ids.includes(sourceId)).map(f=>f.content).join('\n') || '[Memory content removed]';
         }
         this.db.prepare('UPDATE messages SET body=? WHERE id=?').run(JSON.stringify(m),sourceId);

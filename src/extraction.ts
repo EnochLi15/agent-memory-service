@@ -10,6 +10,7 @@ import {messageAnchors,normalizeFactTime} from './temporal.js';
 import {humanQuote} from './verification.js';
 import {VerificationSession} from './verification-session.js';
 import {PATCH_PROMPT,applyRepair,scopeForFindings,type RepairScope} from './repair.js';
+import {sourceErasureWork,decodeSourceErasure,SOURCE_ERASURE_PROMPT} from './source-erasure.js';
 import {erasureWork,decodeErasure,ERASURE_PROMPT} from './erasure.js';
 
 export function hash(s: string): string { return createHash('sha256').update(s).digest('hex'); }
@@ -155,6 +156,7 @@ export class Extractor {
   constructor(private config: Config, private models: Models) {}
   async prepare(req: AddRequest, snapshot: Snapshot, signal: AbortSignal): Promise<Prepared> {
     addSchema.parse(req);
+    if(this.config.sourceErasure&&!this.config.experimental?.rawOnly&&snapshot.revision>0&&!snapshot.erasureSources)throw new ServiceError('SOURCE_FORMAT','Source erasure requires a fresh v4 directory');
     const degraded: string[] = [];const partialSources=new Set<number>();
     const modelSignal=AbortSignal.any([signal,AbortSignal.timeout(Math.min(95000,Math.max(500,this.config.addTimeout-25000)))]);
     const chronology=messageAnchors(req,snapshot.anchor);const anchor=chronology.last;
@@ -303,6 +305,16 @@ export class Extractor {
         erasurePlan=decodeErasure(raw,work);
       }else erasurePlan={fingerprint:work.fingerprint,decisions:work.automatic};
     }
+    let sourceErasurePlan:Prepared['sourceErasurePlan'];
+    if(useErasure&&this.config.sourceErasure){
+      const work=sourceErasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[],snapshot.erasureSources??[],messages);
+      if(work.candidates.length){
+        if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Source erasure requires semantic verification');
+        let raw:unknown;try{raw=await this.models.json(SOURCE_ERASURE_PROMPT,JSON.stringify({CANDIDATES:work.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'source_erasure'});}
+        catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Source erasure unavailable within shared model budget');}
+        sourceErasurePlan=decodeSourceErasure(raw,work);
+      }else sourceErasurePlan={fingerprint:work.fingerprint,decisions:[]};
+    }
     const passages=this.config.sourceIndex&&!this.config.experimental?.rawOnly?preparePassages(messages,facts,parsed.operations,snapshot.revision+1):[];
     if (this.config.mode !== 'offline' && (facts.length||passages.length)) {
       try {
@@ -312,6 +324,6 @@ export class Extractor {
         if (facts.some(f=>f.content.length>=3500)) degraded.push('long_evidence_lexical');
       } catch(error) { if (signal.aborted) throw error; degraded.push('embedding_lexical'); }
     }
-    return { facts,operations:parsed.operations,messages,passages,sourceFormat:this.config.sourceIndex&&!this.config.experimental?.rawOnly?(useErasure?'dual-source-v3':'dual-source-v2'):(useErasure?'facts-only-v3':'facts-only-v2'),...(erasurePlan?{erasurePlan}:{}),anchor,degraded,embeddingSpace:this.config.embeddingSpace };
+    return { facts,operations:parsed.operations,messages,passages,sourceFormat:this.config.sourceIndex&&!this.config.experimental?.rawOnly?(useErasure?(this.config.sourceErasure?'dual-source-v4':'dual-source-v3'):'dual-source-v2'):(useErasure?(this.config.sourceErasure?'facts-only-v4':'facts-only-v3'):'facts-only-v2'),...(erasurePlan?{erasurePlan}:{}),...(sourceErasurePlan?{sourceErasurePlan}:{}),anchor,degraded,embeddingSpace:this.config.embeddingSpace };
   }
 }

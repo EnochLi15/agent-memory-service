@@ -1,0 +1,75 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+import {Extractor,hash} from '../dist/extraction.js';import {TenantStore} from '../dist/storage.js';import {configFromEnv} from '../dist/config.js';
+import {decodeSourceErasure,maskSource} from '../dist/source-erasure.js';
+const config=configFromEnv({MEMORY_MODE:'enhanced',MEMORY_ERASURE_BINDING:'true',MEMORY_SOURCE_ERASURE:'true'});
+const request=(id:string,text:string)=>({request_id:id,user_id:'u',session_id:'s',messages:[{role:'user',content:text,timestamp:'2026-01-01T00:00:00Z'}]});
+const fact=(quote:string,subject='user',scope='dentist')=>({content:quote,subject,predicate:'appointment',value:"dentist appointment with Dr. Pham's office on Elm Street",scope,sources:[{index:0,quote}]});
+async function fixture(fn:any){
+ const dir=mkdtempSync(join(tmpdir(),'source-erasure-')),store=new TenantStore(dir,'u');let calls=0;
+ const prepare=(req:any,p:any,override?:any)=>new Extractor(config,{verify:async()=>[],embedBatch:async(xs:string[])=>xs.map(()=>[1,0]),json:async(_s:string,input:string,_signal:any,ctx:any)=>{
+  if(ctx?.purpose==='source_erasure'){
+   calls++;const data=JSON.parse(input);if(override)return override(data);
+   return {decisions:data.CANDIDATES.map((c:any,index:number)=>{
+    if(c.text.includes('Kevin'))return {index,parts:[{text:c.text,effect:'retain'}],reason:'Explicitly a different person.'};
+    const split=c.text.indexOf('; I still use Firefox');
+    return {index,parts:split>=0?[{text:c.text.slice(0,split),effect:'erase'},{text:c.text.slice(split),effect:'retain'}]:[{text:c.text,effect:'erase'}],reason:'Same appointment; retain only independent browser information.'};
+   })};
+  }
+  if(ctx?.purpose==='erasure_binding'){const data=JSON.parse(input);return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,effect:c.fact.subject==='Kevin'?'retain':'erase',quote:c.fact.source_quotes[0],reason:'Actor-specific appointment.'}))};}
+  return structuredClone(p);
+ }} as any).prepare(req,store.snapshot('s'),AbortSignal.timeout(2000));
+ const commit=(r:any,p:any,fail?:string)=>store.commit(r,hash(JSON.stringify(r)),p,store.revision(),fail);
+ try{await fn({dir,store,prepare,commit,calls:()=>calls});}finally{store.close();rmSync(dir,{recursive:true,force:true});}
+}
+const seedText="I have a dentist appointment with Dr. Pham's office on Elm Street.";
+const echo='Your dentist appointment is with Dr. Pham on Elm Street; I still use Firefox.';
+async function seed(f:any){const r=request('seed',seedText);r.messages.push({role:'assistant',content:echo,timestamp:'2026-01-01T00:00:01Z'});f.commit(r,await f.prepare(r,{facts:[fact(seedText)],operations:[]}));return f.store.facts()[0];}
+const deletion=(target:any)=>({facts:[],operations:[{type:'forget',target_ids:[target.id],subject:'user',predicate:'appointment',scope:'dentist',value:target.value,boundary:'value',source:{index:0,quote:'Forget my dentist appointment.'}}]});
+test('source erasure removes old assistant paraphrases and preserves unextracted mixed-sentence neighbors',()=>fixture(async(f:any)=>{
+ const target=await seed(f),r=request('delete','Forget my dentist appointment.');f.commit(r,await f.prepare(r,deletion(target)));
+ assert.ok(f.calls()>0);assert.equal(f.store.meta('source_format'),'dual-source-v4');
+ const all=f.store.db.prepare('SELECT body FROM messages').all().map((x:any)=>JSON.parse(x.body));
+ assert.doesNotMatch(JSON.stringify(all),/Pham/);assert.match(JSON.stringify(all),/I still use Firefox/);
+ assert.doesNotMatch(JSON.stringify(f.store.snapshot('s').tail),/Pham/);
+ assert.ok(f.store.passages().every((p:any)=>!p.content.includes('Pham')));
+}));
+test('missing or uncertain source partitions cannot be committed and later echoes remain checked',()=>fixture(async(f:any)=>{
+ const target=await seed(f),r=request('delete','Forget my dentist appointment.'),before=f.store.snapshot('s');
+ for(const override of [()=>({decisions:[]}), (d:any)=>({decisions:d.CANDIDATES.map((c:any,index:number)=>({index,parts:[{text:c.text,effect:'uncertain'}],reason:'Unresolved.'}))})]){
+  await assert.rejects(()=>f.prepare(r,deletion(target),override));assert.deepEqual(f.store.snapshot('s'),before);
+ }
+ f.commit(r,await f.prepare(r,deletion(target)));
+ const later=request('later','Your appointment was with Dr. Pham on Elm Street.');later.messages[0].role='assistant';
+ f.commit(later,await f.prepare(later,{facts:[],operations:[]}));
+ assert.doesNotMatch(JSON.stringify(f.store.snapshot('s')),/Your appointment was with Dr/);
+ const unrelated=request('other','Kevin has an appointment with Dr. Pham on Elm Street.');
+ f.commit(unrelated,await f.prepare(unrelated,{facts:[fact(unrelated.messages[0].content,'Kevin','Kevin dentist')],operations:[]}));
+ assert.ok(f.store.facts().some((x:any)=>x.subject==='Kevin'&&x.state==='active'));
+}));
+test('source plan rejects stale raw evidence and rolls back source cuts with the transaction',()=>fixture(async(f:any)=>{
+ const target=await seed(f),r=request('delete','Forget my dentist appointment.'),p=await f.prepare(r,deletion(target)),before=f.store.snapshot('s');
+ assert.ok(p.sourceErasurePlan);assert.throws(()=>f.commit(r,{...p,sourceErasurePlan:undefined}));
+ for(const stage of ['operations','indexes']){assert.throws(()=>f.commit(r,p,stage));assert.deepEqual(f.store.snapshot('s'),before);}
+ const record=f.store.db.prepare('SELECT id,body FROM messages WHERE id=?').get(before.erasureSources[1].id);
+ f.store.db.prepare('UPDATE messages SET body=? WHERE id=?').run(JSON.stringify({...JSON.parse(record.body),content:echo+' changed'}),record.id);
+ assert.throws(()=>f.commit(r,p),/stale/);f.store.db.prepare('UPDATE messages SET body=? WHERE id=?').run(record.body,record.id);
+ const changed={...p,messages:p.messages.map((m:any)=>({...m,content:m.content+' changed'}))};assert.throws(()=>f.commit(r,changed));
+ f.commit(r,p);assert.equal(f.store.revision(),2);
+}));
+
+test('exact partitions reject changed text, duplicates, missing coverage, mixed facts and split Unicode',()=>{
+ const candidate={kind:'source',id:'s',start:7,text:'甲😀old; keep',key:'k',boundary:{},authorization:null,matching_words:[],context:{}};
+ const work={fingerprint:'f',candidates:[candidate]} as any;
+ const decision={index:0,parts:[{text:candidate.text,effect:'erase'}],reason:'Same record.'};
+ assert.equal(decodeSourceErasure({decisions:[decision]},work).decisions.length,1);
+ for(const rows of [[],[decision,decision],[{...decision,index:1}],[{...decision,parts:[{text:'changed',effect:'erase'}]}],[{...decision,parts:[{text:'甲\uD83D',effect:'erase'},{text:'\uDE00old; keep',effect:'retain'}]}]])assert.throws(()=>decodeSourceErasure({decisions:rows},work));
+ const mixed={...decision,parts:[{text:'甲😀old',effect:'erase'},{text:'; keep',effect:'retain'}]};
+ assert.throws(()=>decodeSourceErasure({decisions:[mixed]},{...work,candidates:[{...candidate,kind:'fact'}]}));
+ const masked=maskSource(candidate.text,[{start:7,end:13}],7);assert.equal(masked.length,candidate.text.length);assert.ok(masked.endsWith('; keep'));
+});
+test('v4 cannot silently reuse a pre-existing v3 directory',async()=>{
+ assert.throws(()=>configFromEnv({MEMORY_SOURCE_ERASURE:'true'}),/requires/);
+ const extractor=new Extractor(config,{} as any);
+ await assert.rejects(()=>extractor.prepare(request('x','hello'),{revision:1,facts:[],tail:[],anchor:null},AbortSignal.timeout(1000)),(e:any)=>e.code==='SOURCE_FORMAT');
+});
