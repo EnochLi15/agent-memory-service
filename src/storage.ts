@@ -121,6 +121,9 @@ export class TenantStore {
         for(const c of work.candidates)if(c.kind==='source')reviewedSources.add(c.id);
       }
       if(sourceActions)for(const [id,cuts] of sourceActions.cuts)sourceCuts.set(id,[...(sourceCuts.get(id)??[]),...cuts]);
+      // Only independently validated cuts discharge coverage. Later fallback
+      // redaction must not excuse loss of an unrelated accepted raw witness.
+      const coverageErasureCuts=coveragePrepared?structuredClone(sourceCuts):new Map<string,{start:number;end:number}[]>();
       const sourceWitnesses=sourceErasure?[...this.facts(),...prepared.facts].map(f=>({id:f.id,source_ids:[...f.source_ids],source_quotes:[...f.source_quotes]})):[];
       const revision=expectedRevision+1;
       if(prepared.sourceFormat){
@@ -366,7 +369,7 @@ export class TenantStore {
         this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:'reject_source',source_id:source.id,target_ids:d.target_slots.map(i=>sourceActions.work.sources[i]!.id),revision}));
       }
       for(const e of events)this.db.prepare('INSERT INTO memory_events VALUES (?,?)').run(e.id,JSON.stringify(e));
-      if(coveragePrepared)assertSourceCoverageStored(prepared.sourceCoveragePlan!,req,coveragePrepared,this.passages(),new Set((this.db.prepare('SELECT id FROM passage_fts').all() as {id:string}[]).map(x=>x.id)));
+      if(coveragePrepared)assertSourceCoverageStored(prepared.sourceCoveragePlan!,req,coveragePrepared,this.passages(),new Set((this.db.prepare('SELECT id FROM passage_fts').all() as {id:string}[]).map(x=>x.id)),coverageErasureCuts);
       if(failAt==='indexes')throw new ServiceError('INJECTED_FAILURE','Fault injection after index writes');
       const receipt:Receipt={success:true,request_id:req.request_id,user_id:req.user_id,session_id:req.session_id};
       this.db.prepare('INSERT INTO requests VALUES (?,?,?)').run(req.request_id,payloadHash,JSON.stringify(receipt));this.setMeta('revision',String(revision));return receipt;

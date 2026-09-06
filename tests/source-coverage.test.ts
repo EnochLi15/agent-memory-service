@@ -1,5 +1,6 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
-import {sourceCoverageWork,makeSourceCoveragePlan,validateSourceCoveragePlan} from '../dist/source-coverage.js';
+import {sourceCoverageWork,makeSourceCoveragePlan,validateSourceCoveragePlan,assertSourceCoverageStored} from '../dist/source-coverage.js';
+import {preparePassages,redactPassage} from '../dist/passages.js';
 import {decodeCompactVerification} from '../dist/verification-compact.js';import {verificationIssues} from '../dist/verification.js';import {VerificationSession} from '../dist/verification-session.js';
 import {extractionSchema} from '../dist/types.js';import {configFromEnv} from '../dist/config.js';import {Models} from '../dist/models.js';import {Extractor,hash} from '../dist/extraction.js';import {TenantStore} from '../dist/storage.js';
 const timestamp='2026-01-01T00:00:00Z',req={user_id:'u',request_id:'context',session_id:'s',messages:[{role:'user',content:'That makes me feel relieved.',timestamp}]},empty={facts:[],operations:[]};
@@ -43,4 +44,42 @@ test('v10 real preparation flow requires independent raw coverage and atomic ind
 test('coverage cannot be fabricated by bypassing the independent verifier',async()=>{
  const config=configFromEnv(env),models={json:async()=>({message_groups:[{message_index:0,facts:[],operations:[]}]}),verify:async()=>[],embedBatch:async(xs:string[])=>xs.map(()=>[1,0])};
  await assert.rejects(()=>new Extractor(config,models as any).prepare(req,{revision:0,facts:[],tail:[],anchor:null},AbortSignal.timeout(3000)),/coverage|Coverage/);
+});
+
+// Exact source coverage after an independently authorized erasure. Supplying
+// these cuts is internal to the transaction; no model coverage verdict grants it.
+function coverageFixture(){
+ const r={...req,messages:[{role:'user',content:'Appointment context; independent context.',timestamp}]};
+ const message={...r.messages[0],id:hash(`${r.user_id}\0${r.request_id}\0${0}`),session_id:r.session_id,ordinal:0,searchable:true};
+ const p:any={facts:[],operations:[],messages:[message],passages:preparePassages([message],[],[],1),degraded:[],anchor:null};
+ const plan=makeSourceCoveragePlan(r,p,[{index:0,disposition:'represented',raw_slots:[0],reason:'Incidental context.'}]);
+ return {r,p,plan,id:message.id};
+}
+test('authorized full erasure discharges raw coverage without requiring the forgotten witness to remain indexed',()=>{
+ const {r,p,plan,id}=coverageFixture(),cuts=new Map([[id,[{start:0,end:r.messages[0].content.length}]]]);
+ for(const passage of p.passages)redactPassage(passage,cuts.get(id)!);
+ assert.doesNotThrow(()=>assertSourceCoverageStored(plan,r,p,p.passages,new Set(),cuts));
+ const leaked=structuredClone(p.passages);leaked[0].content=r.messages[0].content;
+ assert.throws(()=>assertSourceCoverageStored(plan,r,p,leaked,new Set(),cuts),/retained an authorized erasure/);
+ assert.throws(()=>assertSourceCoverageStored(plan,r,p,p.passages,new Set([p.passages[0].id]),cuts),/retained an authorized erasure/);
+ assert.throws(()=>assertSourceCoverageStored(plan,r,p,p.passages,new Set()),/not indexed/);
+ assert.throws(()=>assertSourceCoverageStored(plan,r,p,p.passages,new Set(),new Map([['another-source',cuts.get(id)!]])),/not indexed/);
+});
+test('partial authorized erasure still requires the exact independent survivor in the index',()=>{
+ const {r,p,plan,id}=coverageFixture(),end=r.messages[0].content.indexOf('independent'),cuts=new Map([[id,[{start:0,end}]]]);
+ for(const passage of p.passages)redactPassage(passage,cuts.get(id)!);
+ const indexed=new Set<string>(p.passages.map((x:any)=>x.id));
+ const original=preparePassages(p.messages,[],[],1);
+ assert.throws(()=>assertSourceCoverageStored(plan,r,p,original,indexed,cuts),/retained an authorized erasure/);
+ assert.doesNotThrow(()=>assertSourceCoverageStored(plan,r,p,p.passages,indexed,cuts));
+ assert.throws(()=>assertSourceCoverageStored(plan,r,p,p.passages,new Set(),cuts),/not indexed/);
+ const changed=structuredClone(p.passages);changed[0].fragments[0].text='fabricated survivor';
+ assert.throws(()=>assertSourceCoverageStored(plan,r,p,changed,indexed,cuts),/not indexed/);
+ const linked=structuredClone(p.passages);linked[0].fact_ids=['unrelated-state'];
+ assert.throws(()=>assertSourceCoverageStored(plan,r,p,linked,indexed,cuts),/not indexed/);
+});
+test('removing more than the authorized raw interval is still rejected',()=>{
+ const {r,p,plan,id}=coverageFixture(),end=r.messages[0].content.indexOf('independent'),cuts=new Map([[id,[{start:0,end}]]]);
+ for(const passage of p.passages)redactPassage(passage,[{start:0,end:r.messages[0].content.length}]);
+ assert.throws(()=>assertSourceCoverageStored(plan,r,p,p.passages,new Set(),cuts),/not indexed/);
 });
