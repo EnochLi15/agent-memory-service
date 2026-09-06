@@ -1,3 +1,4 @@
+import {prepareExtractionShards} from './extraction-shards.js';
 import {SOURCE_FIRST_EXTRACTION_PROMPT,makeSourceCoveragePlan,type SourceCoverageRow} from './source-coverage.js';
 import {SOURCE_ROUTE_PROMPT,sourceRouteInput,decodeSourceRoute,ordinarySourceRoute,validateSourceRoutePlan} from './source-operation-routing.js';
 import {sourceOperationNeedsBatches,sourceOperationWholeInput,prepareSourceBatches,validateSourceBatchPlan} from './source-operation-batches.js';
@@ -232,7 +233,9 @@ export class Extractor {
           repairScope=undefined;
           const repairSystem=issue?(patchMode?PATCH_PROMPT:'\nRepair the malformed proposal; return the complete extraction schema.'):'';
           const repairInput=issue?JSON.stringify({...JSON.parse(user),...(grouped&&patchMode?{EXTRACTION_PROTOCOL:'flat-patch-v1',NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))}:{}),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:failedProposal,...(patchMode?{REPAIR_SCOPE:scope,REPLACEMENT_TARGET_GROUPS:replacementTargetGroups(prior.data!,relevant),FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
-          const output=await this.models.json(patchMode?PATCH_PROMPT:extractionPrompt+repairSystem,repairInput,modelSignal,{purpose:issue?'repair':'extraction',trace:traceIdentity});
+          const output=!issue&&grouped&&this.config.extractionWorkers>1&&participantIndices(req).length>=4
+            ?await prepareExtractionShards(req,extractionPrompt,user,this.config.extractionWorkers,modelSignal,(prompt,input,s,extraction_shard)=>this.models.json(prompt,input,s,{purpose:'extraction',trace:traceIdentity,extraction_shard}))
+            :await this.models.json(patchMode?PATCH_PROMPT:extractionPrompt+repairSystem,repairInput,modelSignal,{purpose:issue?'repair':'extraction',trace:traceIdentity});
           let raw:unknown=output;
           if(grouped&&!patchMode){
             try{raw=references?decodeSourceReferences(output,req):decodeGroupedExtraction(output,req);}

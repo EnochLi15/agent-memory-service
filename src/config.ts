@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 export interface Config {
   port: number; host: string; dataDir: string; mode: 'enhanced' | 'offline'; llmBase: string; llmKey: string; llmModel: string; llmReasoningEffort?:'low'|'medium'|'high';
   llmStageModels:Partial<Record<'extraction'|'verification'|'repair',string>>;
-  maxRepairRounds:1|2;
+  maxRepairRounds:1|2;extractionWorkers:number;
   extractionFormat:'flat'|'message_groups'|'source_refs';
   verificationFormat:'verbose'|'compact';
   verificationResponseFormat:'json_object'|'json_schema';
@@ -33,6 +33,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   if(env.MEMORY_SOURCE_OPERATION_ROUTING==='true'&&env.MEMORY_SOURCE_OPERATION_BATCHES!=='true')throw new Error('Source routing requires batched source history');
   if(env.MEMORY_SOURCE_FIRST==='true'&&(env.MEMORY_SOURCE_OPERATION_ROUTING!=='true'||env.MEMORY_SOURCE_INDEX==='false'||env.MEMORY_RAW_FALLBACK==='false'||env.MEMORY_EXTRACTION_FORMAT!=='source_refs'||env.MEMORY_VERIFICATION_FORMAT!=='compact'||['lexical','mem0'].includes(env.MEMORY_RETRIEVAL??'')))throw new Error('Source-first requires v9 routing, source references, compact verification and hybrid raw retrieval');
   const stageModels:Config['llmStageModels']={};
+  const extractionWorkers=num('MEMORY_EXTRACTION_WORKERS',1);
+  if(!Number.isInteger(extractionWorkers)||extractionWorkers<1||extractionWorkers>3)throw new Error('Invalid MEMORY_EXTRACTION_WORKERS');
+  if(extractionWorkers>1&&(env.MEMORY_MODE!=='enhanced'||!['message_groups','source_refs'].includes(env.MEMORY_EXTRACTION_FORMAT??'')))throw new Error('Parallel extraction requires enhanced grouped extraction');
   const maxRepairRounds=num('MEMORY_MAX_REPAIR_ROUNDS',1);
   if(maxRepairRounds!==1&&maxRepairRounds!==2)throw new Error('Invalid MEMORY_MAX_REPAIR_ROUNDS');
   const extractionFormat=env.MEMORY_EXTRACTION_FORMAT??'flat';
@@ -53,7 +56,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     ...(effort?{llmReasoningEffort:effort as 'low'|'medium'|'high'}:{}),
     llmStageModels:stageModels,
     relationMode:relationMode as Config['relationMode'],rerankPolicy:rerankPolicy as Config['rerankPolicy'],rerankFormat:rerankFormat as Config['rerankFormat'],
-    maxRepairRounds,
+    maxRepairRounds,extractionWorkers,
     extractionFormat:extractionFormat as Config['extractionFormat'],
     verificationFormat,
     verificationResponseFormat:verificationResponseFormat as Config['verificationResponseFormat'],
