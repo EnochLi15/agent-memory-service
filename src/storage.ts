@@ -124,9 +124,13 @@ export class TenantStore {
         const actionFamily=propertyFamily(operation.predicate,target[0]?.content??'');
         // Close duplicate representations of the same scoped value, including harmless
         // predicate wording differences. Do not extend deletion to other people/scopes.
-        const families=new Set(target.map(f=>propertyFamily(f.predicate,f.content)));
-        const value=operation.value||target.find(f=>f.value&&canonical(source.content).includes(canonical(f.value)))?.value;
-        if(value&&target.length){for(const f of pool){if(f.state!=='active'||f.kind==='event'||canonical(f.value)!==canonical(value)||canonical(f.subject)!==canonical(operation.subject)||!families.has(propertyFamily(f.predicate,f.content)))continue;const scopeCompatible=target.some(t=>canonical(t.scope)===canonical(f.scope));if(scopeCompatible&&!target.some(t=>t.id===f.id))target.push(f);}}
+        // A correction's value may describe its replacement. Only the selected
+        // target records authorize duplicate expansion, never that new value.
+        const selected=[...target];
+        for(const f of pool){
+          if(f.state!=='active'||f.kind==='event'||target.some(t=>t.id===f.id))continue;
+          if(selected.some(t=>t.value&&canonical(t.value)===canonical(f.value)&&canonical(t.subject)===canonical(f.subject)&&canonical(t.scope)===canonical(f.scope)&&propertyFamily(t.predicate,t.content)===propertyFamily(f.predicate,f.content)))target.push(f);
+        }
         operationTargets.set(operation,target.map(f=>f.id));
         if(operation.type==='restore'){
           if(!/remember.*again|store.*again|重新.*记|再次.*记/i.test(operation.source.quote))throw new ServiceError('RESTORE','Explicit reauthorization required');

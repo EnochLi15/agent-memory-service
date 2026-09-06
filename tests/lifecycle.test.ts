@@ -52,9 +52,9 @@ test('invalid extraction schema and wrong vector dimensions degrade without fabr
 }));
 test('fabricated source is replaced only by grounded recovery; unknown operation ID is rejected',()=>fixture(async({s,c}:any)=>{
  const req={request_id:'a',user_id:'u',session_id:'s',messages:[{role:'user',content:'I like hiking.',timestamp:'2026-01-01T00:00:00Z'}]};
- const x=new Extractor({...c,mode:'enhanced'},{verify:async()=>[],json:async()=>({facts:[{content:'I like swimming.',subject:'user',predicate:'hobby',value:'swimming',sources:[{index:0,quote:'swimming'}]}],operations:[]})} as any);
+ const x=new Extractor({...c,mode:'enhanced'},{verify:async()=>[],json:async(system:string)=>system.includes('PATCH_SCHEMA')?{}:({facts:[{content:'I like swimming.',subject:'user',predicate:'hobby',value:'swimming',sources:[{index:0,quote:'swimming'}]}],operations:[]})} as any);
  const p=await x.prepare(req,s.snapshot('s'),AbortSignal.timeout(1000));assert.ok(p.degraded.includes('source_span_partial'));assert.ok(p.facts.every(f=>!f.content.includes('swimming')));assert.ok(p.facts.some(f=>f.content.includes('hiking')));
- const bad=new Extractor({...c,mode:'enhanced'},{verify:async()=>[],json:async()=>({facts:[],operations:[{type:'forget',target_ids:['other-tenant-id'],subject:'user',predicate:'hobby',source:{index:0,quote:'I like hiking.'}}]})} as any);await assert.rejects(()=>bad.prepare(req,s.snapshot('s'),AbortSignal.timeout(1000)),/Unknown memory operation target/);assert.equal(s.revision(),0);
+ const bad=new Extractor({...c,mode:'enhanced'},{verify:async()=>[],json:async(system:string)=>system.includes('PATCH_SCHEMA')?{}:({facts:[],operations:[{type:'forget',target_ids:['other-tenant-id'],subject:'user',predicate:'hobby',source:{index:0,quote:'I like hiking.'}}]})} as any);await assert.rejects(()=>bad.prepare(req,s.snapshot('s'),AbortSignal.timeout(1000)),/Unknown memory operation target/);assert.equal(s.revision(),0);
 }));
 
 test('bounded entity expansion retrieves the second hop without inventing a conclusion',()=>fixture(async({prepare,commit,s,c}:any)=>{
@@ -72,12 +72,12 @@ test('querying with another embedding space uses lexical fallback rather than mi
 
 test('a valid but unrelated target ID cannot authorize deletion',()=>fixture(async({s,c,add}:any)=>{
  await add('I like coffee.');const f=s.facts()[0];const req={request_id:'bad',user_id:'u',session_id:'s',messages:[{role:'user',content:'That gym schedule is wrong. Do not store that.',timestamp:'2026-01-02T00:00:00Z'}]};
- const x=new Extractor({...c,mode:'enhanced'},{verify:async()=>[],json:async()=>({facts:[],operations:[{type:'forget',target_ids:[f.id],subject:f.subject,predicate:f.predicate,source:{index:0,quote:req.messages[0].content}}]})} as any);
+ const x=new Extractor({...c,mode:'enhanced'},{verify:async()=>[],json:async(system:string)=>system.includes('PATCH_SCHEMA')?{}:({facts:[],operations:[{type:'forget',target_ids:[f.id],subject:f.subject,predicate:f.predicate,source:{index:0,quote:req.messages[0].content}}]})} as any);
  const p=await x.prepare(req,s.snapshot('s'),AbortSignal.timeout(1000));assert.equal(p.operations.length,0);assert.ok(p.degraded.includes('extraction_offline'));assert.equal(s.facts()[0].state,'active');
 }));
 test('partially recovered raw evidence becomes invisible when a linked fact is superseded or erased',()=>fixture(async({s,c,add,find}:any)=>{
  const req={request_id:'partial',user_id:'u',session_id:'s',messages:[{role:'user',content:'I like kayaking. My current city is Seattle.',timestamp:'2026-01-01T00:00:00Z'}]};
- const x=new Extractor({...c,mode:'enhanced'},{verify:async()=>[],json:async()=>({facts:[{content:'The user lives in Seattle.',subject:'user',predicate:'current_city',value:'Seattle',cardinality:'single',sources:[{index:0,quote:'My current city is Seattle.'}]},{content:'I enjoy kayaking.',subject:'user',predicate:'hobby',value:'kayaking',sources:[{index:0,quote:'I enjoy kayaking.'}]}],operations:[]}),embedBatch:async()=>{throw Error('offline')}} as any);
+ const x=new Extractor({...c,mode:'enhanced'},{verify:async()=>[],json:async(system:string)=>system.includes('PATCH_SCHEMA')?{}:({facts:[{content:'The user lives in Seattle.',subject:'user',predicate:'current_city',value:'Seattle',cardinality:'single',sources:[{index:0,quote:'My current city is Seattle.'}]},{content:'I enjoy kayaking.',subject:'user',predicate:'hobby',value:'kayaking',sources:[{index:0,quote:'I enjoy kayaking.'}]}],operations:[]}),embedBatch:async()=>{throw Error('offline')}} as any);
  const p=await x.prepare(req,s.snapshot('s'),AbortSignal.timeout(1000));assert.ok(p.degraded.includes('source_span_partial'));s.commit(req,hash(JSON.stringify(req)),p,s.revision());assert.ok(s.raw().some((m:any)=>m.partial));
  await add('I live in Portland.','2026-02-01T00:00:00Z');assert.doesNotMatch(find('current city'),/Seattle/);assert.match(find('hobby kayaking'),/kayaking/);
  await add('Forget kayaking.','2026-03-01T00:00:00Z');assert.doesNotMatch(find('previous hobby kayaking history'),/kayaking/);assert.match(find('current city'),/Portland/);

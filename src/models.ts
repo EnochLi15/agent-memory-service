@@ -41,14 +41,14 @@ export class Models {
       const started=performance.now();let usage:unknown=null;
       try{
         const stream=await this.client.chat.completions.create({
-          model:this.config.llmModel,messages:[{role:'system',content:system},{role:'user',content:user}],
+          model:this.config.llmModel,...(this.config.llmReasoningEffort?{reasoning_effort:this.config.llmReasoningEffort}:{}),messages:[{role:'system',content:system},{role:'user',content:user}],
           response_format:{type:'json_object'},max_completion_tokens:10000,stream:true,stream_options:{include_usage:true},
         },{signal});
         let content='',finish:string|null=null;
         for await(const chunk of stream){content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
         if(!content||finish!=='stop')throw new ServiceError('MODEL_OUTPUT','Incomplete model output');
         const parsed=JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
-        audit({kind:'generation',purpose:system.startsWith('Rank evidence')?'rerank':system.startsWith('Validate memory evidence')?'verification':'extraction',model:this.config.llmModel,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage});return parsed;
+        audit({kind:'generation',purpose:system.startsWith('Rank evidence')?'rerank':system.startsWith('Validate memory evidence')?'verification':system.includes('PATCH_SCHEMA')?'repair':'extraction',model:this.config.llmModel,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage});return parsed;
       }catch(error){audit({kind:'generation',model:this.config.llmModel,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,error_type:error instanceof Error?error.name:'unknown'});last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
     }
     throw last;
