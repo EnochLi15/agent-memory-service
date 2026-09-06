@@ -106,3 +106,30 @@ test('a still-malformed global repair cannot publish defaults, skip verification
  let repairs=0,verified=0,embedded=0;const models={json:async(_s:string,user:string,_signal:any,ctx:any)=>{const x=JSON.parse(user);if(ctx.purpose==='repair')repairs++;return {message_groups:x.PARTICIPANT_INDEX.map((i:number)=>{const g:any=group(i);if(i===3)delete g.operations;return g;})};},verify:async()=>{verified++;return [];},embedBatch:async()=>{embedded++;return [];}};
  await assert.rejects(()=>new Extractor(configFromEnv({...env,MEMORY_MAX_REPAIR_ROUNDS:'1'}),models as any).prepare(req,{revision:0,facts:[],tail:[],anchor:null},AbortSignal.timeout(3000)),/bounded repair rounds/);assert.equal(repairs,1);assert.equal(verified,0);assert.equal(embedded,0);
 });
+
+test('unknown group fields preserve complete ownership and reach strict decoding without normalization',async()=>{
+ const malformed='operations-corrupted-output';
+ const merged:any=await prepareExtractionShards(req,'prompt',input(req),3,AbortSignal.timeout(3000),async(_s,user)=>{
+  const x=JSON.parse(user);return {message_groups:x.PARTICIPANT_INDEX.map((i:number)=>({...group(i),...(i===3?{[malformed]:[]}: {})}))};
+ });
+ assert.deepEqual(merged.message_groups.map((g:any)=>g.message_index),[0,1,2,3]);assert.ok(Object.hasOwn(merged.message_groups[3],malformed));assert.throws(()=>decodeGroupedExtraction(merged,req),/schema/);
+});
+test('a corrupted operations key is repaired globally before verified atomic erasure, never silently renamed',async()=>{
+ let repairs=0,verified=0,extractions=0;const malformed='operations-corrupted-output';
+ const models={json:async(_s:string,user:string,_signal:any,ctx:any)=>{
+  const x=JSON.parse(user);
+  if(ctx.purpose==='extraction'){extractions++;return {message_groups:x.PARTICIPANT_INDEX.map((i:number)=>{const g:any=structuredClone(proposalGroup(i));if(i===3){g[malformed]=g.operations;delete g.operations;}return g;})};}
+  repairs++;assert.ok(Object.hasOwn(x.FAILED_PROPOSAL.message_groups[3],malformed));assert.equal(Object.hasOwn(x.FAILED_PROPOSAL.message_groups[3],'operations'),false);assert.deepEqual(x.FAILED_PROPOSAL.message_groups.slice(0,3),[0,1,2].map(proposalGroup));return {message_groups:[0,1,2,3].map(proposalGroup)};
+ },verify:async(p:any)=>{verified++;assert.equal(p.operations.length,1);return [];},embedBatch:async(xs:string[])=>xs.map(()=>[1,0])};
+ const dir=mkdtempSync(join(tmpdir(),'shard-key-repair-')),store=new TenantStore(dir,'u');
+ try{
+  const p=await new Extractor(configFromEnv(env),models as any).prepare(req,store.snapshot('s'),AbortSignal.timeout(3000));assert.equal(extractions,3);assert.equal(repairs,1);assert.equal(verified,1);
+  const before=store.snapshot('s');assert.throws(()=>store.commit(req,hash(JSON.stringify(req)),structuredClone(p),0,'indexes'));assert.deepEqual(store.snapshot('s'),before);
+  store.commit(req,hash(JSON.stringify(req)),p,0);assert.ok(store.facts().some(f=>f.subject==='user'&&f.predicate==='access_code'&&f.state==='erased'));assert.ok(store.facts().some(f=>f.subject==='brother'&&f.value==='9182'&&f.state==='active'));
+ }finally{store.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('repeated corrupted keys exhaust the existing repair budget without verification or embedding',async()=>{
+ let repairs=0,verified=0,embedded=0;
+ const models={json:async(_s:string,user:string,_signal:any,ctx:any)=>{const x=JSON.parse(user);if(ctx.purpose==='repair')repairs++;return {message_groups:x.PARTICIPANT_INDEX.map((i:number)=>({...group(i),...(i===3?{'operations-corrupted-output':[]}: {})}))};},verify:async()=>{verified++;return [];},embedBatch:async()=>{embedded++;return [];}};
+ await assert.rejects(()=>new Extractor(configFromEnv({...env,MEMORY_MAX_REPAIR_ROUNDS:'2'}),models as any).prepare(req,{revision:0,facts:[],tail:[],anchor:null},AbortSignal.timeout(3000)),/bounded repair rounds/);assert.equal(repairs,2);assert.equal(verified,0);assert.equal(embedded,0);
+});

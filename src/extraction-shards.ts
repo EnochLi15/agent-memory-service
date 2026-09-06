@@ -23,10 +23,11 @@ function checkedGroups(raw:unknown,shard:ExtractionShard):any[]{
  if(!x||typeof x!=='object'||Array.isArray(x)||Object.keys(x).some(k=>k!=='message_groups')||!Array.isArray(x.message_groups))throw new ServiceError('EXTRACTION_SCHEMA','Invalid extraction shard envelope');
  const groups=x.message_groups,seen=new Set<number>();
  for(const g of groups){
-  if(!g||typeof g!=='object'||Object.keys(g).some(k=>!['message_index','facts','operations'].includes(k))||!owned.has(g.message_index)||seen.has(g.message_index))throw new ServiceError('EXTRACTION_SCHEMA','Extraction shard omitted or invented a participant group');seen.add(g.message_index);
-  // A complete owned roster with a missing array is a malformed proposal,
-  // not an ownership failure. Preserve the omission for the existing strict
-  // grouped decoder and bounded global repair; never infer an empty array.
+  if(!g||typeof g!=='object'||!owned.has(g.message_index)||seen.has(g.message_index))throw new ServiceError('EXTRACTION_SCHEMA','Extraction shard omitted or invented a participant group');seen.add(g.message_index);
+  // A complete owned roster with missing or unknown fields is malformed,
+  // not an ownership failure. Preserve the original fields for strict grouped
+  // decoding and bounded global repair; never drop or rename damaged keys,
+  // and never infer an empty array. Duplicate/foreign ownership still fails here.
   for(const field of ['facts','operations'])if(Object.hasOwn(g,field)&&!Array.isArray(g[field]))throw new ServiceError('EXTRACTION_SCHEMA','Extraction shard contains a non-array '+field+' field');
   for(const refs of [...(g.facts??[]).flatMap((f:any)=>[f?.supersedes??[],f?.depends_on??[]]),...(g.operations??[]).map((o:any)=>o?.target_ids??[])]){
    if(!Array.isArray(refs))throw new ServiceError('EXTRACTION_SCHEMA','Invalid extraction shard references');
