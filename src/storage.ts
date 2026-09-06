@@ -32,9 +32,17 @@ function markerConcerns(m:Marker,f:Fact):boolean{
 }
 export class TenantStore {
   readonly db: Database.Database;readonly preparation:PreparationLedger;
-  constructor(dir:string, readonly userId:string) {
+  constructor(dir:string, readonly userId:string, expectedFormat?:Prepared['sourceFormat']) {
     const folder = join(dir,digest(userId)); mkdirSync(folder,{recursive:true});
     this.db = new Database(join(folder,'memory.sqlite'));
+    // Reject incompatible data before schema/pragma writes or serving old
+    // receipts. A successful health probe does not open every tenant database.
+    try{
+      const hasMeta=this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").get();
+      const format=hasMeta?this.meta('source_format'):null;
+      if(format!==null&&(!/^(?:(?:dual-source|facts-only)-v[2-9]|dual-source-v10)$/.test(format)||expectedFormat&&format!==expectedFormat))throw new ServiceError('SOURCE_FORMAT','Incompatible source representation; restore a compatible snapshot or use a fresh data directory');
+      if(format===null&&this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts'").get()&&this.db.prepare('SELECT 1 FROM facts LIMIT 1').get())throw new ServiceError('SOURCE_FORMAT','Unversioned populated data requires explicit recovery; use a compatible snapshot or fresh data directory');
+    }catch(error){this.db.close();throw error;}
     this.db.pragma('journal_mode = WAL'); this.db.pragma('foreign_keys = ON'); this.db.pragma('synchronous = FULL');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

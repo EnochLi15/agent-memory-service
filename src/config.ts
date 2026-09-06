@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import type {Prepared} from './types.js';
 export interface Config {
   port: number; host: string; dataDir: string; mode: 'enhanced' | 'offline'; llmBase: string; llmKey: string; llmModel: string; llmReasoningEffort?:'low'|'medium'|'high';
   llmStageModels:Partial<Record<'extraction'|'verification'|'repair',string>>;
@@ -15,6 +16,7 @@ export interface Config {
   experimental: {rawOnly:boolean;lifecycle:boolean;temporal:boolean;multiHop:boolean;reflection:boolean};
 }
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
+  if(env.MEMORY_MODE!==undefined&&!['offline','enhanced'].includes(env.MEMORY_MODE))throw new Error('Invalid MEMORY_MODE');
   const num = (k: string, n: number): number => { const v = Number(env[k] ?? n); if (!Number.isFinite(v) || v < 0) throw new Error(`Invalid ${k}`); return v; };
   const model = env.MEMORY_EMBEDDING_MODEL ?? 'nomic-embed-text:latest';
   const dimensions = num('MEMORY_EMBEDDING_DIMENSIONS', 768);
@@ -81,4 +83,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     eventView:env.MEMORY_EVENT_VIEW!=='false',
     experimental:{rawOnly:env.MEMORY_EXPERIMENT_RAW_ONLY==='true',lifecycle:env.MEMORY_EXPERIMENT_LIFECYCLE!=='false',temporal:env.MEMORY_EXPERIMENT_TEMPORAL!=='false',multiHop:env.MEMORY_EXPERIMENT_MULTI_HOP!=='false',reflection:env.MEMORY_EXPERIMENT_REFLECTION!=='false'},
   };
+}
+
+export function sourceFormatFor(config:Config):NonNullable<Prepared['sourceFormat']>{
+ const erasure=config.erasureBinding&&!config.experimental?.rawOnly;
+ return `${config.sourceIndex&&!config.experimental?.rawOnly?'dual-source':'facts-only'}-v${erasure?(config.sourceFirst?10:config.sourceOperationRouting?9:config.sourceOperationBatches?8:config.sourceOperationHistory?7:config.sourceOperations?6:config.semanticTransitions?5:config.sourceErasure?4:3):2}` as NonNullable<Prepared['sourceFormat']>;
 }

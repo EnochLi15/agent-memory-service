@@ -5,11 +5,11 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { TenantStore } from './storage.js';
 import { retrieve,collectCandidates,compactCandidates,packEvidence,type RankedEvidence } from './retrieval.js';
 import { ServiceError, type AddRequest, type Prepared, type SearchRequest } from './types.js';
-import type { Config } from './config.js';
+import {sourceFormatFor,type Config} from './config.js';
 import {rerankDecision} from './retrieval-policy.js';
 
 const config=workerData as Config;const stores=new Map<string,TenantStore>();
-function store(id:string):TenantStore {let s=stores.get(id);if(s){stores.delete(id);stores.set(id,s);return s;}if(stores.size>=32){const old=stores.keys().next().value!;stores.get(old)!.close();stores.delete(old);}s=new TenantStore(config.dataDir,id);stores.set(id,s);return s;}
+function store(id:string):TenantStore {let s=stores.get(id);if(s){stores.delete(id);stores.set(id,s);return s;}if(stores.size>=32){const old=stores.keys().next().value!;stores.get(old)!.close();stores.delete(old);}s=new TenantStore(config.dataDir,id,sourceFormatFor(config));stores.set(id,s);return s;}
 parentPort!.on('message',(job:{id:number;method:string;userId:string;args:unknown[];deadline?:number})=>{
   try{
     if(job.deadline&&Date.now()>=job.deadline)throw new ServiceError('DEADLINE','Storage deadline exceeded');

@@ -5,7 +5,7 @@ import {SOURCE_ROUTE_PROMPT,sourceRouteInput,decodeSourceRoute,ordinarySourceRou
 import {sourceOperationNeedsBatches,sourceOperationWholeInput,prepareSourceBatches,validateSourceBatchPlan} from './source-operation-batches.js';
 import {sourceOperationWork,sourceOperationInput,sourceRejectionFindings,SOURCE_OPERATION_PROMPT,SOURCE_OPERATION_HISTORY_PROMPT,decodeSourceOperations,resolvedSourceInstructions,validateSourceOperations} from './source-operations.js';
 import { createHash } from 'node:crypto';
-import type { Config } from './config.js';
+import {sourceFormatFor,type Config} from './config.js';
 import { Models } from './models.js';
 import { EXTRACTION_PROMPT } from './prompts.js';
 import { addSchema, extractionSchema, canonical, operationScopeProblem, replacementMatches, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation } from './types.js';
@@ -419,7 +419,7 @@ export class Extractor {
         if (facts.some(f=>f.content.length>=3500)) degraded.push('long_evidence_lexical');
       } catch(error) { if (signal.aborted) throw error; degraded.push('embedding_lexical'); }
     }
-    const sourceFormat=`${this.config.sourceIndex&&!this.config.experimental?.rawOnly?'dual-source':'facts-only'}-v${useErasure?(this.config.sourceFirst?10:this.config.sourceOperationRouting?9:this.config.sourceOperationBatches?8:this.config.sourceOperationHistory?7:this.config.sourceOperations?6:this.config.semanticTransitions?5:this.config.sourceErasure?4:3):2}` as Prepared['sourceFormat'];
+    const sourceFormat=sourceFormatFor(this.config);
     const prepared:Prepared={ ...(sourceOperationPlan?{sourceOperationPlan}:{}),facts,operations:parsed.operations,messages,passages,sourceFormat,...(erasurePlan?{erasurePlan}:{}),...(sourceErasurePlan?{sourceErasurePlan}:{}),...(transitionPlan?{transitionPlan}:{}),anchor,degraded,embeddingSpace:this.config.embeddingSpace };
     if(this.config.sourceFirst){if(!sourceCoverageRows)throw new ServiceError('EVIDENCE_VALIDATION','Source-first write lacks independent coverage');prepared.sourceCoveragePlan=makeSourceCoveragePlan(req,prepared,sourceCoverageRows);}
     return prepared;
