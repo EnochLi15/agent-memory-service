@@ -35,6 +35,22 @@ test('missing, uncertain or unsupported independence decisions reject the whole 
  for(const decision of [()=>({decisions:[]}),()=>({decisions:[{index:0,effect:'uncertain',quote:'Keeping Iris was hedging.',reason:'Ambiguous.'}]}),()=>({decisions:[{index:0,effect:'retain',quote:'Other unrelated evidence.',reason:'Different person.'}]})])await assert.rejects(()=>prepare(d,proposal,decision),(e:any)=>e.code==='EVIDENCE_VALIDATION');
  assert.equal(store.revision(),1);assert.equal(store.facts()[0].state,'active');
 }));
+test('a pronoun-only retention witness cannot keep a value borrowed from the erased neighboring claim',()=>fixture(async({store,prepare,commit}:any)=>{
+ const text='Priya likes Volcano sauce, and I cannot imagine that. My usual order is mild curry.';
+ const seed=req('seed-pronoun',text);
+ const dependent={...fact('I cannot imagine liking Volcano sauce.','food_dislike','Volcano sauce'),sources:[{index:0,quote:'Priya likes Volcano sauce, and I cannot imagine that.'}]};
+ commit(seed,await prepare(seed,{facts:[fact('Priya likes Volcano sauce','food_preference','Volcano sauce','','Priya'),dependent,fact('My usual order is mild curry.','usual_order','mild curry')],operations:[]}));
+ const target=store.facts().find((f:any)=>f.subject==='Priya'),before=store.snapshot('s');
+ const del=req('delete-pronoun',"Forget Priya's sauce preference.");
+ const proposal={facts:[],operations:[{type:'forget',target_ids:[target.id],subject:'Priya',predicate:'food_preference',value:'Volcano sauce',source:{index:0,quote:del.messages[0].content}}]};
+ await assert.rejects(()=>prepare(del,proposal,(d:any)=>({decisions:d.CANDIDATES.map((c:any,index:number)=>({index,effect:'retain',quote:'I cannot imagine that',reason:'Claimed independent dislike.'}))})),/Independent-value witness/);
+ assert.deepEqual(store.snapshot('s'),before);
+ assert.equal(store.receipt(del.request_id,hash(JSON.stringify(del))),null);
+ const prepared=await prepare(del,proposal,(d:any)=>({decisions:d.CANDIDATES.map((c:any,index:number)=>({index,effect:'erase',quote:c.fact.source_quotes[0],reason:'Only value witness depends on the erased claim.'}))}));
+ commit(del,prepared);
+ assert.ok(store.facts().filter((f:any)=>f.predicate!=='usual_order').every((f:any)=>f.state==='erased'));
+ assert.ok(store.facts().some((f:any)=>f.predicate==='usual_order'&&f.state==='active'&&f.value==='mild curry'));
+}));
 test('v3 transaction checks request/record fingerprint and cannot omit an erasure plan',()=>fixture(async({store,prepare,commit}:any)=>{
  const r=req('seed','My hobby is hiking.');const p=await prepare(r,{facts:[fact(r.messages[0].content,'hobby','hiking')],operations:[]});
  assert.equal(p.sourceFormat,'dual-source-v3');
