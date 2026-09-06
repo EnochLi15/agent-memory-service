@@ -3,6 +3,7 @@ import type { Config } from './config.js';
 import { Models } from './models.js';
 import { EXTRACTION_PROMPT } from './prompts.js';
 import { addSchema, extractionSchema, canonical, operationScopeProblem, replacementMatches, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation } from './types.js';
+import {bindingCandidates,resolveOperationTargets} from './binding.js';
 import { entities, overlap, tokens, speakerPrefix } from './text.js';
 import {preparePassages,sourceSpans} from './passages.js';
 import {messageAnchors,normalizeFactTime} from './temporal.js';
@@ -108,7 +109,7 @@ function before(a:{index:number;quote:string},b:{index:number;quote:string},req:
   if(a.index!==b.index)return a.index<b.index;
   const text=req.messages[a.index]?.content??'';
   const start=text.indexOf(a.quote),end=text.indexOf(b.quote);
-  return start>=0&&end>=0&&start+a.quote.length<=end;
+  return start>=0&&end>=0&&start===text.lastIndexOf(a.quote)&&end===text.lastIndexOf(b.quote)&&start+a.quote.length<=end;
 }
 function bindNewFactHandles(parsed:Extraction,req:AddRequest):Set<string>{
   const ids=new Map(parsed.facts.map((_,i)=>[factId(req,i),i]));
@@ -130,6 +131,17 @@ function bindNewFactHandles(parsed:Extraction,req:AddRequest):Set<string>{
 function proposalFacts(parsed:Extraction,req:AddRequest):Fact[]{
   return parsed.facts.map((f,i)=>({...f,id:factId(req,i),source_ids:[],source_quotes:f.sources.map(s=>s.quote),created_at:'',observed_at:'',state:'active',vector:null,entities:[],revision:0}));
 }
+function bindOperationSelectors(parsed:Extraction,req:AddRequest,snapshot:Snapshot):{operation:number;code:string;reason:string}[]{
+ const proposed=proposalFacts(parsed,req),issues:{operation:number;code:string;reason:string}[]=[];
+ for(const [index,operation] of parsed.operations.entries()){
+  const pending=proposed.filter((_,i)=>parsed.facts[i]!.sources.every(source=>before(source,operation.source,req)));
+  const allowEmpty=operation.type==='restore'||operation.type==='update'&&parsed.facts.some(f=>replacementMatches(f,operation)&&f.sources.some(s=>s.index===operation.source.index));
+  const binding=resolveOperationTargets(operation,[...snapshot.facts,...pending],allowEmpty);
+  if(binding.status==='resolved')operation.target_ids=binding.target_ids;
+  else issues.push({operation:index,code:binding.code,reason:binding.reason});
+ }
+ return issues;
+}
 export class Extractor {
   constructor(private config: Config, private models: Models) {}
   async prepare(req: AddRequest, snapshot: Snapshot, signal: AbortSignal): Promise<Prepared> {
@@ -147,6 +159,14 @@ export class Extractor {
       const aliases=new Map(ordered.map((f,i)=>[`m${i}`,f.id]));
       const knownIds=new Set(snapshot.facts.map(f=>f.id));
       const relevant=ordered.map((f,i)=>({id:`m${i}`,content:f.content,subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,state:f.state,modality:f.modality}));
+      const visibleIds=new Set(ordered.map(f=>f.id));let extraCandidates=0;
+      const expandTargets=(proposal:Extraction):void=>{
+        for(const operation of proposal.operations)for(const f of bindingCandidates(operation,snapshot.facts)){
+          if(visibleIds.has(f.id)||extraCandidates>=32)continue;
+          const id=`m${aliases.size}`;aliases.set(id,f.id);visibleIds.add(f.id);extraCandidates++;
+          relevant.push({id,content:f.content,subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,state:f.state,modality:f.modality});
+        }
+      };
       const user=JSON.stringify({OBSERVATION_DATE:anchor,EXISTING_FACTS:relevant,CONTEXT_ONLY:snapshot.tail.map(m=>({role:m.role,content:m.content})),NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))});
       // Reserve time for grounded fallback, local embedding and atomic commit.
       // This inner budget never extends the caller's absolute request deadline.
@@ -159,7 +179,7 @@ export class Extractor {
           const patchMode=!!issue&&prior.success;
           const scope=repairScope??{fact_indices:prior.success?prior.data.facts.map((_,i)=>i):[],operation_indices:prior.success?prior.data.operations.map((_,i)=>i):[],source_indices:req.messages.map((_,i)=>i)};
           const repairSystem=issue?(patchMode?PATCH_PROMPT:'\nRepair the malformed proposal; return the complete extraction schema.'):'';
-          const repairInput=issue?JSON.stringify({...JSON.parse(user),REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:failedProposal,...(patchMode?{REPAIR_SCOPE:scope,FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
+          const repairInput=issue?JSON.stringify({...JSON.parse(user),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:failedProposal,...(patchMode?{REPAIR_SCOPE:scope,FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
           const output=await this.models.json(patchMode?PATCH_PROMPT:EXTRACTION_PROMPT+repairSystem,repairInput,modelSignal);
           let raw:unknown=output;
           if(patchMode){
@@ -182,17 +202,20 @@ export class Extractor {
           let localIds:Set<string>;
           try{localIds=bindNewFactHandles(valid.data,req);}catch{issue='Unknown target chronology. new:N may only reference an earlier sourced fact in this chunk. Repair the invalid references.';continue;}
           const unknown=[...valid.data.facts.flatMap(f=>[...f.supersedes,...f.depends_on]),...valid.data.operations.flatMap(o=>o.target_ids)].filter(id=>!knownIds.has(id)&&!localIds.has(id));
-          if(unknown.length){issue='Unknown target IDs. Use ONLY short IDs from EXISTING_FACTS, never invent IDs. If a rejected assistant claim was not in existing memories, emit no delete/correct operation for it. Return the whole corrected object. Unknown IDs: '+JSON.stringify(unknown.slice(0,8));continue;}
+          if(unknown.length){expandTargets(valid.data);issue='Unknown target IDs. Use ONLY short IDs from EXISTING_FACTS, never invent IDs. This list now includes bounded operation-specific candidates. Candidate similarity is not authorization; bind only actual targets supported by the user statement. If a rejected assistant claim was not in existing memories, emit no delete/correct operation for it. Unknown IDs: '+JSON.stringify(unknown.slice(0,8));continue;}
           const bindingPool=[...snapshot.facts,...proposalFacts(valid.data,req)];
           const badScopes=valid.data.operations.flatMap((o,index)=>{
             const code=operationScopeProblem(o,bindingPool.filter(f=>o.target_ids.includes(f.id)));
             return code?[{operation:index,code,requested:{subject:o.subject,predicate:o.predicate,scope:o.scope},selected_targets:bindingPool.filter(f=>o.target_ids.includes(f.id)).map(f=>({id:f.id,proposal_index:valid.data.facts.findIndex((_,i)=>factId(req,i)===f.id),subject:f.subject,predicate:f.predicate,scope:f.scope,content:f.content}))}]:[];
           });
           const badReplacements=valid.data.facts.flatMap((f,index)=>f.supersedes.some(id=>{const old=bindingPool.find(t=>t.id===id);return old&&!replacementMatches(f,old);})?[index]:[]);
+          if(badScopes.length||badReplacements.length)expandTargets(valid.data);
           if(badScopes.length||badReplacements.length){issue='Operation target binding: subject, property or scope does not match its selected targets. '+JSON.stringify({operations:badScopes,replacement_facts:badReplacements})+'. Reuse matching existing fields only if that record is actually the requested target. For same-chunk transient targets, proposal_index identifies the editable fact slot. If the user forgets multiple properties of one concrete entity, give those transient facts that same entity scope when their original statements support it; preserve unrelated devices. Alternatively split operations only when the source actually authorizes each distinct scope. Changing sources alone does not fix a scope mismatch. Never rename an existing or unrelated record to pass validation. If correcting an assistant claim that was never stored, keep the grounded USER facts but emit no operation or supersedes reference against an unrelated record. Cite the user correction itself, not the assistant restatement. Return the corrected object.';continue;}
           if(valid.data.operations.some(o=>o.type==='forget'&&!authorizesForget(o,req))){issue='The proposed forget is quoted, hypothetical, negated, or lacks an actual user deletion instruction. Remove that operation; preserve existing facts. Return the whole object.';continue;}
           if(valid.data.operations.some(o=>!groundedOperation(o,req,[...snapshot.facts,...proposalFacts(valid.data,req)]))){issue='An operation targets a fact with no matching topic in the new user request or preceding context. Do not delete unrelated memories. If the user rejects a never-stored assistant claim, return no operation. Recheck targets and return full JSON.';continue;}
           if(missingForgetObligations(req,valid.data).length){issue='A direct retirement instruction has no operation. Bind each instruction to tenant-local evidence; do not silently omit it. Return the full object.';continue;}
+          const bindingIssues=bindOperationSelectors(valid.data,req,snapshot);
+          if(bindingIssues.length){expandTargets(valid.data);issue='Operation target binding: '+JSON.stringify(bindingIssues)+'. Select the actual targets from EXISTING_FACTS or earlier new:N facts; do not treat a missing target as an executed operation.';continue;}
           const invalid=valid.data.facts.flatMap((f,i)=>f.sources.filter(s=>!req.messages[s.index]?.content.includes(s.quote)).map(s=>({fact:i,index:s.index,quote:s.quote})));
           const badOps=valid.data.operations.filter(o=>!req.messages[o.source.index]?.content.includes(o.source.quote)||!humanOperation(o,req));
           if(attempt===1&&invalid.length&&!badOps.length){
@@ -213,6 +236,7 @@ export class Extractor {
             for(const f of valid.data.facts){f.supersedes=f.supersedes.map(id=>aliases.get(id)??id);f.depends_on=f.depends_on.map(id=>aliases.get(id)??id);}
             for(const o of valid.data.operations)o.target_ids=o.target_ids.map(id=>aliases.get(id)??id);
             bindNewFactHandles(valid.data,req);degraded.push('source_span_partial');
+            if(bindOperationSelectors(valid.data,req,snapshot).length)throw new ServiceError('OPERATION_TARGET','Partial recovery left unresolved target bindings');
             const findings=await this.models.verify(valid.data,req,[...snapshot.facts,...proposalFacts(valid.data,req)],missingPersonalSources(req,valid.data),modelSignal);
             if(findings.length)throw new ServiceError('EVIDENCE_VALIDATION','Partial recovery failed semantic verification');
             accepted=valid.data;break;
@@ -237,6 +261,7 @@ export class Extractor {
     if (parsed.operations.some(o => !validSource(o.source) || !humanOperation(o,req))) throw new ServiceError('OPERATION_SOURCE','Operation lacks valid user evidence');
     // Reject nonexistent operation targets; the model may only bind tenant-local evidence.
     const localIds=bindNewFactHandles(parsed,req);
+    if(bindOperationSelectors(parsed,req,snapshot).length)throw new ServiceError('OPERATION_TARGET','Unresolved operation target before commit');
     if(!this.config.experimental?.rawOnly&&missingForgetObligations(req,parsed).length)throw new ServiceError('OPERATION_INTENT','Unresolved memory operation after bounded recovery');
     const known = new Set([...snapshot.facts.map(f=>f.id),...localIds]);
     if (parsed.operations.some(o=>o.target_ids.some(id=>!known.has(id)))) throw new ServiceError('OPERATION_TARGET','Unknown memory operation target');

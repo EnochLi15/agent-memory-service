@@ -4,10 +4,11 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { canonical, slot, propertyFamily, operationScopeProblem, replacementMatches, ServiceError, type AddRequest, type MemoryEvent, type Operation, type Fact, type Passage, type Prepared, type Receipt, type Snapshot, type StoredMessage, type QueryIntent } from './types.js';
+import { canonical, slot, propertyFamily, replacementMatches, ServiceError, type AddRequest, type MemoryEvent, type Operation, type Fact, type Passage, type Prepared, type Receipt, type Snapshot, type StoredMessage, type QueryIntent } from './types.js';
 import { tokens } from './text.js';
 import {redactPassage} from './passages.js';
 import {eventCategory} from './events.js';
+import {resolveOperationTargets} from './binding.js';
 
 const valueWords = (s:string):string[] => canonical(s).match(/[\p{L}\p{N}]+/gu) ?? [];
 const valueDigest = (s:string):string => digest(valueWords(s).join(' '));
@@ -109,11 +110,10 @@ export class TenantStore {
           return start>=0&&quotes.length>0&&quotes.every(q=>text.indexOf(q)===text.lastIndexOf(q)&&text.indexOf(q)+q.length<=start);
         }));
         const pool=[...all,...pending];
-        let target=operation.target_ids.length ? pool.filter(f=>operation.target_ids.includes(f.id)) : pool.filter(f=>slot(f)===slot(operation) && (!operation.value || canonical(f.value)===canonical(operation.value)));
-        if(operation.target_ids.some(id=>!target.some(f=>f.id===id)))throw new ServiceError('OPERATION_TARGET','Operation target is unavailable at its source position');
-        if(target.some(f=>f.predicate==='memory_operation'))throw new ServiceError('OPERATION_TARGET','An operation trace is not the underlying property');
-        const scopeProblem=operationScopeProblem(operation,target);
-        if(scopeProblem)throw new ServiceError(scopeProblem,'Operation target does not match its subject, property or scope');
+        const allowEmpty=operation.type==='restore'||operation.type==='update'&&prepared.facts.some(f=>slot(f)===slot(operation)&&f.source_ids.includes(source.id));
+        const binding=resolveOperationTargets(operation,pool,allowEmpty);
+        if(binding.status!=='resolved')throw new ServiceError(binding.code,binding.reason);
+        const target=binding.target_ids.map(id=>pool.find(f=>f.id===id)!);
         if(operation.type==='forget'&&target.some(f=>f.state==='erased')){
           const priorMarkers=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
           for(const f of target.filter(f=>f.state==='erased')){
@@ -122,15 +122,6 @@ export class TenantStore {
           }
         }
         const actionFamily=propertyFamily(operation.predicate,target[0]?.content??'');
-        // Close duplicate representations of the same scoped value, including harmless
-        // predicate wording differences. Do not extend deletion to other people/scopes.
-        // A correction's value may describe its replacement. Only the selected
-        // target records authorize duplicate expansion, never that new value.
-        const selected=[...target];
-        for(const f of pool){
-          if(f.state!=='active'||f.kind==='event'||target.some(t=>t.id===f.id))continue;
-          if(selected.some(t=>t.value&&canonical(t.value)===canonical(f.value)&&canonical(t.subject)===canonical(f.subject)&&canonical(t.scope)===canonical(f.scope)&&propertyFamily(t.predicate,t.content)===propertyFamily(f.predicate,f.content)))target.push(f);
-        }
         operationTargets.set(operation,target.map(f=>f.id));
         if(operation.type==='restore'){
           if(!/remember.*again|store.*again|重新.*记|再次.*记/i.test(operation.source.quote))throw new ServiceError('RESTORE','Explicit reauthorization required');

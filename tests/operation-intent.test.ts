@@ -66,8 +66,9 @@ test('same-chunk handles bind only earlier sourced facts and are erased in the t
  const reversed=request('Forget my salary. My salary is 85000.','forward');
  await assert.rejects(()=>x.prepare(reversed,snapshot,AbortSignal.timeout(1000)),/target|chronolog/i);
  response.operations[0]!.target_ids=[];
- const future=await x.prepare(reversed,snapshot,AbortSignal.timeout(1000));
- assert.throws(()=>store.commit(reversed,hash(JSON.stringify(reversed)),future,store.revision()),/target/i);
+ // Selector targets are now bound before verification, so the same future
+ // reference is rejected before preparing a commit rather than during commit.
+ await assert.rejects(()=>x.prepare(reversed,snapshot,AbortSignal.timeout(1000)),/target/i);
 }));
 test('HTTP success means retirement took effect; unresolved deletion returns failure atomically',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'operation-http-'));const app=await buildServer({...config,mode:'offline',dataDir:dir});
