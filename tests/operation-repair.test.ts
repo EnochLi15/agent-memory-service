@@ -101,3 +101,37 @@ test('one repair receives target binding and independent source errors together'
  },verify:async(p:any)=>{verified=true;assert.deepEqual(p.facts[0].sources,fact.sources);assert.equal(p.operations.length,0);return [];},embedBatch:async()=>{throw Error('fixture embedding unavailable');}} as any);
  const p=await x.prepare(req,store.snapshot('s'),AbortSignal.timeout(1000));assert.ok(verified);assert.equal(calls,2);assert.equal(p.facts.length,1);assert.ok(!p.degraded.includes('source_span_partial'));assert.match(observedFeedback,/Operation target binding/);assert.ok(observedFeedback.includes('SOURCE_ERRORS'));assert.ok(observedFeedback.includes(badQuote));
 }));
+
+// Scope errors and missing selectors coexist before the first repair. Reporting
+// only the former consumes a bounded round without allowing the latter to change.
+async function mixedBindingFixture(tamper:boolean){
+ const dir=mkdtempSync(join(tmpdir(),'mixed-binding-')),store=new TenantStore(dir,'u'),config=configFromEnv({MEMORY_MODE:'enhanced'});
+ const message=(content:string)=>({role:'user',content,timestamp:'2026-01-01T00:00:00Z'});
+ const f=(content:string,index:number,scope:string,value:string,subject='Rowan',predicate='food')=>({content,subject,predicate,scope,value,sources:[{index,quote:content}]});
+ const seed={request_id:'seed',user_id:'u',session_id:'s',messages:[message('Rowan orders curry at Cafe North.'),message('Rowan orders soup at Cafe South.'),message('Rowan orders tea at Cafe West.'),message('My browser is Firefox.')]};
+ const models={verify:async()=>[],embedBatch:async(xs:string[])=>xs.map(()=>Array(768).fill(0)),json:async()=>({facts:seed.messages.map((m,i)=>i===3?f(m.content,i,'','Firefox','user','browser'):f(m.content,i,['Cafe North','Cafe South','Cafe West'][i],['curry','soup','tea'][i])),operations:[]})};
+ try{
+  const seeded=await new Extractor(config,models as any).prepare(seed,store.snapshot('s'),AbortSignal.timeout(2000));store.commit(seed,hash(JSON.stringify(seed)),seeded,0);const before=store.snapshot('s');
+  const req={request_id:'erase',user_id:'u',session_id:'s',messages:[message('Rowan orders noodles at Cafe East.'),message("Forget Rowan's food details. Keep my browser preference.")]};
+  const op=(target_ids:string[],scope:string,value:string,predicate='food')=>({type:'forget',target_ids,subject:'Rowan',predicate,scope,value,boundary:'property',source:{index:1,quote:req.messages[1].content}});
+  let calls=0,verified=0,repairInput:any;const current={...models,verify:async()=>{verified++;return [];},json:async(_system:string,input:string)=>{
+   calls++;const d=JSON.parse(input),target=(scope:string)=>d.EXISTING_FACTS.find((x:any)=>x.subject==='Rowan'&&x.scope===scope).id;
+   if(calls===1)return {facts:[f(req.messages[0].content,0,'Cafe East','noodles')],operations:[op([target('Cafe North'),target('Cafe South')],'','food'),op([],'','food',''),op([target('Cafe West')],'Cafe West','tea')]};
+   repairInput=d;
+   const edits:any[]=[{index:0,changes:op([target('Cafe North')],'Cafe North','curry')},{index:1,changes:op(['new:0'],'Cafe East','noodles')}];
+   if(tamper)edits.push({index:2,remove:true});
+   return {operation_edits:edits,append_operations:[op([target('Cafe South')],'Cafe South','soup')]};
+  }};
+  const outcome=await new Extractor(config,current as any).prepare(req,before,AbortSignal.timeout(2000)).then(prepared=>({prepared,error:undefined}),error=>({prepared:undefined,error}));
+  assert.ok(repairInput,'the initial proposal must reach structural repair');
+  assert.deepEqual(repairInput.REPAIR_SCOPE.operation_indices,[0,1]);assert.deepEqual(repairInput.REPAIR_SCOPE.fact_indices,[]);assert.match(repairInput.REPAIR_FEEDBACK,/No grounded record matches/);
+  if(tamper){assert.match(outcome.error?.message??'',/Invalid target\/scope repair patch/);assert.equal(verified,0);assert.deepEqual(store.snapshot('s'),before);}
+  else{
+   if(outcome.error)throw outcome.error;const prepared=outcome.prepared!;assert.equal(verified,1);assert.equal(prepared.operations.length,4);store.commit(req,hash(JSON.stringify(req)),prepared,1);
+   const rows=store.facts();assert.equal(rows.filter(f=>f.subject==='Rowan'&&f.state==='erased').length,4);assert.ok(rows.some(f=>f.subject==='user'&&f.value==='Firefox'&&f.state==='active'));assert.equal(store.revision(),2);
+  }
+  assert.equal(calls,2,'all known structural binding errors fit the one configured repair round');
+ }finally{store.close();rmSync(dir,{recursive:true,force:true});}
+}
+test('one bounded repair sees simultaneous scope and selector failures and preserves valid siblings',()=>mixedBindingFixture(false));
+test('combined binding feedback does not authorize editing a valid sibling operation',()=>mixedBindingFixture(true));

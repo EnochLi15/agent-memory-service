@@ -300,17 +300,21 @@ export class Extractor {
             const code=operationScopeProblem(o,bindingPool.filter(f=>o.target_ids.includes(f.id)));
             return code?[{operation:index,code,requested:{subject:o.subject,predicate:o.predicate,scope:o.scope},selected_targets:bindingPool.filter(f=>o.target_ids.includes(f.id)).map(f=>({id:f.id,proposal_index:valid.data.facts.findIndex((_,i)=>factId(req,i)===f.id),subject:f.subject,predicate:f.predicate,scope:f.scope,content:f.content}))}]:[];
           });
+          // Resolve a copy to expose independent selector failures in the same
+          // bounded patch as scope errors. Do not silently bind the failed proposal
+          // or grant permission to edit valid sibling operations.
+          const selectorIssues=bindOperationSelectors(structuredClone(valid.data),req,snapshot).filter(issue=>!badScopes.some(o=>o.operation===issue.operation));
           const badReplacements=valid.data.facts.flatMap((f,index)=>f.supersedes.some(id=>{const old=bindingPool.find(t=>t.id===id);return old&&!replacementMatches(f,old);})?[index]:[]);
-          if(badScopes.length||badReplacements.length){
+          if(badScopes.length||badReplacements.length||selectorIssues.length){
             expandTargets(valid.data);
             const facts=new Set([...badReplacements,...invalid.map(f=>f.fact),...badScopes.flatMap(o=>o.selected_targets.map(f=>f.proposal_index).filter(i=>i>=0))]);
-            const operations=new Set([...badScopes.map(o=>o.operation),...valid.data.operations.flatMap((o,index)=>badOps.includes(o)?[index]:[]),...unauthorized]);
+            const operations=new Set([...badScopes.map(o=>o.operation),...selectorIssues.map(o=>o.operation),...valid.data.operations.flatMap((o,index)=>badOps.includes(o)?[index]:[]),...unauthorized]);
             repairScope=scopeForFindings(valid.data,[...facts].map(i=>`fact ${i}: Invalid binding or source`).concat([...operations].map(i=>`operation ${i}: Invalid binding or source`)));
           }
-          if(badScopes.length||badReplacements.length){
+          if(badScopes.length||badReplacements.length||selectorIssues.length){
             const labels=new Map([...aliases].map(([alias,id])=>[id,alias]));valid.data.facts.forEach((_,i)=>labels.set(factId(req,i),`new:${i}`));
             const replacement_details=replacementBindingProblems(valid.data,bindingPool,id=>labels.get(id)??id);
-            issue='Operation target binding: subject, property or scope does not match its selected targets. '+JSON.stringify({operations:badScopes,replacement_facts:badReplacements,replacement_details})+sourceFeedback+'. Reuse matching existing fields only if that record is actually the requested target. For same-chunk transient targets, proposal_index identifies the editable fact slot. If the user forgets multiple properties of one concrete entity, give those transient facts that same entity scope when their original statements support it; preserve unrelated devices. Alternatively split operations only when the source actually authorizes each distinct scope. Changing sources alone does not fix a scope mismatch. Never rename an existing or unrelated record to pass validation. If correcting an assistant claim that was never stored, keep the grounded USER facts but emit no operation or supersedes reference against an unrelated record. Cite the user correction itself, not the assistant restatement. Return the corrected object.';continue;}
+            issue='Operation target binding: subject, property or scope does not match its selected targets. '+JSON.stringify({operations:badScopes,selector_issues:selectorIssues,replacement_facts:badReplacements,replacement_details})+sourceFeedback+'. Reuse matching existing fields only if that record is actually the requested target. For unresolved selectors, select actual targets from EXISTING_FACTS or earlier new:N facts; a missing target is not an executed operation. For same-chunk transient targets, proposal_index identifies the editable fact slot. If the user forgets multiple properties of one concrete entity, give those transient facts that same entity scope when their original statements support it; preserve unrelated devices. Alternatively split operations only when the source actually authorizes each distinct scope. Changing sources alone does not fix a scope mismatch. Never rename an existing or unrelated record to pass validation. If correcting an assistant claim that was never stored, keep the grounded USER facts but emit no operation or supersedes reference against an unrelated record. Cite the user correction itself, not the assistant restatement. Return the corrected object.';continue;}
           if(unauthorized.length){
             const findings=unauthorized.map(index=>`operation ${index}: The cited source is not an authorizing user deletion instruction.`);
             repairScope=scopeForFindings(valid.data,findings);
