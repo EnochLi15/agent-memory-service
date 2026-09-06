@@ -29,6 +29,11 @@ test('compact protocol requires every candidate exactly once and rejects extra d
  const two={...w,candidates:[...w.candidates,{...w.candidates[0],id:'other'}]};assert.throws(()=>decodeSourceErasureResponse({decisions:[valid,valid]},two),/Invalid/);
 });
 import {sourceErasureInput,sourceErasureBatches} from '../dist/source-erasure.js';
+test('total transmitted capacity counts repeated tables across batches and rejects before any model call',()=>{
+ const candidates=Array.from({length:70},(_,i)=>({kind:'source',id:String(i),start:0,text:'Pham '+('unique '+i+' ').repeat(450),key:'b',boundary:{subject:'user'},authorization:null,matching_words:['Pham'],context:{}}));
+ assert.throws(()=>sourceErasureBatches({fingerprint:'f',candidates}),/transmitted capacity/);
+ assert.throws(()=>sourceErasureBatches({fingerprint:'f',candidates:[{...candidates[0],text:'Pham '+('x'.repeat(64000))}]}),/batch capacity/);
+});
 test('reference tables reconstruct every candidate including different boundaries on the same source',()=>{
  const base=work('My backup is Iris. My colleague Iris stays.').candidates[0];
  const candidates=[{...base,boundary:{subject:'user',scope:'backup'},authorization:{source:{quote:'Forget my backup.'}},matching_words:['backup']},{...base,key:'other-boundary',boundary:{subject:'user',scope:'old note'},authorization:null,matching_words:['note']},{...base,id:'different-source',boundary:{subject:'user',scope:'backup'},authorization:{source:{quote:'Forget my backup.'}},matching_words:['backup']}];

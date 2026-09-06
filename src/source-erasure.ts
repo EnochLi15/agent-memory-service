@@ -12,7 +12,9 @@ Candidates are lexical suggestions only, not proof that deletion applies. erase 
 The input uses lossless reference tables: each CANDIDATES row names a source_slot in SOURCES and a boundary_slot in BOUNDARIES, plus its matching_words. Read the complete referenced source (text, kind, context) and boundary (including authorization); repeated references mean repeated evidence, not additional authorization. Classify every candidate pair independently against its referenced boundary. For each CANDIDATES index return {index,effect,erase_quotes,reason}. effect is erase|retain|mixed|uncertain. Choose erase or retain only if the ENTIRE candidate has that effect and use erase_quotes:[]. Choose uncertain for unresolved ownership/scope; do not guess. For a mixed SOURCE message, use effect:mixed and list ONLY the exact substrings that must be erased in erase_quotes. This explicitly certifies that ALL remaining text is independent and safe to retain. Include every affected detail, paraphrase and instruction echo, not only literal names. Each quote must occur exactly once in that candidate, and selected quotes must not overlap; extend the quote to disambiguate repeats without including independent information. The server reconstructs the full exact partition, retaining all gaps, so do not copy the retained paragraphs. Mixed facts cannot be rewritten: return uncertain if a FACT candidate combines erased and independent claims. Source context includes linked_facts that would otherwise survive and linked_erased_facts already certified for deletion, with their exact witnesses. Linked erased facts must not remain recoverable from the retained source text: remove their affected clauses and paraphrases while keeping independent neighboring clauses. These preceding deletion verdicts are fixed, not invitations to reclassify them as independent. These are context, not automatic exemptions: assess whether the authorized boundary actually covers their meaning. Removing an old record does not by itself erase an independent new preference, commitment or negative current state expressed beside the command. Preserve witnesses for such independent decisions; never erase them merely because their sentence also mentions the old record. The source context and declared fact sources establish actor and meaning; an assistant statement is not user authorization. Return JSON {decisions:[...]}, each index exactly once, and one reason category per candidate: same_erased_record or erased_record_echo for erase; independent_owner, independent_record or independent_property for retain; mixed_source for mixed; uncertain_owner, uncertain_scope or mixed_fact for uncertain. The reason field is exactly one of these category strings, never a prose explanation. No overall score, replacement facts or unrequested deletion.`;
 export const SOURCE_ERASURE_RESPONSE_FORMAT={type:'json_schema' as const,json_schema:{name:'source_erasure_v4',strict:true,schema:{type:'object',properties:{decisions:{type:'array',items:{type:'object',properties:{index:{type:'integer'},effect:{type:'string',enum:['erase','retain','mixed','uncertain']},erase_quotes:{type:'array',items:{type:'string'}},reason:{type:'string',enum:Object.keys(sourceReasonEffects)}},required:['index','effect','erase_quotes','reason'],additionalProperties:false}}},required:['decisions'],additionalProperties:false}}};
 const meaning=(f:Fact)=>({...f,vector:null});
-export function sourceErasureWork(req:AddRequest,prior:Fact[],incoming:Fact[],operations:Operation[],existing:ErasureBoundary[],oldSources:StoredMessage[],newSources:StoredMessage[],verifiedErasedIds:string[]=[]){
+type Candidate={kind:'fact'|'source';id:string;start:number;text:string;key:string;boundary:ErasureBoundary;authorization:unknown;matching_words:string[];context:unknown};
+type SourceErasureWork={fingerprint:string;candidates:Candidate[]};
+export function sourceErasureWork(req:AddRequest,prior:Fact[],incoming:Fact[],operations:Operation[],existing:ErasureBoundary[],oldSources:StoredMessage[],newSources:StoredMessage[],verifiedErasedIds:string[]=[]):SourceErasureWork{
  const targets=new Map([...prior,...incoming].map(f=>[f.id,f])),boundaries=new Map(existing.map(m=>[boundaryKey(m),{boundary:m,authorization:null as unknown,fresh:false}]));
  for(const o of operations.filter(o=>o.type==='forget'))for(const id of o.target_ids){
   const f=targets.get(id);if(!f||f.state==='erased')continue;
@@ -22,7 +24,6 @@ export function sourceErasureWork(req:AddRequest,prior:Fact[],incoming:Fact[],op
  // A validated prior stage already retires these facts. Their source messages
  // still require independent partition review for surviving neighbors and echoes.
  const direct=new Set([...operations.filter(o=>o.type==='forget').flatMap(o=>o.target_ids),...verifiedErasedIds]);
- type Candidate={kind:'fact'|'source';id:string;start:number;text:string;key:string;boundary:ErasureBoundary;authorization:unknown;matching_words:string[];context:unknown};
  const candidates:Candidate[]=[];
  const nominate=(kind:Candidate['kind'],id:string,start:number,text:string,context:unknown,isNew:boolean)=>{
   for(const [key,{boundary,authorization,fresh}] of boundaries){
@@ -43,7 +44,9 @@ export function sourceErasureWork(req:AddRequest,prior:Fact[],incoming:Fact[],op
   const linked_facts=linked.filter(f=>!direct.has(f.id)).map(witness),linked_erased_facts=linked.filter(f=>direct.has(f.id)).map(witness);
   nominate('source',m.id,0,m.content,{role:m.role,linked_facts,linked_erased_facts},newSources.some(x=>x.id===m.id));
  }
- if(candidates.length>256||JSON.stringify(candidates).length>256000||candidates.some(c=>JSON.stringify({CANDIDATES:[{index:0,...c}]}).length>64000))throw new ServiceError('EVIDENCE_VALIDATION',`Source erasure exceeds bounded candidate capacity (${candidates.length} candidates)`);
+ // Enforce the actual complete wire workload. Repeated authorization/source
+ // objects are losslessly shared by sourceErasureInput and are not sent per pair.
+ sourceErasureBatches({fingerprint:'capacity-check',candidates});
  const fingerprint=digest(JSON.stringify({req,prior:prior.map(meaning),incoming:incoming.map(meaning),operations,existing,oldSources,newSources,verifiedErasedIds:[...new Set(verifiedErasedIds)].sort(),candidates}));
  return {fingerprint,candidates};
 }
@@ -66,6 +69,7 @@ export function sourceErasureInput(work:Pick<ReturnType<typeof sourceErasureWork
  * Each model sees local indexes; the caller maps validated rows back to the
  * original indexes. All calls share the existing request deadline. */
 export function sourceErasureBatches(work:ReturnType<typeof sourceErasureWork>){
+ if(work.candidates.length>256)throw new ServiceError('EVIDENCE_VALIDATION',`Source erasure exceeds bounded candidate capacity (${work.candidates.length} candidates)`);
  const batches:{offset:number;fingerprint:string;candidates:typeof work.candidates}[]=[];
  let offset=0,candidates:typeof work.candidates=[];
  for(const candidate of work.candidates){
@@ -76,6 +80,8 @@ export function sourceErasureBatches(work:ReturnType<typeof sourceErasureWork>){
   candidates.push(candidate);
  }
  if(candidates.length)batches.push({offset,fingerprint:work.fingerprint,candidates});
+ const transmitted=batches.reduce((sum,batch)=>sum+JSON.stringify(sourceErasureInput(batch)).length,0);
+ if(transmitted>256000)throw new ServiceError('EVIDENCE_VALIDATION',`Source erasure exceeds bounded transmitted capacity (${transmitted} characters)`);
  return batches;
 }
 /** Compact model decisions expand to the same complete exact-text plan used

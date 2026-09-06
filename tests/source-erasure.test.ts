@@ -82,6 +82,13 @@ test('candidate capacity fails instead of truncating source coverage',()=>{
  assert.throws(()=>sourceErasureWork(r,[],[],[],[boundary],[],Array.from({length:257},(_,i)=>m(i))),/capacity/);
  assert.throws(()=>sourceErasureWork(r,[],[],[],[boundary],[],[m(0,'Pham '.repeat(14000))]),/capacity/);
 });
+test('source work capacity uses complete transmitted batches instead of repeated authorization copies',()=>{
+ const r=request('deduplicated-capacity','Forget Pham.'),target={id:'target',content:'Appointment with Pham. '+('detail '.repeat(800)),value:'Pham',subject:'user',predicate:'appointment',scope:'dentist',state:'active',source_ids:[],source_quotes:['Appointment with Pham.'],vector:null} as any;
+ const operation={type:'forget',target_ids:['target'],subject:'user',predicate:'appointment',scope:'dentist',value:'Pham',boundary:'value',source:{index:0,quote:'Forget Pham.'}} as any;
+ const messages=Array.from({length:80},(_,i)=>({id:String(i),session_id:'s',ordinal:i,role:'assistant',content:'You have an appointment with Pham.',timestamp:'2026-01-01T00:00:00Z',searchable:true}));
+ const work=sourceErasureWork(r,[target],[],[operation],[],messages,[]),batches=sourceErasureBatches(work);assert.ok(JSON.stringify(work.candidates).length>256000);assert.equal(work.candidates.length,80);assert.deepEqual(batches.flatMap(b=>b.candidates),work.candidates);assert.ok(batches.reduce((n,b)=>n+JSON.stringify(sourceErasureInput(b)).length,0)<256000);assert.equal(batches.length,2);
+ const decisions=batches.flatMap(b=>decodeSourceErasure({decisions:b.candidates.map((c,index)=>({index,parts:[{text:c.text,effect:'erase'}],reason:'Already authorized.'}))},b).decisions.map(d=>({...d,index:d.index+b.offset})));assert.equal(decodeSourceErasure({decisions},work).decisions.length,80);assert.throws(()=>decodeSourceErasure({decisions:decisions.slice(0,-1)},work),/Incomplete/);
+});
 test('explicit restoration of the authorized value survives v4 source checks without reviving old raw text',()=>fixture(async(f:any)=>{
  const target=await seed(f),del=request('delete','Forget my dentist appointment.');f.commit(del,await f.prepare(del,deletion(target)));
  const r=request('restore',"Remember my dentist appointment with Dr. Pham's office on Elm Street again.");
