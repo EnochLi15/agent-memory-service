@@ -164,3 +164,21 @@ test('a certified erased fact cannot keep every original witness intact behind a
  const p=await f.prepare(del,deletion(target),(d:any)=>({decisions:d.CANDIDATES.map((c:any,index:number)=>({index,parts:[{text:c.text,effect:'retain'}],reason:'Erroneous independent-source verdict.'}))}));
  assert.throws(()=>f.commit(del,p),/every original witness intact/);assert.deepEqual(f.store.snapshot('s'),before);assert.equal(f.store.receipt(del.request_id,hash(JSON.stringify(del))),null);
 }));
+
+test('later writes never reapply a historical erased span over a retained mixed-source neighbor',()=>fixture(async(f:any)=>{
+ const mixed=seedText+'; I still use Firefox.',r=request('mixed-target-seed',mixed);
+ f.commit(r,await f.prepare(r,{facts:[{...fact(mixed),content:seedText},{content:'I still use Firefox.',subject:'user',predicate:'browser',value:'Firefox',sources:[{index:0,quote:'I still use Firefox.'}]}],operations:[]}));
+ const target=f.store.facts().find((x:any)=>x.predicate==='appointment'),del=request('mixed-target-delete','Forget my dentist appointment.');f.commit(del,await f.prepare(del,deletion(target)));
+ const sourceId=target.source_ids[0],safe=f.store.snapshot('s').erasureSources.find((m:any)=>m.id===sourceId).content;assert.match(safe,/Firefox/);assert.doesNotMatch(safe,/Pham/);
+ for(const [id,text,role] of [['ordinary-after-delete','What is gravity?','user'],['echo-after-delete','Your dentist appointment is with Dr. Pham on Elm Street.','assistant']]){
+  const next=request(id,text);next.messages[0].role=role;const before=f.store.revision();f.commit(next,await f.prepare(next,{facts:[],operations:[]}));assert.equal(f.store.revision(),before+1);
+  assert.equal(f.store.snapshot('s').erasureSources.find((m:any)=>m.id===sourceId).content,safe);assert.ok(f.store.facts().some((x:any)=>x.state==='active'&&x.value==='Firefox'));assert.ok(f.store.passages().some((p:any)=>p.content.includes('Firefox')));assert.doesNotMatch(JSON.stringify(f.store.snapshot('s').erasureSources),/Pham/);
+ }
+ const reopened=new TenantStore(f.dir,'u');try{assert.equal(reopened.snapshot('s').erasureSources.find((m:any)=>m.id===sourceId).content,safe);assert.ok(reopened.facts().some((x:any)=>x.value==='Firefox'&&x.state==='active'));}finally{reopened.close();}
+}));
+
+test('a newly erased nonlexical value still receives deterministic unreviewed source cleanup',()=>fixture(async(f:any)=>{
+ const r=request('symbol-seed','I like 😀.');f.commit(r,await f.prepare(r,{facts:[{content:'😀',subject:'user',predicate:'symbol',value:'😀',scope:'symbol',sources:[{index:0,quote:r.messages[0].content}]}],operations:[]}));
+ const target=f.store.facts()[0],del=request('symbol-delete','Forget my symbol.'),p=await f.prepare(del,{facts:[],operations:[{type:'forget',target_ids:[target.id],subject:'user',predicate:'symbol',scope:'symbol',value:'😀',boundary:'value',source:{index:0,quote:del.messages[0].content}}]});
+ assert.equal(p.sourceErasurePlan.decisions.length,0);f.commit(del,p);assert.equal(f.store.facts().find((x:any)=>x.id===target.id).state,'erased');assert.doesNotMatch(JSON.stringify(f.store.snapshot('s').erasureSources),/😀/);
+}));

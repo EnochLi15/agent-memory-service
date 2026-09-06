@@ -137,7 +137,8 @@ export class TenantStore {
       for(const m of inserted)this.db.prepare('INSERT INTO messages VALUES (?,?,?,?)').run(m.id,m.session_id,m.ordinal,JSON.stringify(m));
       this.db.prepare('INSERT INTO sessions(id,anchor) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET anchor=excluded.anchor').run(req.session_id,prepared.anchor);
       const originalFacts=this.facts();const operationTargets=new Map<Operation,string[]>();
-      let all=structuredClone(originalFacts); const suppressedSources=new Set<string>(); const redactedSources=new Set<string>(); const erasedIds=new Set<string>(all.filter(f=>f.state==='erased').map(f=>f.id));
+      const priorErasedIds=new Set(originalFacts.filter(f=>f.state==='erased').map(f=>f.id));
+      let all=structuredClone(originalFacts); const suppressedSources=new Set<string>(); const redactedSources=new Set<string>(); const erasedIds=new Set<string>(priorErasedIds);
       for(const f of all)if(retained.has(f.id)){f.erasure_exemptions=[...(f.erasure_exemptions??[]),...retained.get(f.id)!];this.put(f);}
       const erasedQuotes=new Map<string,Set<string>>();
       const rememberErasedQuotes=(f:Fact):void=>{for(const id of f.source_ids){const quotes=erasedQuotes.get(id)??new Set<string>();for(const quote of f.source_quotes)quotes.add(quote);erasedQuotes.set(id,quotes);}};
@@ -251,7 +252,11 @@ export class TenantStore {
       if(sourceErasure){
         // A short nonlexical value may have no model candidate; its authorized
         // target/source span and command still have deterministic deletion proof.
-        for(const f of this.facts().filter(f=>f.state==='erased'))for(const span of f.source_spans??[]){
+        // Historical erasures already committed their reviewed partial cuts.
+        // Reapplying their original broad spans could erase preserved neighbors.
+        // Keep historical IDs in dependency propagation, but only newly erased
+        // facts can trigger this transaction's deterministic source fallback.
+        for(const f of this.facts().filter(f=>f.state==='erased'&&!priorErasedIds.has(f.id)))for(const span of f.source_spans??[]){
           if(!reviewedSources.has(span.source_id))sourceCuts.set(span.source_id,[...(sourceCuts.get(span.source_id)??[]),{start:span.start,end:span.end}]);
         }
         for(const o of prepared.operations.filter(o=>o.type==='forget')){const m=prepared.messages[o.source.index];if(m&&!reviewedSources.has(m.id)){const start=m.content.indexOf(o.source.quote);if(start>=0)sourceCuts.set(m.id,[...(sourceCuts.get(m.id)??[]),{start,end:start+o.source.quote.length}]);}}
