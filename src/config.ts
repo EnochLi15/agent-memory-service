@@ -6,7 +6,7 @@ export interface Config {
   extractionFormat:'flat'|'message_groups'|'source_refs';
   verificationFormat:'verbose'|'compact';
   verificationResponseFormat:'json_object'|'json_schema';
-  erasureBinding:boolean;sourceErasure:boolean;semanticTransitions:boolean;sourceOperations:boolean;
+  erasureBinding:boolean;sourceErasure:boolean;semanticTransitions:boolean;sourceOperations:boolean;sourceOperationHistory:boolean;
   embeddingBase: string; embeddingModel: string; embeddingDigest: string | null; embeddingDimensions: number; embeddingSpace: string;
   addTimeout: number; searchTimeout: number; maxEvidence: number; tokenBudget: number; retrieval: 'hybrid' | 'lexical' | 'mem0';
   rerank: boolean; rawFallback: boolean;incrementalVerification:boolean;
@@ -22,6 +22,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   if(env.MEMORY_SOURCE_ERASURE==='true'&&env.MEMORY_ERASURE_BINDING!=='true')throw new Error('Source erasure requires erasure binding');
   if(env.MEMORY_SEMANTIC_TRANSITIONS==='true'&&env.MEMORY_SOURCE_ERASURE!=='true')throw new Error('Semantic transitions require source erasure');
   if(env.MEMORY_SOURCE_OPERATIONS==='true'&&(env.MEMORY_SEMANTIC_TRANSITIONS!=='true'||env.MEMORY_MODE!=='enhanced'||env.MEMORY_EXPERIMENT_RAW_ONLY==='true'||env.MEMORY_EXPERIMENT_LIFECYCLE==='false'))throw new Error('Source operations require enhanced semantic transitions and structured extraction');
+  if(env.MEMORY_SOURCE_OPERATION_HISTORY==='true'&&env.MEMORY_SOURCE_OPERATIONS!=='true')throw new Error('Historical source operations require source operations');
   const stageModels:Config['llmStageModels']={};
   const maxRepairRounds=num('MEMORY_MAX_REPAIR_ROUNDS',1);
   if(maxRepairRounds!==1&&maxRepairRounds!==2)throw new Error('Invalid MEMORY_MAX_REPAIR_ROUNDS');
@@ -46,7 +47,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     extractionFormat:extractionFormat as Config['extractionFormat'],
     verificationFormat,
     verificationResponseFormat:verificationResponseFormat as Config['verificationResponseFormat'],
-    sourceOperations:env.MEMORY_SOURCE_OPERATIONS==='true',
+    sourceOperations:env.MEMORY_SOURCE_OPERATIONS==='true',sourceOperationHistory:env.MEMORY_SOURCE_OPERATION_HISTORY==='true',
     erasureBinding:env.MEMORY_ERASURE_BINDING==='true',sourceErasure:env.MEMORY_SOURCE_ERASURE==='true',semanticTransitions:env.MEMORY_SEMANTIC_TRANSITIONS==='true',
     embeddingBase: (env.MEMORY_EMBEDDING_BASE_URL ?? 'http://127.0.0.1:11434').replace(/\/$/, ''), embeddingModel: model, embeddingDigest: env.MEMORY_EMBEDDING_DIGEST??null,
     embeddingDimensions: dimensions, embeddingSpace: `${model}:${env.MEMORY_EMBEDDING_DIGEST ?? 'configured'}:${dimensions}:${model.startsWith('nomic-embed-text')?'nomic-prefix-v1':'none'}`,

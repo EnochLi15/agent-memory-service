@@ -69,7 +69,7 @@ export class TenantStore {
   snapshot(session:string):Snapshot {
     const rows=this.db.prepare('SELECT body FROM messages WHERE session_id=? ORDER BY ordinal DESC LIMIT 10').all(session) as Row[];
     const boundaries=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
-    return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null,...(/-v[3456]$/.test(this.meta('source_format')??'')?{erasureBoundaries:boundaries}:{}),...(/-v[456]$/.test(this.meta('source_format')??'')?{erasureSources:(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage)}:{})};
+    return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null,...(/-v[34567]$/.test(this.meta('source_format')??'')?{erasureBoundaries:boundaries}:{}),...(/-v[4567]$/.test(this.meta('source_format')??'')?{erasureSources:(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage)}:{})};
   }
   private put(f:Fact):void {
     // Extraction proposals carry a sources array, but persisted facts have one
@@ -83,13 +83,13 @@ export class TenantStore {
   commit(req:AddRequest,payloadHash:string,prepared:Prepared,expectedRevision:number,failAt?:string):Receipt {
     // A rejected/rolled-back transaction must not mutate a fingerprinted plan
     // or its transient target records in the caller's prepared object.
-    if(/-v[3456]$/.test(prepared.sourceFormat??''))prepared=structuredClone(prepared);
+    if(/-v[34567]$/.test(prepared.sourceFormat??''))prepared=structuredClone(prepared);
     return this.db.transaction(()=>{
       const already=this.receipt(req.request_id,payloadHash); if(already)return already;
       if(this.revision()!==expectedRevision)throw new ServiceError('REVISION_CONFLICT','Concurrent mutation; retry request');
       if(prepared.operations.some(o=>retirementEffectMismatch(o,req)))throw new ServiceError('OPERATION_INTENT','Retraction cannot satisfy an erasure request');
-      const semanticErasure=/-v[3456]$/.test(prepared.sourceFormat??''),sourceErasure=/-v[456]$/.test(prepared.sourceFormat??''),semanticTransitions=/-v[56]$/.test(prepared.sourceFormat??'');
-      const sourceActions=prepared.sourceFormat?.endsWith('-v6')?validateSourceOperations(prepared.sourceOperationPlan,req,this.facts(),prepared.facts,prepared.messages):undefined;
+      const semanticErasure=/-v[34567]$/.test(prepared.sourceFormat??''),sourceErasure=/-v[4567]$/.test(prepared.sourceFormat??''),semanticTransitions=/-v[567]$/.test(prepared.sourceFormat??'');
+      const sourceActions=/-v[67]$/.test(prepared.sourceFormat??'')?validateSourceOperations(prepared.sourceOperationPlan,req,this.facts(),prepared.facts,prepared.messages,prepared.sourceFormat?.endsWith('-v7')?this.snapshot(req.session_id).erasureSources??[]:[]):undefined;
       const transitions=semanticTransitions?validateTransitions(prepared.transitionPlan,transitionWork(req,this.facts(),prepared.facts,prepared.operations)):undefined;
       let sourceCuts=new Map<string,{start:number;end:number}[]>();const reviewedSources=new Set<string>();
       const forcedErased=new Set<string>();
@@ -346,7 +346,7 @@ export class TenantStore {
       if(sourceActions)for(const d of sourceActions.plan.decisions.filter(d=>d.action==='reject_source')){
         const instruction=sourceActions.work.instructions[d.instruction]!,source=inserted[instruction.message]!;
         event('forget',{subject:'user',predicate:'rejected assistant assertion',scope:'source',content:''},[source.id],[],[],instruction.start,'user');
-        this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:'reject_source',source_id:source.id,target_ids:d.target_slots.map(i=>inserted[i]!.id),revision}));
+        this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:'reject_source',source_id:source.id,target_ids:d.target_slots.map(i=>sourceActions.work.sources[i]!.id),revision}));
       }
       for(const e of events)this.db.prepare('INSERT INTO memory_events VALUES (?,?)').run(e.id,JSON.stringify(e));
       if(failAt==='indexes')throw new ServiceError('INJECTED_FAILURE','Fault injection after index writes');
