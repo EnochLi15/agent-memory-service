@@ -53,3 +53,8 @@ test('ambiguous covered protocol is repaired once without rerunning extraction o
  calls=0;m.json=async()=>{calls++;return {operation_checks:[],replacement_checks:[],message_checks:[{index:0,covered:false,quote:'',reason:'Generic question only'}]};};
  await assert.rejects(m.verify(empty,req,[],[],AbortSignal.timeout(1000)),/verification/);assert.equal(calls,2);
 });
+
+test('a failed repair after semantic rejection cannot escape through offline fallback',async()=>{
+ let calls=0;const x=new Extractor(configFromEnv({MEMORY_MODE:'enhanced'}),{json:async()=>{if(++calls===1)return {facts:[],operations:[]};throw new Error('repair transport failure');},verify:async()=>['Missing browser setup'],embedBatch:async()=>{throw Error('fixture embedding unavailable');}} as any);
+ await assert.rejects(x.prepare(req,{facts:[],tail:[],anchor:null,revision:0},AbortSignal.timeout(1000)),/rejected proposal/i);assert.equal(calls,2);
+});

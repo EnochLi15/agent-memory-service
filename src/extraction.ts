@@ -150,6 +150,7 @@ export class Extractor {
       // Reserve time for grounded fallback, local embedding and atomic commit.
       // This inner budget never extends the caller's absolute request deadline.
       const modelSignal=AbortSignal.any([signal,AbortSignal.timeout(Math.min(80000,Math.max(500,this.config.addTimeout-25000)))]);
+      let semanticallyRejected=false;
       try {
         let issue='';let failedProposal:unknown;let accepted:Extraction|undefined;
         for(let attempt=0;attempt<2;attempt++){
@@ -201,7 +202,7 @@ export class Extractor {
           }
           if(invalid.length||badOps.length){issue='Every source quote must be an exact substring of the indicated NEW_MESSAGES content. Operations must cite a USER message, or a named real participant changing their own facts. An unlabelled assistant reply never authorizes changes. Never copy CONTEXT_ONLY as a new source. Fix all facts/operations and return the full object. Invalid fact spans: '+JSON.stringify(invalid.slice(0,8));continue;}
           const findings=await this.models.verify(valid.data,req,bindingPool,missingPersonalSources(req,valid.data),modelSignal);
-          if(findings.length){issue='Semantic verification rejected the proposal. Repair these specific failures while preserving supported unrelated facts. '+JSON.stringify(findings)+'. Return the complete corrected object.';continue;}
+          if(findings.length){semanticallyRejected=true;issue='Semantic verification rejected the proposal. Repair these specific failures while preserving supported unrelated facts. '+JSON.stringify(findings)+'. Return the complete corrected object.';continue;}
           accepted=valid.data;break;
         }
         if(!accepted&&issue.startsWith('Unknown target'))throw new ServiceError('OPERATION_TARGET','Unknown memory operation target after repair');
@@ -211,6 +212,7 @@ export class Extractor {
         parsed=accepted;
       } catch (error) {
         if (signal.aborted || (error instanceof ServiceError && ['OPERATION_TARGET','OPERATION_SCOPE','OPERATION_INTENT','EVIDENCE_VALIDATION','VERIFICATION_UNAVAILABLE'].includes(error.code))) throw error;
+        if(semanticallyRejected)throw new ServiceError('EVIDENCE_VALIDATION','A rejected proposal could not be repaired within the request budget');
         degraded.push('extraction_offline'); parsed = offlineExtract(req,snapshot);
       }
     }
