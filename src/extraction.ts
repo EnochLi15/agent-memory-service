@@ -1,3 +1,4 @@
+import {SOURCE_ROUTE_PROMPT,sourceRouteInput,decodeSourceRoute,ordinarySourceRoute,validateSourceRoutePlan} from './source-operation-routing.js';
 import {sourceOperationNeedsBatches,sourceOperationWholeInput,prepareSourceBatches,validateSourceBatchPlan} from './source-operation-batches.js';
 import {sourceOperationWork,sourceOperationInput,sourceRejectionFindings,SOURCE_OPERATION_PROMPT,SOURCE_OPERATION_HISTORY_PROMPT,decodeSourceOperations,resolvedSourceInstructions,validateSourceOperations} from './source-operations.js';
 import { createHash } from 'node:crypto';
@@ -172,7 +173,15 @@ export class Extractor {
     let sourceOperationPlan:Prepared['sourceOperationPlan'];
     if(this.config.sourceOperations){
       const work=sourceOperationWork(req,snapshot.facts,sourceHistory);
-      if(work.enabled&&this.config.sourceOperationBatches&&sourceOperationNeedsBatches(work)){
+      let routeReview;
+      if(work.enabled&&this.config.sourceOperationRouting){
+        let raw:unknown;
+        try{raw=await this.models.json(SOURCE_ROUTE_PROMPT,JSON.stringify(sourceRouteInput(work)),modelSignal,{purpose:'source_operation_route',trace:traceIdentity});}
+        catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Source routing unavailable within shared budget');}
+        routeReview=decodeSourceRoute(raw,work);sourceOperationPlan=ordinarySourceRoute(work,routeReview);
+      }
+      if(sourceOperationPlan){/* Ordinary routing leaves all fact operations pending. */}
+      else if(work.enabled&&this.config.sourceOperationBatches&&sourceOperationNeedsBatches(work)){
         sourceOperationPlan=await prepareSourceBatches(work,modelSignal,(prompt,input,s,purpose)=>this.models.json(prompt,input,s,{purpose,trace:traceIdentity}));
       }else if(work.enabled){
         let raw:unknown;
@@ -180,6 +189,8 @@ export class Extractor {
         catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Source operation review unavailable within shared budget');}
         sourceOperationPlan=decodeSourceOperations(raw,work);
       }else sourceOperationPlan={fingerprint:work.fingerprint,decisions:work.instructions.map(i=>({instruction:i.slot,action:'ordinary',target_slots:[],cuts:[]}))};
+      if(routeReview)sourceOperationPlan={...sourceOperationPlan!,route_review:routeReview};
+      if(this.config.sourceOperationRouting)validateSourceRoutePlan(sourceOperationPlan!,work);
     }
     const sourceActions=sourceOperationPlan?resolvedSourceInstructions(sourceOperationPlan,req,snapshot.facts,sourceHistory):[];
     const pendingForget=(proposal:Extraction)=>missingForgetObligations(req,proposal).filter(o=>!sourceActions.some(a=>a.message===o.index&&a.start===o.span.start&&a.end===o.span.end));
@@ -342,7 +353,8 @@ export class Extractor {
       if(!this.config.experimental?.rawOnly&&src.every(m=>m.role!=='user'&&!speakerPrefix(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim())))f.modality='quoted';
       facts.push({ ...attributes,event_time:eventTime,source_spans:sourceSpans(f,messages),modality:f.modality,time_basis:src[0]!.time_basis,id:factId(req,i),source_ids:[...new Set(src.map(m=>m.id))],source_quotes:proposalSources.map(s=>s.quote),created_at:src[0]!.timestamp,observed_at:src[0]!.timestamp,state:'active',vector:null,entities:entities(f.content),revision:snapshot.revision+1 });
     }
-    if(sourceOperationPlan&&this.config.sourceOperationBatches&&sourceOperationWork(req,snapshot.facts,sourceHistory).enabled)validateSourceBatchPlan(sourceOperationPlan,sourceOperationWork(req,snapshot.facts,sourceHistory));
+    if(sourceOperationPlan&&this.config.sourceOperationRouting)validateSourceRoutePlan(sourceOperationPlan,sourceOperationWork(req,snapshot.facts,sourceHistory));
+    else if(sourceOperationPlan&&this.config.sourceOperationBatches&&sourceOperationWork(req,snapshot.facts,sourceHistory).enabled)validateSourceBatchPlan(sourceOperationPlan,sourceOperationWork(req,snapshot.facts,sourceHistory));
     if(sourceOperationPlan)validateSourceOperations(sourceOperationPlan,req,snapshot.facts,facts,messages,sourceHistory);
     const useErasure=this.config.erasureBinding&&!this.config.experimental?.rawOnly;
     let erasurePlan:Prepared['erasurePlan'];
@@ -398,7 +410,7 @@ export class Extractor {
         if (facts.some(f=>f.content.length>=3500)) degraded.push('long_evidence_lexical');
       } catch(error) { if (signal.aborted) throw error; degraded.push('embedding_lexical'); }
     }
-    const sourceFormat=`${this.config.sourceIndex&&!this.config.experimental?.rawOnly?'dual-source':'facts-only'}-v${useErasure?(this.config.sourceOperationBatches?8:this.config.sourceOperationHistory?7:this.config.sourceOperations?6:this.config.semanticTransitions?5:this.config.sourceErasure?4:3):2}` as Prepared['sourceFormat'];
+    const sourceFormat=`${this.config.sourceIndex&&!this.config.experimental?.rawOnly?'dual-source':'facts-only'}-v${useErasure?(this.config.sourceOperationRouting?9:this.config.sourceOperationBatches?8:this.config.sourceOperationHistory?7:this.config.sourceOperations?6:this.config.semanticTransitions?5:this.config.sourceErasure?4:3):2}` as Prepared['sourceFormat'];
     return { ...(sourceOperationPlan?{sourceOperationPlan}:{}),facts,operations:parsed.operations,messages,passages,sourceFormat,...(erasurePlan?{erasurePlan}:{}),...(sourceErasurePlan?{sourceErasurePlan}:{}),...(transitionPlan?{transitionPlan}:{}),anchor,degraded,embeddingSpace:this.config.embeddingSpace };
   }
 }

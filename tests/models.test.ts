@@ -72,10 +72,11 @@ test('source quote repair routes once to the verifier with its strict patch sche
 });
 
 import {SOURCE_OPERATION_PROMPT} from '../dist/source-operations.js';
+import {SOURCE_ROUTE_PROMPT} from '../dist/source-operation-routing.js';
 import {SOURCE_SCREEN_PROMPT,SOURCE_ANCHOR_PROMPT,SOURCE_CLOSURE_PROMPT} from '../dist/source-operation-batches.js';
 test('source operation protocol supplies the JSON-mode prerequisite and uses the verification model',async()=>{
  let body:any;const server=createServer(async(req,res)=>{let raw='';for await(const x of req)raw+=x;body=JSON.parse(raw);const valid=body.messages.some((m:any)=>/json/i.test(m.content));if(!valid){res.writeHead(400,{'content-type':'application/json'});res.end(JSON.stringify({error:{message:'messages must contain json'}}));return;}res.writeHead(200,{'content-type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{index:0,delta:{content:'{"decisions":[]}'},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');});
- await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));try{const c={...configFromEnv({MEMORY_LLM_MODEL:'base',MEMORY_VERIFICATION_MODEL:'critic'}),llmBase:`http://127.0.0.1:${(server.address() as any).port}`};for(const [purpose,prompt] of [['source_operation',SOURCE_OPERATION_PROMPT],['source_operation_screen',SOURCE_SCREEN_PROMPT],['source_operation',SOURCE_ANCHOR_PROMPT],['source_operation_closure',SOURCE_CLOSURE_PROMPT]] as const){assert.deepEqual(await new Models(c).json(prompt,'{}',AbortSignal.timeout(1000),{purpose}),{decisions:[]});assert.equal(body.model,'critic');assert.equal(body.response_format.type,'json_object');}}finally{await new Promise<void>(r=>server.close(()=>r()));}
+ await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));try{const c={...configFromEnv({MEMORY_LLM_MODEL:'base',MEMORY_VERIFICATION_MODEL:'critic'}),llmBase:`http://127.0.0.1:${(server.address() as any).port}`};for(const [purpose,prompt] of [['source_operation_route',SOURCE_ROUTE_PROMPT],['source_operation',SOURCE_OPERATION_PROMPT],['source_operation_screen',SOURCE_SCREEN_PROMPT],['source_operation',SOURCE_ANCHOR_PROMPT],['source_operation_closure',SOURCE_CLOSURE_PROMPT]] as const){assert.deepEqual(await new Models(c).json(prompt,'{}',AbortSignal.timeout(1000),{purpose}),{decisions:[]});assert.equal(body.model,'critic');assert.equal(body.response_format.type,'json_object');}}finally{await new Promise<void>(r=>server.close(()=>r()));}
 });
 
 

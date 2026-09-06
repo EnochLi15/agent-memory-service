@@ -17,7 +17,7 @@ import {TRANSITION_RESPONSE_FORMAT} from './transitions.js';
 function audit(record:Record<string,unknown>):void {
   if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
 }
-type GenerationPurpose='extraction'|'verification'|'repair'|'rerank'|'erasure_binding'|'source_erasure'|'source_erasure_repair'|'state_transition'|'source_operation'|'source_operation_screen'|'source_operation_closure';
+type GenerationPurpose='extraction'|'verification'|'repair'|'rerank'|'erasure_binding'|'source_erasure'|'source_erasure_repair'|'state_transition'|'source_operation'|'source_operation_screen'|'source_operation_closure'|'source_operation_route';
 type GenerationContext={purpose?:GenerationPurpose;verification_format?:string;verification_scope?:{facts:number;operations:number;replacements:number;messages:number;reused:number};trace?:{user_id:string;request_id:string}};
 
 export class Models {
@@ -25,7 +25,7 @@ export class Models {
   constructor(private config: Config) {
     this.client = new OpenAI({ apiKey: config.llmKey || 'local', baseURL: config.llmBase, maxRetries: 0, timeout: config.addTimeout });
   }
-  private stageModel(purpose:GenerationPurpose):string{return purpose==='rerank'?this.config.llmModel:this.config.llmStageModels[purpose==='erasure_binding'||purpose==='source_erasure'||purpose==='source_erasure_repair'||purpose==='state_transition'||purpose==='source_operation'||purpose==='source_operation_screen'||purpose==='source_operation_closure'?'verification':purpose]??this.config.llmModel;}
+  private stageModel(purpose:GenerationPurpose):string{return purpose==='rerank'?this.config.llmModel:this.config.llmStageModels[purpose==='erasure_binding'||purpose==='source_erasure'||purpose==='source_erasure_repair'||purpose==='state_transition'||purpose==='source_operation'||purpose==='source_operation_screen'||purpose==='source_operation_closure'||purpose==='source_operation_route'?'verification':purpose]??this.config.llmModel;}
   async verify(proposal:Extraction,req:AddRequest,facts:Fact[],omitted:number[],signal:AbortSignal,session=new VerificationSession(),resolvedSourceActions:unknown[]=[]):Promise<string[]>{
     const invalidRestores=proposal.operations.flatMap((o,index)=>o.type==='restore'&&!hasRestoreWording(o.source.quote)?[`operation ${index}: Restore needs an explicit instruction to remember again. Keeping an existing active fact unchanged is not restoration. Remove this unsupported operation; do not invent reauthorization or alter unrelated facts.`]:[]);
     if(invalidRestores.length)return invalidRestores;
