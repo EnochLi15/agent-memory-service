@@ -340,7 +340,7 @@ export class Extractor {
         parsed=accepted;
         if(this.config.sourceFirst)sourceCoverageRows=verificationSession.acceptedSourceCoverage(req,parsed);
       } catch (error) {
-        if (signal.aborted || (error instanceof ServiceError && ['OPERATION_TARGET','OPERATION_SCOPE','OPERATION_INTENT','EVIDENCE_VALIDATION','VERIFICATION_UNAVAILABLE'].includes(error.code))) throw error;
+        if (signal.aborted || (error instanceof ServiceError && ['OPERATION_TARGET','OPERATION_SCOPE','OPERATION_INTENT','EVIDENCE_VALIDATION','VERIFICATION_UNAVAILABLE','EXTRACTION_UNAVAILABLE'].includes(error.code))) throw error;
         if(semanticallyRejected)throw new ServiceError('EVIDENCE_VALIDATION',modelSignal.aborted?'A rejected proposal could not be repaired before the request deadline':'A rejected proposal could not be repaired after a model or protocol failure');
         degraded.push('extraction_offline'); parsed = offlineExtract(req,snapshot);
       }

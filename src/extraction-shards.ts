@@ -1,3 +1,4 @@
+import {modelFailure} from './model-failure.js';
 import {createHash} from 'node:crypto';
 import {participantIndices} from './verification.js';
 import {ServiceError,type AddRequest} from './types.js';
@@ -45,6 +46,14 @@ export async function prepareExtractionShards(req:AddRequest,system:string,user:
    return checkedGroups(await call(system+EXTRACTION_SHARD_PROMPT,JSON.stringify({...input,ALL_PARTICIPANT_INDEX:participants,PARTICIPANT_INDEX:shard.participants,EXTRACTION_SHARD:{...metadata,fingerprint}}),shared,metadata),shard);
   }catch(e){if(!failed){failed=true;failure=e;}controller.abort();throw e;}
  }));
- if(failed)throw new ServiceError('EVIDENCE_VALIDATION','Parallel extraction did not complete all participant groups: '+(failure instanceof Error?failure.message:'unknown shard failure'));signal.throwIfAborted();
+ if(failed){
+  // Classify the first failure with the caller's signal: our sibling-cancel
+  // signal is already aborted and would hide the original transport cause.
+  const fault=modelFailure(failure,signal,false,null);
+  if(['connection','connection_timeout'].includes(fault.error_category)||fault.error_category==='provider_http'&&(fault.http_status===429||fault.http_status!==null&&fault.http_status>=500))
+   throw new ServiceError('EXTRACTION_UNAVAILABLE','Parallel extraction could not reach the model provider');
+  throw new ServiceError('EVIDENCE_VALIDATION','Parallel extraction did not complete all participant groups: '+(failure instanceof Error?failure.message:'unknown shard failure'));
+ }
+ signal.throwIfAborted();
  return {message_groups:results.flatMap(r=>r.status==='fulfilled'?r.value:[]).sort((a,b)=>a.message_index-b.message_index)};
 }
