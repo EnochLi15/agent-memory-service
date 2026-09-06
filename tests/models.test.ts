@@ -46,15 +46,15 @@ test('private tracing preserves the exact transition response and identity witho
   await new Promise<void>(r=>server.close(()=>r()));rmSync(dir,{recursive:true,force:true});
  }
 });
-test('unsupported stage model errors retain the actual route in audit and never switch models',async()=>{
+test('unsupported stage models fail once with the actual route in audit and never switch models',async()=>{
  const bodies:any[]=[],dir=mkdtempSync(join(tmpdir(),'memory-stage-audit-')),path=join(dir,'audit.jsonl'),previous=process.env.MEMORY_MODEL_AUDIT;
  const server=createServer(async(req,res)=>{let raw='';for await(const part of req)raw+=part;bodies.push(JSON.parse(raw));res.writeHead(400,{'content-type':'application/json'});res.end(JSON.stringify({error:{message:'Unsupported fixture model',type:'invalid_request_error'}}));});
  await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));process.env.MEMORY_MODEL_AUDIT=path;
  try{
   const config=configFromEnv({MEMORY_LLM_MODEL:'base',MEMORY_REPAIR_MODEL:'unsupported-repair'});config.llmBase=`http://127.0.0.1:${(server.address() as any).port}`;
   await assert.rejects(new Models(config).json('complete-schema repair','u',AbortSignal.timeout(1000),{purpose:'repair'}),/Unsupported fixture/);
-  assert.deepEqual(bodies.map(b=>b.model),['unsupported-repair','unsupported-repair']);
-  const audit=readFileSync(path,'utf8').trim().split('\n').map(x=>JSON.parse(x));assert.equal(audit.length,2);assert.ok(audit.every(x=>x.purpose==='repair'&&x.model==='unsupported-repair'&&x.outcome==='error'));
+  assert.deepEqual(bodies.map(b=>b.model),['unsupported-repair']);
+  const audit=readFileSync(path,'utf8').trim().split('\n').map(x=>JSON.parse(x));assert.equal(audit.length,1);assert.ok(audit.every(x=>x.purpose==='repair'&&x.model==='unsupported-repair'&&x.outcome==='error'));
  }finally{if(previous===undefined)delete process.env.MEMORY_MODEL_AUDIT;else process.env.MEMORY_MODEL_AUDIT=previous;await new Promise<void>(r=>server.close(()=>r()));rmSync(dir,{recursive:true});}
 });
 test('source erasure sends the compact strict schema to the verification model',async()=>{

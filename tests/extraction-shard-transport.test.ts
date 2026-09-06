@@ -4,7 +4,7 @@ const req={user_id:'u',request_id:'transport',session_id:'s',messages:['I use Fi
 const input=JSON.stringify({PARTICIPANT_INDEX:[0,1,2,3],NEW_MESSAGES:req.messages});
 const apiError=(status:number)=>OpenAI.APIError.generate(status,{message:'private-provider-detail'},undefined,new Headers());
 test('typed connection, timeout, rate limit and server failures remain unavailable after shard cancellation',async()=>{
- for(const error of [new OpenAI.APIConnectionError({message:'private-provider-detail'}),new OpenAI.APIConnectionTimeoutError({message:'private-provider-detail'}),apiError(429),apiError(500),apiError(502),apiError(503),apiError(504)]){
+ for(const error of [new OpenAI.APIConnectionError({message:'private-provider-detail'}),new OpenAI.APIConnectionTimeoutError({message:'private-provider-detail'}),apiError(408),apiError(409),apiError(429),apiError(500),apiError(502),apiError(503),apiError(504)]){
   let started=0,cleaned=0,release!:()=>void;const barrier=new Promise<void>(r=>release=r);
   await assert.rejects(prepareExtractionShards(req,'prompt',input,3,AbortSignal.timeout(2000),async(_s,_u,signal,shard)=>{
    if(++started===3)release();await barrier;if(shard.index===0)throw error;

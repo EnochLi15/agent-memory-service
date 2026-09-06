@@ -16,7 +16,7 @@ test('failure audit distinguishes HTTP rejection, truncated output and filtered 
  try{
   const config=configFromEnv({MEMORY_LLM_API_KEY:key});config.llmBase=`http://127.0.0.1:${(server.address() as any).port}`;const m=new Models(config);
   for(mode of ['http','filtered','length','truncated'])await assert.rejects(m.json('fixture','input',AbortSignal.timeout(1000),{purpose:'repair'}));
-  const rows=readFileSync(audit,'utf8').trim().split('\n').map(JSON.parse);
+  const records=readFileSync(audit,'utf8').trim().split('\n').map(JSON.parse),rows=records.filter(r=>r.kind==='generation');assert.equal(records.filter(r=>r.kind==='generation_retry').length,1);
   assert.deepEqual(rows.map(r=>r.error_category),['provider_http','provider_http','provider_filtered','output_limit','incomplete_output']);
   assert.ok(rows.slice(0,2).every(r=>r.http_status===429&&r.stream_started===false));assert.ok(rows.slice(2).every(r=>r.http_status===null&&r.stream_started===true));
   assert.deepEqual(rows.slice(2).map(r=>r.finish_reason),['content_filter','length',null]);

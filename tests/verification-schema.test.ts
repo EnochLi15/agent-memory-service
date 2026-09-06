@@ -35,10 +35,10 @@ test('schema-conforming semantic rejection is never resampled and transport mode
  }finally{await http.close();}
 });
 
-test('unsupported strict schema is reported without silently downgrading the request',async()=>{
+test('unsupported strict schema fails once without silently downgrading the request',async()=>{
  const http=await endpoint(()=>({status:400,output:{error:{message:'Schema unsupported',type:'invalid_request_error'}}}));
  try{
-  const c=config();c.llmBase=http.base;await assert.rejects(verify(new Models(c)),/complete evidence verification/);assert.equal(http.bodies.length,2);assert.ok(http.bodies.every(b=>b.response_format.type==='json_schema'));
+  const c=config();c.llmBase=http.base;await assert.rejects(verify(new Models(c)),/complete evidence verification/);assert.equal(http.bodies.length,1);assert.ok(http.bodies.every(b=>b.response_format.type==='json_schema'));
  }finally{await http.close();}
 });
 test('erasure scope uses the verifier model and its own strict decision schema',async()=>{

@@ -1,4 +1,4 @@
-import {modelFailure} from './model-failure.js';
+import {transientModelError} from './model-retry.js';
 import {createHash} from 'node:crypto';
 import {participantIndices} from './verification.js';
 import {ServiceError,type AddRequest} from './types.js';
@@ -49,8 +49,7 @@ export async function prepareExtractionShards(req:AddRequest,system:string,user:
  if(failed){
   // Classify the first failure with the caller's signal: our sibling-cancel
   // signal is already aborted and would hide the original transport cause.
-  const fault=modelFailure(failure,signal,false,null);
-  if(['connection','connection_timeout'].includes(fault.error_category)||fault.error_category==='provider_http'&&(fault.http_status===429||fault.http_status!==null&&fault.http_status>=500))
+  if(!signal.aborted&&transientModelError(failure))
    throw new ServiceError('EXTRACTION_UNAVAILABLE','Parallel extraction could not reach the model provider');
   throw new ServiceError('EVIDENCE_VALIDATION','Parallel extraction did not complete all participant groups: '+(failure instanceof Error?failure.message:'unknown shard failure'));
  }
