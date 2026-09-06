@@ -11,14 +11,17 @@ import {VerificationSession} from './verification-session.js';
 function audit(record:Record<string,unknown>):void {
   if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
 }
+type GenerationPurpose='extraction'|'verification'|'repair'|'rerank';
+type GenerationContext={purpose?:GenerationPurpose;verification_scope?:{facts:number;operations:number;replacements:number;messages:number;reused:number}};
 
 export class Models {
   private client: OpenAI;
   constructor(private config: Config) {
     this.client = new OpenAI({ apiKey: config.llmKey || 'local', baseURL: config.llmBase, maxRetries: 0, timeout: config.addTimeout });
   }
+  private stageModel(purpose:GenerationPurpose):string{return purpose==='rerank'?this.config.llmModel:this.config.llmStageModels[purpose]??this.config.llmModel;}
   async verify(proposal:Extraction,req:AddRequest,facts:Fact[],omitted:number[],signal:AbortSignal,session=new VerificationSession()):Promise<string[]>{
-    const plan=session.plan(req,proposal,facts,{base:this.config.llmBase,model:this.config.llmModel,effort:this.config.llmReasoningEffort,prompt:VERIFICATION_PROMPT});
+    const plan=session.plan(req,proposal,facts,{base:this.config.llmBase,model:this.stageModel('verification'),effort:this.config.llmReasoningEffort,prompt:VERIFICATION_PROMPT});
     if(plan.blockedFindings.length)return plan.blockedFindings;
     const scope=plan.scope;
     const counts={facts:scope.fact_indices.length,operations:scope.operation_indices.length,replacements:scope.replacements.length,messages:scope.message_indices.length,reused:plan.reused};
@@ -26,7 +29,7 @@ export class Models {
     const input=JSON.stringify(verificationInput(req,proposal,facts,omitted,scope));let repair='';
     for(let attempt=0;attempt<2;attempt++){
       let raw:unknown;
-      try{raw=await this.json(VERIFICATION_PROMPT,input+repair,signal,{verification_scope:counts});}
+      try{raw=await this.json(VERIFICATION_PROMPT,input+repair,signal,{purpose:'verification',verification_scope:counts});}
       catch{throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not complete evidence verification within the request budget');}
       try{return session.evaluate(plan,raw);}
       catch(error){
@@ -42,23 +45,24 @@ export class Models {
     throw new ServiceError('EVIDENCE_VALIDATION','Incomplete evidence verification');
   }
 
-  async json(system: string, user: string, signal: AbortSignal,context?:{verification_scope:{facts:number;operations:number;replacements:number;messages:number;reused:number}}): Promise<unknown> {
+  async json(system: string, user: string, signal: AbortSignal,context?:GenerationContext): Promise<unknown> {
     // Streaming prevents idle gateway disconnects during long structured generations.
     // Nothing is published until the entire JSON object is validated and committed.
-    let last:unknown;
+    const purpose=context?.purpose??(system.startsWith('Rank evidence')?'rerank':system.startsWith('Validate memory evidence')?'verification':system.includes('PATCH_SCHEMA')?'repair':'extraction');
+    const model=this.stageModel(purpose);let last:unknown;
     for(let attempt=0;attempt<2;attempt++){
       const started=performance.now();let usage:unknown=null;
       try{
         const stream=await this.client.chat.completions.create({
-          model:this.config.llmModel,...(this.config.llmReasoningEffort?{reasoning_effort:this.config.llmReasoningEffort}:{}),messages:[{role:'system',content:system},{role:'user',content:user}],
+          model,...(this.config.llmReasoningEffort?{reasoning_effort:this.config.llmReasoningEffort}:{}),messages:[{role:'system',content:system},{role:'user',content:user}],
           response_format:{type:'json_object'},max_completion_tokens:10000,stream:true,stream_options:{include_usage:true},
         },{signal});
         let content='',finish:string|null=null;
         for await(const chunk of stream){content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
         if(!content||finish!=='stop')throw new ServiceError('MODEL_OUTPUT','Incomplete model output');
         const parsed=JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
-        audit({kind:'generation',purpose:system.startsWith('Rank evidence')?'rerank':system.startsWith('Validate memory evidence')?'verification':system.includes('PATCH_SCHEMA')?'repair':'extraction',model:this.config.llmModel,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage,...context});return parsed;
-      }catch(error){audit({kind:'generation',purpose:system.startsWith('Rank evidence')?'rerank':system.startsWith('Validate memory evidence')?'verification':system.includes('PATCH_SCHEMA')?'repair':'extraction',model:this.config.llmModel,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,error_type:error instanceof Error?error.name:'unknown',...context});last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
+        audit({kind:'generation',...context,purpose,model,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage});return parsed;
+      }catch(error){audit({kind:'generation',...context,purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,error_type:error instanceof Error?error.name:'unknown'});last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
     }
     throw last;
   }

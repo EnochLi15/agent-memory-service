@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 export interface Config {
   port: number; host: string; dataDir: string; mode: 'enhanced' | 'offline'; llmBase: string; llmKey: string; llmModel: string; llmReasoningEffort?:'low'|'medium'|'high';
+  llmStageModels:Partial<Record<'extraction'|'verification'|'repair',string>>;
   embeddingBase: string; embeddingModel: string; embeddingDigest: string | null; embeddingDimensions: number; embeddingSpace: string;
   addTimeout: number; searchTimeout: number; maxEvidence: number; tokenBudget: number; retrieval: 'hybrid' | 'lexical' | 'mem0';
   rerank: boolean; rawFallback: boolean;incrementalVerification:boolean;
@@ -13,11 +14,17 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   const dimensions = num('MEMORY_EMBEDDING_DIMENSIONS', 768);
   const effort=env.MEMORY_LLM_REASONING_EFFORT;
   if(effort!==undefined&&!['low','medium','high'].includes(effort))throw new Error('Invalid MEMORY_LLM_REASONING_EFFORT');
+  const stageModels:Config['llmStageModels']={};
+  for(const stage of ['extraction','verification','repair'] as const){
+    const key=`MEMORY_${stage.toUpperCase()}_MODEL`,value=env[key];
+    if(value!==undefined){if(!value.trim())throw new Error(`Invalid ${key}`);stageModels[stage]=value.trim();}
+  }
   return {
     port: num('PORT', 8088), host: env.HOST ?? '127.0.0.1', dataDir: resolve(env.MEMORY_DATA_DIR ?? '.data'),
     mode: env.MEMORY_MODE === 'enhanced' ? 'enhanced' : 'offline',
     llmBase: (env.MEMORY_LLM_BASE_URL ?? 'http://127.0.0.1:11434/v1').replace(/\/$/, ''), llmKey: env.MEMORY_LLM_API_KEY ?? '', llmModel: env.MEMORY_LLM_MODEL ?? 'gpt-5.4-mini',
     ...(effort?{llmReasoningEffort:effort as 'low'|'medium'|'high'}:{}),
+    llmStageModels:stageModels,
     embeddingBase: (env.MEMORY_EMBEDDING_BASE_URL ?? 'http://127.0.0.1:11434').replace(/\/$/, ''), embeddingModel: model, embeddingDigest: env.MEMORY_EMBEDDING_DIGEST??null,
     embeddingDimensions: dimensions, embeddingSpace: `${model}:${env.MEMORY_EMBEDDING_DIGEST ?? 'configured'}:${dimensions}:${model.startsWith('nomic-embed-text')?'nomic-prefix-v1':'none'}`,
     addTimeout: num('MEMORY_ADD_TIMEOUT_MS', 115000), searchTimeout: num('MEMORY_SEARCH_TIMEOUT_MS', 55000),

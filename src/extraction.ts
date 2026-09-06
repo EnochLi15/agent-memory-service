@@ -181,7 +181,7 @@ export class Extractor {
           const scope=repairScope??{fact_indices:prior.success?prior.data.facts.map((_,i)=>i):[],operation_indices:prior.success?prior.data.operations.map((_,i)=>i):[],source_indices:req.messages.map((_,i)=>i)};
           const repairSystem=issue?(patchMode?PATCH_PROMPT:'\nRepair the malformed proposal; return the complete extraction schema.'):'';
           const repairInput=issue?JSON.stringify({...JSON.parse(user),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:failedProposal,...(patchMode?{REPAIR_SCOPE:scope,FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
-          const output=await this.models.json(patchMode?PATCH_PROMPT:EXTRACTION_PROMPT+repairSystem,repairInput,modelSignal);
+          const output=await this.models.json(patchMode?PATCH_PROMPT:EXTRACTION_PROMPT+repairSystem,repairInput,modelSignal,{purpose:issue?'repair':'extraction'});
           let raw:unknown=output;
           if(patchMode){
             try{raw=applyRepair(prior.data!,output,scope);}

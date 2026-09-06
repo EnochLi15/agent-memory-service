@@ -114,3 +114,17 @@ test('Extractor shares a session only within prepare and honors the reuse ablati
   assert.equal(extracts,2);assert.equal(checks,4);
  }
 });
+
+test('verifier route changes invalidate certificates while extraction-only routing does not',async()=>{
+ const config=configFromEnv({MEMORY_VERIFICATION_MODEL:'critic-a'}),m=new Models(config),state=session(),p=proposal();let calls=0;
+ m.json=async(_s,input,signal,context)=>{calls++;assert.equal(context?.purpose,'verification');return success(JSON.parse(input));};
+ assert.deepEqual(await verify(m,p,state),[]);config.llmStageModels.extraction='another-extractor';assert.deepEqual(await verify(m,p,state),[]);assert.equal(calls,1);
+ config.llmStageModels.verification='critic-b';assert.deepEqual(await verify(m,p,state),[]);assert.equal(calls,2);
+});
+
+test('malformed extraction retries route to repair even when a complete object is required',async()=>{
+ const config=configFromEnv({MEMORY_MODE:'enhanced'}),m=new Models(config),purposes:string[]=[];const p=proposal();p.facts[0]!.content=req.messages[0]!.content;
+ m.json=async(_s,input,_signal,context)=>{purposes.push(context?.purpose??'unspecified');if(purposes.length===1)return {facts:'invalid'};if(context?.purpose==='repair')return p;return success(JSON.parse(input));};
+ m.embedBatch=async texts=>texts.map(()=>Array(768).fill(0));const result=await new Extractor(config,m).prepare(req,{facts:[],tail:[],anchor:null,revision:0},AbortSignal.timeout(1000));
+ assert.equal(result.facts.length,2);assert.deepEqual(purposes,['extraction','repair','verification']);
+});
