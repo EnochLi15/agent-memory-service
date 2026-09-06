@@ -1,6 +1,6 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';import {createServer} from 'node:http';
 import {mkdtempSync,readFileSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
-import {Models} from '../dist/models.js';import {configFromEnv} from '../dist/config.js';
+import {ServiceError} from '../dist/types.js';import {Models} from '../dist/models.js';import {configFromEnv} from '../dist/config.js';
 
 test('failure audit distinguishes HTTP rejection, truncated output and filtered completion without echoing credentials',async()=>{
  const key='fixture-sensitive-value-never-log',dir=mkdtempSync(join(tmpdir(),'memory-failure-audit-')),trace=join(dir,'trace.jsonl'),audit=join(dir,'audit.jsonl');
@@ -32,6 +32,7 @@ import OpenAI from 'openai';import {modelFailure} from '../dist/model-failure.js
 test('deadline, caller cancellation and connection errors have distinct bounded metadata',()=>{
  const timeout=AbortSignal.abort(new DOMException('private timeout detail','TimeoutError')),cancelled=AbortSignal.abort();
  assert.equal(modelFailure(new Error('private detail'),timeout,false,null).error_category,'deadline');
+ const endedAtDeadline=modelFailure(new ServiceError('MODEL_OUTPUT','Incomplete model output'),timeout,true,null);assert.equal(endedAtDeadline.error_category,'deadline');assert.equal(endedAtDeadline.signal_aborted,true);
  assert.equal(modelFailure(new Error('private detail'),cancelled,false,null).error_category,'cancelled');
  const cause=Object.assign(new Error('private connection endpoint'),{code:'ECONNRESET'}),connection=new OpenAI.APIConnectionError({cause});
  const failure=modelFailure(connection,new AbortController().signal,true,null);assert.equal(failure.error_category,'connection');assert.equal(failure.transport_code,'ECONNRESET');assert.equal(failure.stream_started,true);assert.ok(!JSON.stringify(failure).includes('private'));
