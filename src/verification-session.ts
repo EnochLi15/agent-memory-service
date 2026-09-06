@@ -71,7 +71,7 @@ export class VerificationSession {
   this.#active=plan;return plan;
  }
 
- evaluate(plan:Plan,raw:unknown):string[]{
+ evaluate(plan:Plan,raw:unknown,protocolErrors:string[]=[]):string[]{
   if(this.#active!==plan)throw new ServiceError('EVIDENCE_VALIDATION','Verification session changed during an in-flight check');
   const merged=empty();
   if(!raw||typeof raw!=='object')throw new VerificationProtocolError('Missing structured verification arrays');
@@ -81,9 +81,20 @@ export class VerificationSession {
    merged[type]=[...values,...plan.cached[type]];
   }
   let findings:string[];
-  try{findings=verificationIssues(merged,plan.req,plan.proposal);}
+  try{findings=verificationIssues(merged,plan.req,plan.proposal);if(protocolErrors.length)throw new VerificationProtocolError(protocolErrors[0]!,findings);}
   catch(error){
-   if(error instanceof VerificationProtocolError)this.rememberFailures(plan,error.findings);
+   if(error instanceof VerificationProtocolError){
+    // A malformed earlier array must not hide a valid rejection in a later
+    // array. Validate each available check independently only on this error path.
+    const failures=new Set(error.findings);
+    for(const type of arrays)for(const check of merged[type]){
+     const single=empty();single[type]=[check];
+     try{for(const finding of verificationIssues(single,plan.req,plan.proposal))failures.add(finding);}
+     catch(partial){if(partial instanceof VerificationProtocolError)for(const finding of partial.findings)failures.add(finding);}
+    }
+    const findings=[...failures];this.rememberFailures(plan,findings);
+    throw new VerificationProtocolError(error.message,findings);
+   }
    // No positive certificate is created from a malformed protocol response.
    throw error;
   }

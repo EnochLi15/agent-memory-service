@@ -8,11 +8,12 @@ import { ServiceError } from './types.js';
 import type {AddRequest,Extraction,Fact} from './types.js';
 import {VERIFICATION_PROMPT,verificationInput,VerificationProtocolError} from './verification.js';
 import {VerificationSession} from './verification-session.js';
+import {COMPACT_VERIFICATION_PROMPT,COMPACT_VERIFICATION_PROTOCOL,decodeCompactVerification} from './verification-compact.js';
 function audit(record:Record<string,unknown>):void {
   if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
 }
 type GenerationPurpose='extraction'|'verification'|'repair'|'rerank';
-type GenerationContext={purpose?:GenerationPurpose;verification_scope?:{facts:number;operations:number;replacements:number;messages:number;reused:number}};
+type GenerationContext={purpose?:GenerationPurpose;verification_format?:string;verification_scope?:{facts:number;operations:number;replacements:number;messages:number;reused:number}};
 
 export class Models {
   private client: OpenAI;
@@ -21,17 +22,19 @@ export class Models {
   }
   private stageModel(purpose:GenerationPurpose):string{return purpose==='rerank'?this.config.llmModel:this.config.llmStageModels[purpose]??this.config.llmModel;}
   async verify(proposal:Extraction,req:AddRequest,facts:Fact[],omitted:number[],signal:AbortSignal,session=new VerificationSession()):Promise<string[]>{
-    const plan=session.plan(req,proposal,facts,{base:this.config.llmBase,model:this.stageModel('verification'),effort:this.config.llmReasoningEffort,prompt:VERIFICATION_PROMPT});
+    const compact=this.config.verificationFormat==='compact',prompt=compact?COMPACT_VERIFICATION_PROMPT:VERIFICATION_PROMPT;
+    const plan=session.plan(req,proposal,facts,{base:this.config.llmBase,model:this.stageModel('verification'),effort:this.config.llmReasoningEffort,prompt});
     if(plan.blockedFindings.length)return plan.blockedFindings;
     const scope=plan.scope;
     const counts={facts:scope.fact_indices.length,operations:scope.operation_indices.length,replacements:scope.replacements.length,messages:scope.message_indices.length,reused:plan.reused};
     if(!counts.facts&&!counts.operations&&!counts.replacements&&!counts.messages)return session.evaluate(plan,{fact_checks:[],operation_checks:[],replacement_checks:[],message_checks:[]});
-    const input=JSON.stringify(verificationInput(req,proposal,facts,omitted,scope));let repair='';
+    const data=verificationInput(req,proposal,facts,omitted,scope);
+    const input=JSON.stringify(compact?{...data,VERIFICATION_PROTOCOL:COMPACT_VERIFICATION_PROTOCOL,PROPOSAL:{...proposal,facts:proposal.facts.map(f=>({...f,sources:f.sources.map((s,source_slot)=>({...s,source_slot}))}))},REPLACEMENT_TARGETS:scope.replacements.map((r,check_index)=>({...r,check_index}))}:data);let repair='';
     for(let attempt=0;attempt<2;attempt++){
       let raw:unknown;
-      try{raw=await this.json(VERIFICATION_PROMPT,input+repair,signal,{purpose:'verification',verification_scope:counts});}
+      try{raw=await this.json(prompt,input+repair,signal,{purpose:'verification',verification_format:compact?COMPACT_VERIFICATION_PROTOCOL:'verbose',verification_scope:counts});}
       catch{throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not complete evidence verification within the request budget');}
-      try{return session.evaluate(plan,raw);}
+      try{const decoded=compact?decodeCompactVerification(raw,proposal,scope):undefined;return session.evaluate(plan,decoded?.canonical??raw,decoded?.protocolErrors);}
       catch(error){
         // A malformed later check cannot erase an already validated rejection.
         // Repair that proposal; merged checks must still cover the full proposal.
@@ -61,7 +64,7 @@ export class Models {
         for await(const chunk of stream){content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
         if(!content||finish!=='stop')throw new ServiceError('MODEL_OUTPUT','Incomplete model output');
         const parsed=JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
-        audit({kind:'generation',...context,purpose,model,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage});return parsed;
+        audit({kind:'generation',...context,purpose,model,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage,output_chars:content.length});return parsed;
       }catch(error){audit({kind:'generation',...context,purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,error_type:error instanceof Error?error.name:'unknown'});last=error;if(signal.aborted||error instanceof ServiceError||error instanceof SyntaxError)throw error;if(attempt===1)throw error;}
     }
     throw last;
