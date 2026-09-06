@@ -402,7 +402,7 @@ export class Extractor {
       if(work.candidates.length){
         if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Erasure scope requires semantic binding; offline recovery cannot certify independence');
         let raw:unknown;
-        try{raw=await this.models.json(ERASURE_PROMPT,JSON.stringify(erasureInput(req,snapshot.tail,work)),modelSignal,{purpose:'erasure_binding',trace:traceIdentity});}
+        try{raw=await this.models.json(ERASURE_PROMPT,JSON.stringify(erasureInput(req,snapshot.tail,work,this.config.sourceErasure)),modelSignal,{purpose:'erasure_binding',trace:traceIdentity});}
         catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not bind erasure scope within the shared model budget');}
         erasurePlan=decodeErasure(raw,work);
       }else erasurePlan={fingerprint:work.fingerprint,decisions:work.automatic};
