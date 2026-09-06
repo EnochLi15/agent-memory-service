@@ -10,6 +10,7 @@ import {messageAnchors,normalizeFactTime} from './temporal.js';
 import {humanQuote} from './verification.js';
 import {VerificationSession} from './verification-session.js';
 import {PATCH_PROMPT,applyRepair,scopeForFindings,type RepairScope} from './repair.js';
+import {erasureWork,decodeErasure,ERASURE_PROMPT} from './erasure.js';
 
 export function hash(s: string): string { return createHash('sha256').update(s).digest('hex'); }
 import {retirementEffectMismatch,currentRelationRemoval,realControl,instructionSpans,authorizesForget,missingForgetObligations,missingPersonalSources} from './operation-intent.js';
@@ -155,6 +156,7 @@ export class Extractor {
   async prepare(req: AddRequest, snapshot: Snapshot, signal: AbortSignal): Promise<Prepared> {
     addSchema.parse(req);
     const degraded: string[] = [];const partialSources=new Set<number>();
+    const modelSignal=AbortSignal.any([signal,AbortSignal.timeout(Math.min(95000,Math.max(500,this.config.addTimeout-25000)))]);
     const chronology=messageAnchors(req,snapshot.anchor);const anchor=chronology.last;
     let parsed: Extraction;
     if(this.config.experimental?.rawOnly){
@@ -178,7 +180,6 @@ export class Extractor {
       const user=JSON.stringify({OBSERVATION_DATE:anchor,EXISTING_FACTS:relevant,CONTEXT_ONLY:snapshot.tail.map(m=>({role:m.role,content:m.content})),NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))});
       // Reserve time for grounded fallback, local embedding and atomic commit.
       // This inner budget never extends the caller's absolute request deadline.
-      const modelSignal=AbortSignal.any([signal,AbortSignal.timeout(Math.min(95000,Math.max(500,this.config.addTimeout-25000)))]);
       let semanticallyRejected=false;const verificationSession=new VerificationSession(this.config.incrementalVerification);
       try {
         let issue='';let failedProposal:unknown;let repairScope:RepairScope|undefined;let accepted:Extraction|undefined;
@@ -290,6 +291,18 @@ export class Extractor {
       if(!this.config.experimental?.rawOnly&&src.every(m=>m.role!=='user'&&!speakerPrefix(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim())))f.modality='quoted';
       facts.push({ ...attributes,event_time:eventTime,source_spans:sourceSpans(f,messages),modality:f.modality,time_basis:src[0]!.time_basis,id:factId(req,i),source_ids:[...new Set(src.map(m=>m.id))],source_quotes:proposalSources.map(s=>s.quote),created_at:src[0]!.timestamp,observed_at:src[0]!.timestamp,state:'active',vector:null,entities:entities(f.content),revision:snapshot.revision+1 });
     }
+    const useErasure=this.config.erasureBinding&&!this.config.experimental?.rawOnly;
+    let erasurePlan:Prepared['erasurePlan'];
+    if(useErasure){
+      const work=erasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[]);
+      if(work.candidates.length){
+        if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Erasure scope requires semantic binding; offline recovery cannot certify independence');
+        let raw:unknown;
+        try{raw=await this.models.json(ERASURE_PROMPT,JSON.stringify({NEW_MESSAGES:req.messages,CONTEXT_ONLY:snapshot.tail,CANDIDATES:work.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'erasure_binding'});}
+        catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not bind erasure scope within the shared model budget');}
+        erasurePlan=decodeErasure(raw,work);
+      }else erasurePlan={fingerprint:work.fingerprint,decisions:work.automatic};
+    }
     const passages=this.config.sourceIndex&&!this.config.experimental?.rawOnly?preparePassages(messages,facts,parsed.operations,snapshot.revision+1):[];
     if (this.config.mode !== 'offline' && (facts.length||passages.length)) {
       try {
@@ -299,6 +312,6 @@ export class Extractor {
         if (facts.some(f=>f.content.length>=3500)) degraded.push('long_evidence_lexical');
       } catch(error) { if (signal.aborted) throw error; degraded.push('embedding_lexical'); }
     }
-    return { facts,operations:parsed.operations,messages,passages,sourceFormat:this.config.sourceIndex&&!this.config.experimental?.rawOnly?'dual-source-v2':'facts-only-v2',anchor,degraded,embeddingSpace:this.config.embeddingSpace };
+    return { facts,operations:parsed.operations,messages,passages,sourceFormat:this.config.sourceIndex&&!this.config.experimental?.rawOnly?(useErasure?'dual-source-v3':'dual-source-v2'):(useErasure?'facts-only-v3':'facts-only-v2'),...(erasurePlan?{erasurePlan}:{}),anchor,degraded,embeddingSpace:this.config.embeddingSpace };
   }
 }

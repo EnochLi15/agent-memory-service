@@ -5,6 +5,7 @@ export interface Config {
   maxRepairRounds:1|2;
   verificationFormat:'verbose'|'compact';
   verificationResponseFormat:'json_object'|'json_schema';
+  erasureBinding:boolean;
   embeddingBase: string; embeddingModel: string; embeddingDigest: string | null; embeddingDimensions: number; embeddingSpace: string;
   addTimeout: number; searchTimeout: number; maxEvidence: number; tokenBudget: number; retrieval: 'hybrid' | 'lexical' | 'mem0';
   rerank: boolean; rawFallback: boolean;incrementalVerification:boolean;
@@ -38,6 +39,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     maxRepairRounds,
     verificationFormat,
     verificationResponseFormat:verificationResponseFormat as Config['verificationResponseFormat'],
+    erasureBinding:env.MEMORY_ERASURE_BINDING==='true',
     embeddingBase: (env.MEMORY_EMBEDDING_BASE_URL ?? 'http://127.0.0.1:11434').replace(/\/$/, ''), embeddingModel: model, embeddingDigest: env.MEMORY_EMBEDDING_DIGEST??null,
     embeddingDimensions: dimensions, embeddingSpace: `${model}:${env.MEMORY_EMBEDDING_DIGEST ?? 'configured'}:${dimensions}:${model.startsWith('nomic-embed-text')?'nomic-prefix-v1':'none'}`,
     addTimeout: num('MEMORY_ADD_TIMEOUT_MS', 115000), searchTimeout: num('MEMORY_SEARCH_TIMEOUT_MS', 55000),

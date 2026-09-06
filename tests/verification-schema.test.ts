@@ -41,3 +41,13 @@ test('unsupported strict schema is reported without silently downgrading the req
   const c=config();c.llmBase=http.base;await assert.rejects(verify(new Models(c)),/complete evidence verification/);assert.equal(http.bodies.length,2);assert.ok(http.bodies.every(b=>b.response_format.type==='json_schema'));
  }finally{await http.close();}
 });
+test('erasure scope uses the verifier model and its own strict decision schema',async()=>{
+ const http=await endpoint(()=>({output:{decisions:[]}}));
+ try{
+  const c=config();c.llmBase=http.base;c.llmModel='extractor-model';c.llmStageModels.verification='verifier-model';
+  await new Models(c).json('Resolve erasure scope','{}',AbortSignal.timeout(1000),{purpose:'erasure_binding'});
+  assert.equal(http.bodies.length,1);assert.equal(http.bodies[0].model,'verifier-model');
+  assert.equal(http.bodies[0].response_format.json_schema.name,'erasure_scope_v1');
+  assert.deepEqual(http.bodies[0].response_format.json_schema.schema.required,['decisions']);
+ }finally{await http.close();}
+});

@@ -31,6 +31,7 @@ export type Extraction = z.infer<typeof extractionSchema>;
 export type TemporalEvidence={expression:string;anchor:string|null;start:string|null;end_exclusive:string|null;precision:'day'|'month'|'year'|'week'|'unknown';resolution:'resolved'|'unresolved'|'ordering';reason?:string};
 export type MemoryEvent={id:string;type:'remember'|'update'|'correct'|'retract'|'forget'|'restore'|'reflection';category:string;slot_hash:string;source_ids:string[];before_ids:string[];after_ids:string[];ordinal:number;observed_at:string;time_basis:'source'|'ordering';revision:number;actor?:'user'|'participant'|'observation'};
 export type Fact = Omit<ExtractedFact, 'sources'> & {
+  erasure_exemptions?: {key:string;quote:string}[];
   event_time?:TemporalEvidence;
   transition_time?:Pick<TemporalEvidence,'start'|'end_exclusive'|'precision'>;
   source_spans?: {source_id:string;start:number;end:number}[];
@@ -39,8 +40,10 @@ export type Fact = Omit<ExtractedFact, 'sources'> & {
 };
 export type StoredMessage = Message & { id: string; session_id: string; ordinal: number; searchable: boolean; partial?: boolean; time_basis?: 'source' | 'ordering'; redacted?: boolean; external_id?:string };
 export type Passage = {id:string;source_id:string;speaker:string;external_id?:string;fragments:{start:number;end:number;text:string}[];fact_ids:string[];content:string;vector:number[]|null;observed_at:string;time_basis:'source'|'ordering';revision:number;state:'active'|'erased'};
-export type Snapshot = { revision: number; facts: Fact[]; tail: StoredMessage[]; anchor: string | null };
-export type Prepared = { facts: Fact[]; operations: Operation[]; messages: StoredMessage[]; passages?:Passage[]; sourceFormat?:'dual-source-v2'|'facts-only-v2'; anchor: string | null; degraded: string[]; embeddingSpace: string };
+export type ErasureBoundary={subject:string;predicate:string;scope:string;boundary:string;valueHash:string;tokenCount?:number;allowedValueHashes?:string[];revision:number};
+export type ErasurePlan={fingerprint:string;decisions:{fact_id:string;key:string;effect:'erase'|'retain';quote:string}[]};
+export type Snapshot = { revision: number; facts: Fact[]; tail: StoredMessage[]; anchor: string | null; erasureBoundaries?:ErasureBoundary[] };
+export type Prepared = { facts: Fact[]; operations: Operation[]; messages: StoredMessage[]; passages?:Passage[]; sourceFormat?:'dual-source-v2'|'facts-only-v2'|'dual-source-v3'|'facts-only-v3'; erasurePlan?:ErasurePlan; anchor: string | null; degraded: string[]; embeddingSpace: string };
 export type Candidate = { fact: Fact; score: number; signals: string[] };
 export type QueryIntent = { historical: boolean; trajectory: boolean; list: boolean; asOf: string | null; entities: string[]; operation?:boolean; mode?:'current'|'historical'|'list'|'operation'|'trajectory'; temporal?:boolean };
 
