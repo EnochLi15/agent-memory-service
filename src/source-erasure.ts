@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {sameSlot,ServiceError,type AddRequest,type Fact,type Operation,type StoredMessage,type ErasureBoundary,type SourceErasurePlan} from './types.js';
-import {valueWords,valueDigest,boundaryKey,containsValue} from './erasure.js';
+import {valueWords,valueDigest,boundaryKey,containsValue,factMatchesErasure} from './erasure.js';
 const digest=(s:string)=>createHash('sha256').update(s).digest('hex');
 const stop=new Set('the and that this with from have has had was were are is for you your user our their they she his her its but not now then just about some any all been into says said will would should could want wants need needs name fact'.split(' '));
 export function erasureAnchors(f:Pick<Fact,'content'|'value'>):string[]{
@@ -25,17 +25,18 @@ export function sourceErasureWork(req:AddRequest,prior:Fact[],incoming:Fact[],op
  // still require independent partition review for surviving neighbors and echoes.
  const direct=new Set([...operations.filter(o=>o.type==='forget').flatMap(o=>o.target_ids),...verifiedErasedIds]);
  const candidates:Candidate[]=[];
- const nominate=(kind:Candidate['kind'],id:string,start:number,text:string,context:unknown,isNew:boolean)=>{
+ const nominate=(kind:Candidate['kind'],id:string,start:number,text:string,context:unknown,isNew:boolean,fact?:Fact)=>{
   for(const [key,{boundary,authorization,fresh}] of boundaries){
    if(!fresh&&!isNew)continue;
    if(boundary.allowedValueHashes?.includes(boundary.valueHash)||operations.some(o=>o.type==='restore'&&sameSlot(o,boundary)&&valueDigest(o.value)===boundary.valueHash))continue;
    const anchors=boundary.anchorHashes??[];
    const matching_words=[...new Set(valueWords(text).filter(w=>anchors.includes(digest(w))))];
-   if(!containsValue(text,boundary)&&(!anchors.length||matching_words.length<Math.min(2,anchors.length)))continue;
+   const valueMatch=fact?factMatchesErasure(fact,boundary,(authorization as {target?:Fact}|null)?.target):containsValue(text,boundary);
+   if(!valueMatch&&(!anchors.length||matching_words.length<Math.min(2,anchors.length)))continue;
    candidates.push({kind,id,start,text,key,boundary,authorization,matching_words,context});
   }
  };
- for(const f of [...prior,...incoming])if(f.state!=='erased'&&!direct.has(f.id))nominate('fact',f.id,0,f.content,{subject:f.subject,predicate:f.predicate,scope:f.scope,value:f.value,modality:f.modality,source_quotes:f.source_quotes},incoming.some(x=>x.id===f.id));
+ for(const f of [...prior,...incoming])if(f.state!=='erased'&&!direct.has(f.id))nominate('fact',f.id,0,f.content,{subject:f.subject,predicate:f.predicate,scope:f.scope,value:f.value,modality:f.modality,source_quotes:f.source_quotes},incoming.some(x=>x.id===f.id),f);
  // Nominate an entire source message so nearby pronouns and command echoes
  // are adjudicated too; the exact partition must preserve unrelated clauses.
  for(const m of [...oldSources,...newSources]){

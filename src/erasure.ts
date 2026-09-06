@@ -11,6 +11,27 @@ export function containsValue(text:string,m:ErasureBoundary):boolean{
  for(let i=0;n>0&&i+n<=words.length;i++)if(digest(words.slice(i,i+n).join(' '))===m.valueHash)return true;
  return false;
 }
+type ErasureFact=Pick<Fact,'id'|'content'|'subject'|'predicate'|'scope'|'scopeHash'|'value'|'source_ids'|'source_quotes'|'depends_on'>;
+/** A generated participant label is not a literal occurrence in human evidence.
+ * Preserve actual values and quoted literals, including a real account named user. */
+export function factContainsValue(f:Pick<ErasureFact,'content'|'subject'|'value'|'source_quotes'>,m:ErasureBoundary):boolean{
+ const generatedRole=canonical(f.subject)==='user'&&m.tokenCount===1&&m.valueHash===valueDigest('user')&&f.source_quotes.length>0;
+ if(!generatedRole||f.source_quotes.some(q=>containsValue(q,m)))return containsValue(f.content,m);
+ if(containsValue(f.value,m))return true;
+ return containsValue(f.content.replace(/\b(?:the\s+)?user(?:['’]s)?\b/gi,''),m);
+}
+/** Removing a synthetic-label collision does not remove relation context.
+ * Inverse ownership, shared sources, dependencies and matching scopes still go
+ * to semantic review, whose answer must cover the exact current source evidence. */
+export function factMatchesErasure(f:ErasureFact,m:ErasureBoundary,target?:Pick<ErasureFact,'id'|'source_ids'>):boolean{
+ if(factContainsValue(f,m)||f.source_quotes.some(q=>containsValue(q,m)))return true;
+ if(!containsValue(f.content,m))return false;
+ if(sameSlot(f,m)||scopeKey(m)!==digest('')&&sameScope(f,m))return true;
+ if(target&&(f.depends_on.includes(target.id)||f.source_ids.some(id=>target.source_ids.includes(id))))return true;
+ const coordinates=valueWords(m.subject+' '+m.scope).filter(w=>!['user','the','and'].includes(w));
+ const evidence=new Set(valueWords(f.content+' '+f.source_quotes.join(' ')));
+ return coordinates.some(w=>evidence.has(w));
+}
 export function valueOccurrences(text:string,m:ErasureBoundary):{start:number;end:number}[]{
  const words=[...text.matchAll(/[\p{L}\p{N}]+/gu)].flatMap(x=>valueWords(x[0]).map(word=>({word,start:x.index!,end:x.index!+x[0].length}))),n=m.tokenCount??0,out:{start:number;end:number}[]=[];
  for(let i=0;n>0&&i+n<=words.length;i++)if(digest(words.slice(i,i+n).map(w=>w.word).join(' '))===m.valueHash)out.push({start:words[i]!.start,end:words[i+n-1]!.end});
@@ -36,12 +57,12 @@ export function erasureWork(req:AddRequest,prior:Fact[],incoming:Fact[],operatio
  for(const f of pool){
   if(f.state==='erased'||direct.has(f.id))continue;
   for(const [key,m] of boundaries){
-   if(!(containsValue(f.content,m)||f.source_quotes.some(q=>containsValue(q,m))))continue;
+   if(!factMatchesErasure(f,m,authorizations.get(key)?.target))continue;
    const restored=operations.some(o=>o.type==='restore'&&sameSlot(o,f)&&valueDigest(o.value)===valueDigest(f.value)&&o.value);
    if(restored||(m.allowedValueHashes??[]).includes(valueDigest(f.value))){automatic.push({fact_id:f.id,key,effect:'retain',quote:f.source_quotes.find(q=>containsValue(q,m))??f.source_quotes[0]??''});continue;}
    // Only an unchanged, previously adjudicated record may reuse independence.
    if(prior.some(p=>p.id===f.id)&&retainedAgainst(f,m))continue;
-   if(sameSlot(f,m)&&containsValue(f.content,m))automatic.push({fact_id:f.id,key,effect:'erase',quote:f.source_quotes[0]??''});
+   if(sameSlot(f,m)&&factContainsValue(f,m))automatic.push({fact_id:f.id,key,effect:'erase',quote:f.source_quotes[0]??''});
    else candidates.push({fact_id:f.id,key,fact:meaning(f),boundary:m,scope_matches:sameScope(f,m),authorization:authorizations.get(key)??null});
   }
  }
@@ -56,7 +77,7 @@ export function decodeErasure(raw:unknown,work:ReturnType<typeof erasureWork>):E
   const c=work.candidates[r?.index];
   if(!c||!Number.isInteger(r.index)||seen.has(r.index)||!['erase','retain','uncertain'].includes(r.effect)||typeof r.quote!=='string'||!r.quote.trim()||typeof r.reason!=='string'||!r.reason.trim()||!c.fact.source_quotes.some(q=>q.includes(r.quote)))throw new ServiceError('EVIDENCE_VALIDATION','Invalid erasure scope witness');
   seen.add(r.index);if(r.effect==='uncertain')throw new ServiceError('EVIDENCE_VALIDATION','Erasure scope remains uncertain');
-  if(r.effect==='retain'&&containsValue(c.fact.content,c.boundary)&&!containsValue(r.quote,c.boundary))throw new ServiceError('EVIDENCE_VALIDATION','Independent-value witness must include the colliding value');
+  if(r.effect==='retain'&&factContainsValue(c.fact,c.boundary)&&!containsValue(r.quote,c.boundary))throw new ServiceError('EVIDENCE_VALIDATION','Independent-value witness must include the colliding value');
   decisions.push({fact_id:c.fact_id,key:c.key,effect:r.effect,quote:r.quote});
  }
  return {fingerprint:work.fingerprint,decisions};
@@ -67,7 +88,7 @@ export function validateErasurePlan(plan:ErasurePlan|undefined,work:ReturnType<t
  if(plan.decisions.length!==expected.size)throw new ServiceError('EVIDENCE_VALIDATION','Incomplete erasure scope plan');
  for(const d of plan.decisions){const k=d.fact_id+'\0'+d.key,c=expected.get(k);if(!c||!['erase','retain'].includes(d.effect)||typeof d.quote!=='string')throw new ServiceError('EVIDENCE_VALIDATION','Invalid erasure plan decision');
   if('effect' in c){if(d.effect!==c.effect)throw new ServiceError('EVIDENCE_VALIDATION','An exact deleted property cannot be retained');}
-  else if(!d.quote.trim()||!c.fact.source_quotes.some(q=>q.includes(d.quote))||d.effect==='retain'&&containsValue(c.fact.content,c.boundary)&&!containsValue(d.quote,c.boundary))throw new ServiceError('EVIDENCE_VALIDATION','Erasure witness no longer matches');
+  else if(!d.quote.trim()||!c.fact.source_quotes.some(q=>q.includes(d.quote))||d.effect==='retain'&&factContainsValue(c.fact,c.boundary)&&!containsValue(d.quote,c.boundary))throw new ServiceError('EVIDENCE_VALIDATION','Erasure witness no longer matches');
   expected.delete(k);
  }
 }
