@@ -63,3 +63,12 @@ test('source recovery cannot redirect a same-chunk salary deletion to the follow
   store.commit(req,hash(JSON.stringify(req)),prepared,0);assert.ok(store.facts().some(f=>f.predicate==='salary'&&f.state==='erased'));assert.ok(store.facts().some(f=>f.predicate==='manager'&&f.value==='Alice'&&f.state==='active'));assert.doesNotMatch(JSON.stringify(store.raw()),/85000/);
  }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
+test('one repair receives target binding and independent source errors together',()=>fixture(async({store,config,req,fact,operation}:any)=>{
+ let calls=0,verified=false,observedFeedback='';const badQuote='The reason was sunlight and extra legroom.';
+ const x=new Extractor({...config,mode:'enhanced'},{json:async(_system:string,input:string)=>{
+  calls++;if(calls===1)return {facts:[{...fact,sources:[{index:1,quote:badQuote}]}],operations:[operation]};
+  observedFeedback=JSON.parse(input).REPAIR_FEEDBACK;
+  return {fact_edits:[{index:0,changes:{sources:fact.sources}}],operation_edits:[{index:0,remove:true}]};
+ },verify:async(p:any)=>{verified=true;assert.deepEqual(p.facts[0].sources,fact.sources);assert.equal(p.operations.length,0);return [];},embedBatch:async()=>{throw Error('fixture embedding unavailable');}} as any);
+ const p=await x.prepare(req,store.snapshot('s'),AbortSignal.timeout(1000));assert.ok(verified);assert.equal(calls,2);assert.equal(p.facts.length,1);assert.ok(!p.degraded.includes('source_span_partial'));assert.match(observedFeedback,/Operation target binding/);assert.ok(observedFeedback.includes('SOURCE_ERRORS'));assert.ok(observedFeedback.includes(badQuote));
+}));

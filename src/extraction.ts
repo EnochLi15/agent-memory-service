@@ -175,7 +175,7 @@ export class Extractor {
       let semanticallyRejected=false;const verificationSession=new VerificationSession(this.config.incrementalVerification);
       try {
         let issue='';let failedProposal:unknown;let repairScope:RepairScope|undefined;let accepted:Extraction|undefined;
-        for(let attempt=0;attempt<2;attempt++){
+        for(let attempt=0;attempt<=this.config.maxRepairRounds;attempt++){
           const prior=extractionSchema.safeParse(failedProposal);
           const patchMode=!!issue&&prior.success;
           const scope=repairScope??{fact_indices:prior.success?prior.data.facts.map((_,i)=>i):[],operation_indices:prior.success?prior.data.operations.map((_,i)=>i):[],source_indices:req.messages.map((_,i)=>i)};
@@ -205,21 +205,22 @@ export class Extractor {
           const unknown=[...valid.data.facts.flatMap(f=>[...f.supersedes,...f.depends_on]),...valid.data.operations.flatMap(o=>o.target_ids)].filter(id=>!knownIds.has(id)&&!localIds.has(id));
           if(unknown.length){expandTargets(valid.data);issue='Unknown target IDs. Use ONLY short IDs from EXISTING_FACTS, never invent IDs. This list now includes bounded operation-specific candidates. Candidate similarity is not authorization; bind only actual targets supported by the user statement. If a rejected assistant claim was not in existing memories, emit no delete/correct operation for it. Unknown IDs: '+JSON.stringify(unknown.slice(0,8));continue;}
           const bindingPool=[...snapshot.facts,...proposalFacts(valid.data,req)];
+          const invalid=valid.data.facts.flatMap((f,i)=>f.sources.filter(s=>!req.messages[s.index]?.content.includes(s.quote)).map(s=>({fact:i,index:s.index,quote:s.quote})));
+          const badOps=valid.data.operations.filter(o=>!req.messages[o.source.index]?.content.includes(o.source.quote)||!humanOperation(o,req));
+          const sourceFeedback=invalid.length||badOps.length?' SOURCE_ERRORS: '+JSON.stringify({facts:invalid,operations:badOps})+'. Also repair these exact human source spans in this same patch; copy from NEW_MESSAGES without paraphrasing.':'';
           const badScopes=valid.data.operations.flatMap((o,index)=>{
             const code=operationScopeProblem(o,bindingPool.filter(f=>o.target_ids.includes(f.id)));
             return code?[{operation:index,code,requested:{subject:o.subject,predicate:o.predicate,scope:o.scope},selected_targets:bindingPool.filter(f=>o.target_ids.includes(f.id)).map(f=>({id:f.id,proposal_index:valid.data.facts.findIndex((_,i)=>factId(req,i)===f.id),subject:f.subject,predicate:f.predicate,scope:f.scope,content:f.content}))}]:[];
           });
           const badReplacements=valid.data.facts.flatMap((f,index)=>f.supersedes.some(id=>{const old=bindingPool.find(t=>t.id===id);return old&&!replacementMatches(f,old);})?[index]:[]);
           if(badScopes.length||badReplacements.length)expandTargets(valid.data);
-          if(badScopes.length||badReplacements.length){issue='Operation target binding: subject, property or scope does not match its selected targets. '+JSON.stringify({operations:badScopes,replacement_facts:badReplacements})+'. Reuse matching existing fields only if that record is actually the requested target. For same-chunk transient targets, proposal_index identifies the editable fact slot. If the user forgets multiple properties of one concrete entity, give those transient facts that same entity scope when their original statements support it; preserve unrelated devices. Alternatively split operations only when the source actually authorizes each distinct scope. Changing sources alone does not fix a scope mismatch. Never rename an existing or unrelated record to pass validation. If correcting an assistant claim that was never stored, keep the grounded USER facts but emit no operation or supersedes reference against an unrelated record. Cite the user correction itself, not the assistant restatement. Return the corrected object.';continue;}
+          if(badScopes.length||badReplacements.length){issue='Operation target binding: subject, property or scope does not match its selected targets. '+JSON.stringify({operations:badScopes,replacement_facts:badReplacements})+sourceFeedback+'. Reuse matching existing fields only if that record is actually the requested target. For same-chunk transient targets, proposal_index identifies the editable fact slot. If the user forgets multiple properties of one concrete entity, give those transient facts that same entity scope when their original statements support it; preserve unrelated devices. Alternatively split operations only when the source actually authorizes each distinct scope. Changing sources alone does not fix a scope mismatch. Never rename an existing or unrelated record to pass validation. If correcting an assistant claim that was never stored, keep the grounded USER facts but emit no operation or supersedes reference against an unrelated record. Cite the user correction itself, not the assistant restatement. Return the corrected object.';continue;}
           if(valid.data.operations.some(o=>o.type==='forget'&&!authorizesForget(o,req))){issue='The proposed forget is quoted, hypothetical, negated, or lacks an actual user deletion instruction. Remove that operation; preserve existing facts. Return the whole object.';continue;}
           if(valid.data.operations.some(o=>!groundedOperation(o,req,[...snapshot.facts,...proposalFacts(valid.data,req)]))){issue='An operation targets a fact with no matching topic in the new user request or preceding context. Do not delete unrelated memories. If the user rejects a never-stored assistant claim, return no operation. Recheck targets and return full JSON.';continue;}
           if(missingForgetObligations(req,valid.data).length){issue='A direct retirement instruction has no operation. Bind each instruction to tenant-local evidence; do not silently omit it. Return the full object.';continue;}
           const bindingIssues=bindOperationSelectors(valid.data,req,snapshot);
           if(bindingIssues.length){expandTargets(valid.data);issue='Operation target binding: '+JSON.stringify(bindingIssues)+'. Select the actual targets from EXISTING_FACTS or earlier new:N facts; do not treat a missing target as an executed operation.';continue;}
-          const invalid=valid.data.facts.flatMap((f,i)=>f.sources.filter(s=>!req.messages[s.index]?.content.includes(s.quote)).map(s=>({fact:i,index:s.index,quote:s.quote})));
-          const badOps=valid.data.operations.filter(o=>!req.messages[o.source.index]?.content.includes(o.source.quote)||!humanOperation(o,req));
-          if(attempt===1&&invalid.length&&!badOps.length){
+          if(attempt===this.config.maxRepairRounds&&invalid.length&&!badOps.length){
             // Preserve valid operations and facts; an unsupported paraphrased quote must
             // not invalidate an entire chronological sample. Recover only what rules can
             // ground, and retain the remaining original text under lifecycle visibility.

@@ -128,3 +128,31 @@ test('malformed extraction retries route to repair even when a complete object i
  m.embedBatch=async texts=>texts.map(()=>Array(768).fill(0));const result=await new Extractor(config,m).prepare(req,{facts:[],tail:[],anchor:null,revision:0},AbortSignal.timeout(1000));
  assert.equal(result.facts.length,2);assert.deepEqual(purposes,['extraction','repair','verification']);
 });
+
+test('an explicit second repair round fills new omissions while preserving validated earlier evidence',async()=>{
+ const combined={...req,messages:[{...req.messages[0]!,content:req.messages.map(m=>m.content).join(' ')}]};
+ for(const rounds of [1,2]){
+  const config=configFromEnv({MEMORY_MODE:'enhanced',MEMORY_MAX_REPAIR_ROUNDS:String(rounds)}),m=new Models(config);let repairs=0,checks=0;
+  m.json=async(_s,input,_signal,context)=>{
+   if(context?.purpose==='extraction')return {facts:[],operations:[]};
+   if(context?.purpose==='repair'){const f=structuredClone(proposal().facts[repairs++]!);if(repairs===1)f.content=req.messages[0]!.content;f.sources[0]!.index=0;return {append_facts:[f]};}
+   checks++;const d=JSON.parse(input),out=success(d);if(checks<3)out.message_checks=[{index:0,disposition:'missing',quote:req.messages[checks-1]!.content,reason:'additional specific personal setup missing'}];
+   if(checks===3){assert.deepEqual(d.CHECK_SCOPE.fact_indices,[1]);assert.deepEqual(d.CHECK_SCOPE.message_indices,[0]);}return out;
+  };
+  m.embedBatch=async texts=>texts.map(()=>Array(768).fill(0));const run=new Extractor(config,m).prepare(combined,{facts:[],tail:[],anchor:null,revision:0},AbortSignal.timeout(1000));
+  if(rounds===1)await assert.rejects(run,/semantic verification/);else assert.equal((await run).facts.length,2);
+  assert.equal(repairs,rounds);assert.equal(checks,rounds+1);assert.equal(config.addTimeout,115000);
+ }
+});
+
+test('two-round mode remains bounded and cannot resample an unchanged rejected proposal',async()=>{
+ const config=configFromEnv({MEMORY_MODE:'enhanced',MEMORY_MAX_REPAIR_ROUNDS:'2'}),m=new Models(config),counts={extraction:0,repair:0,verification:0};
+ m.json=async(_s,input,_signal,context)=>{
+  const purpose=context!.purpose! as keyof typeof counts;counts[purpose]++;
+  if(purpose==='extraction')return {facts:[],operations:[]};if(purpose==='repair')return {};
+  const out=success(JSON.parse(input));out.message_checks=out.message_checks.map((c:any)=>({index:c.index,disposition:'missing',quote:req.messages[c.index]!.content,reason:'setup missing'}));return out;
+ };
+ await assert.rejects(new Extractor(config,m).prepare(req,{facts:[],tail:[],anchor:null,revision:0},AbortSignal.timeout(1000)),/semantic verification/);
+ assert.deepEqual(counts,{extraction:1,repair:2,verification:1});
+ for(const value of ['0','3','1.5','NaN'])assert.throws(()=>configFromEnv({MEMORY_MAX_REPAIR_ROUNDS:value}),/MEMORY_MAX_REPAIR_ROUNDS/);
+});
