@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {ServiceError,type AddRequest,type Extraction,type Fact} from './types.js';
-import {participantIndices,verificationIssues,VerificationProtocolError,type VerificationScope} from './verification.js';
+import {forgetScopeContext,participantIndices,verificationIssues,VerificationProtocolError,type VerificationScope} from './verification.js';
 import type {SourceCoverageWork,SourceCoverageRow} from './source-coverage.js';
 
 const arrays=['fact_checks','operation_checks','replacement_checks','message_checks'] as const;
@@ -56,11 +56,12 @@ export class VerificationSession {
   const replacements=proposal.facts.flatMap((f,fact_index)=>f.supersedes.map(target_id=>{
    fingerprints.set(`replacement_checks:${fact_index}:${target_id}`,factPrints[fact_index]??null);return {fact_index,target_id};
   }));
+  const forgetContext=new Map(forgetScopeContext(proposal,facts).map(c=>[c.message,c]));
   for(const index of participantIndices(req)){
    const factItems=proposal.facts.flatMap((f,i)=>f.sources.some(s=>s.index===index)?[[i,factPrints[i]]]:[]);
    const opItems=proposal.operations.flatMap((o,i)=>o.source.index===index?[[i,opPrints[i]]]:[]);
    const rawCandidates=sourceCoverage?.candidates.filter(c=>c.message===index).map(rawWitnessKey);
-   fingerprints.set(`message_checks:${index}`,[...factItems,...opItems].some(x=>x[1]===null)?null:digest({message:req.messages[index],factItems,opItems,rawCandidates}));
+   fingerprints.set(`message_checks:${index}`,[...factItems,...opItems].some(x=>x[1]===null)?null:digest({message:req.messages[index],factItems,opItems,rawCandidates,forgetContext:forgetContext.get(index)}));
   }
   const rawSlots=new Map<string,number[]>();
   for(const candidate of sourceCoverage?.candidates??[]){

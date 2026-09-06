@@ -165,3 +165,37 @@ test('retention context is visible without target operations and invalidates cac
  assert.deepEqual(await model.verify(empty,request,[active] as any,[],AbortSignal.timeout(1000),state,[{slot:0}]),[]);assert.equal(calls,1);
  const findings=await model.verify(empty,request,[{...active,state:'erased'}] as any,[],AbortSignal.timeout(1000),state,[{slot:0}]);assert.equal(calls,2);assert.match(findings[0],/^message 0:/);
 });
+
+test('forget verification sees unselected historical properties and scopes certificate invalidation to the instruction',async()=>{
+ const r={...req,messages:[{...req.messages[0],content:"Do not track Priya's food details."},req.messages[1]]};
+ const p=extractionSchema.parse({facts:[{content:req.messages[1].content,subject:'user',predicate:'browser',value:'Firefox',sources:[{index:1,quote:req.messages[1].content}]}],operations:[{type:'forget',subject:'Priya',predicate:'subscription',scope:'hot sauce',value:'new subscription',target_ids:['new-subscription'],boundary:'property',source:{index:0,quote:r.messages[0].content}}]});
+ const historical={...oldFact('historical-food'),subject:'Priya',predicate:'favorite_dish',content:'Priya likes spicy curry.',value:'spicy curry'};
+ const selected={...oldFact('new-subscription'),subject:'Priya',predicate:'subscription',scope:'hot sauce',content:'Priya has a new subscription.',value:'new subscription'};
+ const joint={...oldFact('joint'),subject:'user and Priya',content:'User and Priya have different spice preferences.'};
+ const neighbor={...oldFact('neighbor'),subject:'Marcus',content:'Marcus likes ramen.'};
+ const erased={...historical,id:'already-erased',state:'erased',content:'',value:''};
+ const pool=[historical,selected,joint,neighbor,erased],state=session(),m=new Models(configFromEnv({}));let calls=0;
+ m.json=async(_s,input)=>{calls++;const d=JSON.parse(input);assert.deepEqual(d.TARGET_FACTS.map((f:any)=>f.id),['new-subscription']);
+  assert.deepEqual(d.FORGET_SCOPE_CONTEXT[0].facts.map((f:any)=>f.id),['historical-food','new-subscription','joint']);
+  if(calls===2)assert.deepEqual(d.CHECK_SCOPE,{fact_indices:[],operation_indices:[],replacements:[],message_indices:[0]});
+  return success(d);
+ };
+ assert.deepEqual(await verify(m,p,state,r,pool as any),[]);
+ historical.content='Priya likes extra-hot curry.';assert.deepEqual(await verify(m,p,state,r,pool as any),[]);assert.equal(calls,2);
+ neighbor.content='Marcus now likes noodles.';historical.vector=[1,2] as any;assert.deepEqual(await verify(m,p,state,r,pool as any),[]);assert.equal(calls,2);
+});
+
+test('missing historical erasure coverage stays rejected until the proposal changes',async()=>{
+ const r={...req,messages:[{...req.messages[0],content:"Forget Priya's food details."}]};
+ const op=(id:string,predicate:string)=>({type:'forget',subject:'Priya',predicate,value:'food',target_ids:[id],boundary:'property',source:{index:0,quote:r.messages[0].content}});
+ const p=extractionSchema.parse({facts:[],operations:[op('new','subscription')]});
+ const pool=[{...oldFact('old'),subject:'Priya',predicate:'favorite_dish',content:'Priya likes spicy curry.'},{...oldFact('new'),subject:'Priya',predicate:'subscription',content:'Priya has a hot sauce subscription.'}];
+ const state=session(),m=new Models(configFromEnv({}));let calls=0;
+ m.json=async(_s,input)=>{calls++;const d=JSON.parse(input);assert.ok(d.FORGET_SCOPE_CONTEXT[0].facts.some((f:any)=>f.id==='old'));const out=success(d);
+  if(!d.PROPOSAL.operations.some((o:any)=>o.target_ids.includes('old')))out.message_checks=[{index:0,disposition:'missing',quote:r.messages[0].content,reason:'Historical food preference remains outside the proposed erasure.'}];
+  return out;
+ };
+ assert.match((await verify(m,p,state,r,pool as any)).join(' '),/Historical food preference/);
+ assert.match((await verify(m,p,state,r,pool as any)).join(' '),/Historical food preference/);assert.equal(calls,1);
+ p.operations.push(extractionSchema.parse({facts:[],operations:[op('old','favorite_dish')]}).operations[0]);assert.deepEqual(await verify(m,p,state,r,pool as any),[]);assert.equal(calls,2);
+});
