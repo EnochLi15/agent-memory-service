@@ -7,6 +7,7 @@ const retirement=/\b(?:I (?:do not|don't) need .{1,160}(?:stored|remembered|kept
 // The negative applies to retaining the information, not to forgetting it.
 // Sentence-level quotation, reporting and conditional guards still apply.
 const secondPersonRetirement=/\byou (?:do not|don't) need to (?:keep track of|track|retain|store|remember|keep) .{1,160} anymore\b/iu;
+const noStore=/^(?:please\s+)?(?:do not|don't|never)\s+(?:store|retain|save|keep|remember)\b|^(?:请)?(?:不要|别)(?:保存|存储|记住)/iu;
 const negative=new RegExp(String.raw`\b(?:(?:do not|don't|never|must not|mustn't)\s+(?:(?:want|need)\s+(?:you\s+)?to\s+)?${verb}|(?:should not|shouldn't)\s+${verb})\b|别忘|不要忘|不想.*忘|不要(?:删除|移除)|别(?:删除|移除)`,'iu');
 const request=new RegExp(String.raw`^(?:(?:now|okay|ok|also|then|actually|and)\s*[,，:]?\s*)?(?:(?:please|kindly|can you|could you|would you|you can|you may|you should|you must|I want you to|I need you to|let's)\s+)?${verb}\b|^(?:请|帮我|麻烦你|你可以|你应该)?(?:忘掉|忘记|删除|移除|不要再记)`,'iu');
 const mention=new RegExp(String.raw`\b${verb}\b|忘掉|忘记|删除|移除|不要再记`,'iu');
@@ -32,7 +33,7 @@ export function instructionSpans(text:string):InstructionSpan[]{
   if(!clause)continue;
   const prefix=speakerPrefix(clause);const body=prefix?clause.slice(prefix[0].length):clause;
   const blocked=reported.test(clause)||negative.test(body)||/\bforget it\b/iu.test(body);
-  const direct=!blocked&&(retirement.test(body)||secondPersonRetirement.test(body)||request.test(body));
+  const direct=!blocked&&(retirement.test(body)||secondPersonRetirement.test(body)||noStore.test(body)||request.test(body));
   spans.push({start,end,quote:text.slice(start,end).trim(),intent:direct?'forget':blocked&&mention.test(body)?'blocked':'none'});
  }
  return spans;

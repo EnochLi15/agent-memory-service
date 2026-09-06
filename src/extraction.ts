@@ -1,3 +1,4 @@
+import {sourceOperationWork,sourceOperationInput,sourceRejectionFindings,SOURCE_OPERATION_PROMPT,decodeSourceOperations,resolvedSourceInstructions,validateSourceOperations} from './source-operations.js';
 import { createHash } from 'node:crypto';
 import type { Config } from './config.js';
 import { Models } from './models.js';
@@ -166,6 +167,18 @@ export class Extractor {
     if(this.config.sourceErasure&&!this.config.experimental?.rawOnly&&snapshot.revision>0&&!snapshot.erasureSources)throw new ServiceError('SOURCE_FORMAT','Source erasure requires a fresh v4 directory');
     const degraded: string[] = [];const partialSources=new Set<number>();
     const modelSignal=AbortSignal.any([signal,AbortSignal.timeout(Math.min(95000,Math.max(500,this.config.addTimeout-25000)))]);
+    let sourceOperationPlan:Prepared['sourceOperationPlan'];
+    if(this.config.sourceOperations){
+      const work=sourceOperationWork(req,snapshot.facts);
+      if(work.enabled){
+        let raw:unknown;
+        try{raw=await this.models.json(SOURCE_OPERATION_PROMPT,JSON.stringify(sourceOperationInput(work)),modelSignal,{purpose:'source_operation',trace:traceIdentity});}
+        catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Source operation review unavailable within shared budget');}
+        sourceOperationPlan=decodeSourceOperations(raw,work);
+      }else sourceOperationPlan={fingerprint:work.fingerprint,decisions:work.instructions.map(i=>({instruction:i.slot,action:'ordinary',target_slots:[],cuts:[]}))};
+    }
+    const sourceActions=sourceOperationPlan?resolvedSourceInstructions(sourceOperationPlan,req,snapshot.facts):[];
+    const pendingForget=(proposal:Extraction)=>missingForgetObligations(req,proposal).filter(o=>!sourceActions.some(a=>a.message===o.index&&a.start===o.span.start&&a.end===o.span.end));
     const chronology=messageAnchors(req,snapshot.anchor);const anchor=chronology.last;
     let parsed: Extraction;
     if(this.config.experimental?.rawOnly){
@@ -187,8 +200,8 @@ export class Extractor {
         }
       };
       const references=this.config.extractionFormat==='source_refs',grouped=this.config.extractionFormat!=='flat';
-      const extractionPrompt=references?SOURCE_REFERENCE_PROMPT:grouped?GROUPED_EXTRACTION_PROMPT:EXTRACTION_PROMPT;
-      const user=JSON.stringify({...(grouped?{EXTRACTION_PROTOCOL:references?SOURCE_REFERENCE_PROTOCOL:GROUPED_EXTRACTION_PROTOCOL,PARTICIPANT_INDEX:participantIndices(req)}:{}),OBSERVATION_DATE:anchor,EXISTING_FACTS:relevant,CONTEXT_ONLY:snapshot.tail.map(m=>({role:m.role,content:m.content})),NEW_MESSAGES:references?sourceReferenceMessages(req):req.messages.map((m,index)=>({index,...m}))});
+      const extractionPrompt=(references?SOURCE_REFERENCE_PROMPT:grouped?GROUPED_EXTRACTION_PROMPT:EXTRACTION_PROMPT)+(sourceActions.length?'\nRESOLVED_SOURCE_ACTIONS have a separate independently verified source removal plan that will commit atomically with your facts. Do not produce duplicate fact-ID operations for those exact instructions, and never bind them to unrelated existing facts. Preserve remaining corrected user facts and all other real instructions. Do not turn a rejected assistant value into a negative fact such as "user does not use REJECTED_VALUE"; that still stores the detail the user rejected. Generic rejection statements need no separate fact, while independent human preferences remain memorable. Do not cite any cut interval as a fact source; select the exact surviving user subclause if its whole sentence overlaps a cut.':'');
+      const user=JSON.stringify({...(sourceActions.length?{RESOLVED_SOURCE_ACTIONS:sourceActions}:{}),...(grouped?{EXTRACTION_PROTOCOL:references?SOURCE_REFERENCE_PROTOCOL:GROUPED_EXTRACTION_PROTOCOL,PARTICIPANT_INDEX:participantIndices(req)}:{}),OBSERVATION_DATE:anchor,EXISTING_FACTS:relevant,CONTEXT_ONLY:snapshot.tail.map(m=>({role:m.role,content:m.content})),NEW_MESSAGES:references?sourceReferenceMessages(req):req.messages.map((m,index)=>({index,...m}))});
       // Reserve time for grounded fallback, local embedding and atomic commit.
       // This inner budget never extends the caller's absolute request deadline.
       let semanticallyRejected=false;const verificationSession=new VerificationSession(this.config.incrementalVerification);
@@ -262,7 +275,7 @@ export class Extractor {
             continue;
           }
           if(valid.data.operations.some(o=>!groundedOperation(o,req,[...snapshot.facts,...proposalFacts(valid.data,req)]))){issue='An operation targets a fact with no matching topic in the new user request or preceding context. Do not delete unrelated memories. If the user rejects a never-stored assistant claim, return no operation. Recheck targets and return full JSON.';continue;}
-          if(missingForgetObligations(req,valid.data).length){issue='A direct retirement instruction has no operation. Bind each instruction to tenant-local evidence; do not silently omit it. Return the full object.';continue;}
+          if(pendingForget(valid.data).length){issue='A direct retirement instruction has no operation. Bind each instruction to tenant-local evidence; do not silently omit it. Return the full object.';continue;}
           const bindingIssues=bindOperationSelectors(valid.data,req,snapshot);
           if(bindingIssues.length){expandTargets(valid.data);issue='Operation target binding: '+JSON.stringify(bindingIssues)+'. Select the actual targets from EXISTING_FACTS or earlier new:N facts; do not treat a missing target as an executed operation.';continue;}
           if(attempt===this.config.maxRepairRounds&&invalid.length&&!badOps.length){
@@ -284,12 +297,13 @@ export class Extractor {
             for(const o of valid.data.operations)o.target_ids=o.target_ids.map(id=>aliases.get(id)??id);
             bindNewFactHandles(valid.data,req);degraded.push('source_span_partial');
             if(bindOperationSelectors(valid.data,req,snapshot).length)throw new ServiceError('OPERATION_TARGET','Partial recovery left unresolved target bindings');
-            const findings=await this.models.verify(valid.data,req,[...snapshot.facts,...proposalFacts(valid.data,req)],missingPersonalSources(req,valid.data),modelSignal,verificationSession);
+            const findings=await this.models.verify(valid.data,req,[...snapshot.facts,...proposalFacts(valid.data,req)],missingPersonalSources(req,valid.data),modelSignal,verificationSession,sourceActions);
             if(findings.length)throw new ServiceError('EVIDENCE_VALIDATION','Partial recovery failed semantic verification');
             accepted=valid.data;break;
           }
           if(invalid.length||badOps.length){issue='Every source quote must be an exact substring of the indicated NEW_MESSAGES content. Operations must cite a USER message, or a named real participant changing their own facts. An unlabelled assistant reply never authorizes changes. Never copy CONTEXT_ONLY as a new source. Fix all facts/operations and return the full object. Invalid fact spans: '+JSON.stringify(invalid.slice(0,8));continue;}
-          const findings=await this.models.verify(valid.data,req,bindingPool,missingPersonalSources(req,valid.data),modelSignal,verificationSession);
+          const rejectionFindings=sourceRejectionFindings(sourceOperationPlan,req,valid.data.facts);
+          const findings=rejectionFindings.length?rejectionFindings:await this.models.verify(valid.data,req,bindingPool,missingPersonalSources(req,valid.data),modelSignal,verificationSession,sourceActions);
           if(findings.length){semanticallyRejected=true;repairScope=scopeForFindings(valid.data,findings);issue='Semantic verification rejected the proposal. Repair these specific failures while preserving supported unrelated facts. '+JSON.stringify(findings)+'. Return the complete corrected object.';continue;}
           accepted=valid.data;break;
         }
@@ -310,7 +324,7 @@ export class Extractor {
     // Reject nonexistent operation targets; the model may only bind tenant-local evidence.
     const localIds=bindNewFactHandles(parsed,req);
     if(bindOperationSelectors(parsed,req,snapshot).length)throw new ServiceError('OPERATION_TARGET','Unresolved operation target before commit');
-    if(!this.config.experimental?.rawOnly&&missingForgetObligations(req,parsed).length)throw new ServiceError('OPERATION_INTENT','Unresolved memory operation after bounded recovery');
+    if(!this.config.experimental?.rawOnly&&pendingForget(parsed).length)throw new ServiceError('OPERATION_INTENT','Unresolved memory operation after bounded recovery');
     const known = new Set([...snapshot.facts.map(f=>f.id),...localIds]);
     if (parsed.operations.some(o=>o.target_ids.some(id=>!known.has(id)))) throw new ServiceError('OPERATION_TARGET','Unknown memory operation target');
     const messages = req.messages.map((m,i)=>({ ...m,id:hash(`${req.user_id}\0${req.request_id}\0${i}`),session_id:req.session_id,ordinal:i,external_id:m.content.match(/\[Source id: ([^\]]+)\]/)?.[1],searchable:true,partial:partialSources.has(i),time_basis:(chronology.anchors[i]?.includes('synthetic ordering')?'ordering':'source') as 'ordering'|'source' }));
@@ -324,6 +338,7 @@ export class Extractor {
       if(!this.config.experimental?.rawOnly&&src.every(m=>m.role!=='user'&&!speakerPrefix(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim())))f.modality='quoted';
       facts.push({ ...attributes,event_time:eventTime,source_spans:sourceSpans(f,messages),modality:f.modality,time_basis:src[0]!.time_basis,id:factId(req,i),source_ids:[...new Set(src.map(m=>m.id))],source_quotes:proposalSources.map(s=>s.quote),created_at:src[0]!.timestamp,observed_at:src[0]!.timestamp,state:'active',vector:null,entities:entities(f.content),revision:snapshot.revision+1 });
     }
+    if(sourceOperationPlan)validateSourceOperations(sourceOperationPlan,req,snapshot.facts,facts,messages);
     const useErasure=this.config.erasureBinding&&!this.config.experimental?.rawOnly;
     let erasurePlan:Prepared['erasurePlan'];
     if(useErasure){
@@ -378,7 +393,7 @@ export class Extractor {
         if (facts.some(f=>f.content.length>=3500)) degraded.push('long_evidence_lexical');
       } catch(error) { if (signal.aborted) throw error; degraded.push('embedding_lexical'); }
     }
-    const sourceFormat=`${this.config.sourceIndex&&!this.config.experimental?.rawOnly?'dual-source':'facts-only'}-v${useErasure?(this.config.semanticTransitions?5:this.config.sourceErasure?4:3):2}` as Prepared['sourceFormat'];
-    return { facts,operations:parsed.operations,messages,passages,sourceFormat,...(erasurePlan?{erasurePlan}:{}),...(sourceErasurePlan?{sourceErasurePlan}:{}),...(transitionPlan?{transitionPlan}:{}),anchor,degraded,embeddingSpace:this.config.embeddingSpace };
+    const sourceFormat=`${this.config.sourceIndex&&!this.config.experimental?.rawOnly?'dual-source':'facts-only'}-v${useErasure?(this.config.sourceOperations?6:this.config.semanticTransitions?5:this.config.sourceErasure?4:3):2}` as Prepared['sourceFormat'];
+    return { ...(sourceOperationPlan?{sourceOperationPlan}:{}),facts,operations:parsed.operations,messages,passages,sourceFormat,...(erasurePlan?{erasurePlan}:{}),...(sourceErasurePlan?{sourceErasurePlan}:{}),...(transitionPlan?{transitionPlan}:{}),anchor,degraded,embeddingSpace:this.config.embeddingSpace };
   }
 }

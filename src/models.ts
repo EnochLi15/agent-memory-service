@@ -17,7 +17,7 @@ import {TRANSITION_RESPONSE_FORMAT} from './transitions.js';
 function audit(record:Record<string,unknown>):void {
   if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
 }
-type GenerationPurpose='extraction'|'verification'|'repair'|'rerank'|'erasure_binding'|'source_erasure'|'source_erasure_repair'|'state_transition';
+type GenerationPurpose='extraction'|'verification'|'repair'|'rerank'|'erasure_binding'|'source_erasure'|'source_erasure_repair'|'state_transition'|'source_operation';
 type GenerationContext={purpose?:GenerationPurpose;verification_format?:string;verification_scope?:{facts:number;operations:number;replacements:number;messages:number;reused:number};trace?:{user_id:string;request_id:string}};
 
 export class Models {
@@ -25,15 +25,15 @@ export class Models {
   constructor(private config: Config) {
     this.client = new OpenAI({ apiKey: config.llmKey || 'local', baseURL: config.llmBase, maxRetries: 0, timeout: config.addTimeout });
   }
-  private stageModel(purpose:GenerationPurpose):string{return purpose==='rerank'?this.config.llmModel:this.config.llmStageModels[purpose==='erasure_binding'||purpose==='source_erasure'||purpose==='source_erasure_repair'||purpose==='state_transition'?'verification':purpose]??this.config.llmModel;}
-  async verify(proposal:Extraction,req:AddRequest,facts:Fact[],omitted:number[],signal:AbortSignal,session=new VerificationSession()):Promise<string[]>{
-    const compact=this.config.verificationFormat==='compact',prompt=compact?COMPACT_VERIFICATION_PROMPT:VERIFICATION_PROMPT;
-    const plan=session.plan(req,proposal,facts,{base:this.config.llmBase,model:this.stageModel('verification'),effort:this.config.llmReasoningEffort,prompt,responseFormat:this.config.verificationResponseFormat,...(this.config.verificationResponseFormat==='json_schema'?{schema:COMPACT_VERIFICATION_RESPONSE_FORMAT.json_schema}:{})});
+  private stageModel(purpose:GenerationPurpose):string{return purpose==='rerank'?this.config.llmModel:this.config.llmStageModels[purpose==='erasure_binding'||purpose==='source_erasure'||purpose==='source_erasure_repair'||purpose==='state_transition'||purpose==='source_operation'?'verification':purpose]??this.config.llmModel;}
+  async verify(proposal:Extraction,req:AddRequest,facts:Fact[],omitted:number[],signal:AbortSignal,session=new VerificationSession(),resolvedSourceActions:unknown[]=[]):Promise<string[]>{
+    const compact=this.config.verificationFormat==='compact',prompt=(compact?COMPACT_VERIFICATION_PROMPT:VERIFICATION_PROMPT)+(resolvedSourceActions.length?'\nRESOLVED_SOURCE_ACTIONS were independently authorized against exact source targets before this proposal. They are pending atomic source removals, separate from fact operations. Do not demand duplicate fact-ID operations for these exact instructions. Still check every remaining personal assertion and instruction in those messages. A message with only resolved source instructions and no other memorable information may be not_memorable. Never use this context to authorize changing an unrelated fact. A proposed negative fact that restates a rejected assistant value still retains that detail: mark it unsupported. Removing rejected-claim summaries is not a coverage failure. Preserve independent user facts, including real preferences or routines.':'');
+    const plan=session.plan(req,proposal,facts,{base:this.config.llmBase,model:this.stageModel('verification'),effort:this.config.llmReasoningEffort,prompt,resolvedSourceActions,responseFormat:this.config.verificationResponseFormat,...(this.config.verificationResponseFormat==='json_schema'?{schema:COMPACT_VERIFICATION_RESPONSE_FORMAT.json_schema}:{})});
     if(plan.blockedFindings.length)return plan.blockedFindings;
     const scope=plan.scope;
     const counts={facts:scope.fact_indices.length,operations:scope.operation_indices.length,replacements:scope.replacements.length,messages:scope.message_indices.length,reused:plan.reused};
     if(!counts.facts&&!counts.operations&&!counts.replacements&&!counts.messages)return session.evaluate(plan,{fact_checks:[],operation_checks:[],replacement_checks:[],message_checks:[]});
-    const data=verificationInput(req,proposal,facts,omitted,scope);
+    const data={...verificationInput(req,proposal,facts,omitted,scope),...(resolvedSourceActions.length?{RESOLVED_SOURCE_ACTIONS:resolvedSourceActions}:{})};
     const input=JSON.stringify(compact?{...data,VERIFICATION_PROTOCOL:COMPACT_VERIFICATION_PROTOCOL,PROPOSAL:{...proposal,facts:proposal.facts.map(f=>({...f,sources:f.sources.map((s,source_slot)=>({...s,source_slot}))}))},REPLACEMENT_TARGETS:scope.replacements.map((r,check_index)=>({...r,check_index}))}:data);let repair='';
     for(let attempt=0;attempt<2;attempt++){
       let raw:unknown;

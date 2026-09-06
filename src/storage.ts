@@ -1,3 +1,4 @@
+import {validateSourceOperations} from './source-operations.js';
 // Transactional evolution of mem0 vector_stores/memory.ts and storage/SQLiteManager.ts.
 // One tenant owns one connection; history, facts, vectors, FTS, sources and receipts commit together.
 import Database from 'better-sqlite3';
@@ -68,7 +69,7 @@ export class TenantStore {
   snapshot(session:string):Snapshot {
     const rows=this.db.prepare('SELECT body FROM messages WHERE session_id=? ORDER BY ordinal DESC LIMIT 10').all(session) as Row[];
     const boundaries=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
-    return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null,...(/-v[345]$/.test(this.meta('source_format')??'')?{erasureBoundaries:boundaries}:{}),...(/-v[45]$/.test(this.meta('source_format')??'')?{erasureSources:(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage)}:{})};
+    return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null,...(/-v[3456]$/.test(this.meta('source_format')??'')?{erasureBoundaries:boundaries}:{}),...(/-v[456]$/.test(this.meta('source_format')??'')?{erasureSources:(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage)}:{})};
   }
   private put(f:Fact):void {
     // Extraction proposals carry a sources array, but persisted facts have one
@@ -82,12 +83,13 @@ export class TenantStore {
   commit(req:AddRequest,payloadHash:string,prepared:Prepared,expectedRevision:number,failAt?:string):Receipt {
     // A rejected/rolled-back transaction must not mutate a fingerprinted plan
     // or its transient target records in the caller's prepared object.
-    if(/-v[345]$/.test(prepared.sourceFormat??''))prepared=structuredClone(prepared);
+    if(/-v[3456]$/.test(prepared.sourceFormat??''))prepared=structuredClone(prepared);
     return this.db.transaction(()=>{
       const already=this.receipt(req.request_id,payloadHash); if(already)return already;
       if(this.revision()!==expectedRevision)throw new ServiceError('REVISION_CONFLICT','Concurrent mutation; retry request');
       if(prepared.operations.some(o=>retirementEffectMismatch(o,req)))throw new ServiceError('OPERATION_INTENT','Retraction cannot satisfy an erasure request');
-      const semanticErasure=/-v[345]$/.test(prepared.sourceFormat??''),sourceErasure=/-v[45]$/.test(prepared.sourceFormat??''),semanticTransitions=prepared.sourceFormat?.endsWith('-v5');
+      const semanticErasure=/-v[3456]$/.test(prepared.sourceFormat??''),sourceErasure=/-v[456]$/.test(prepared.sourceFormat??''),semanticTransitions=/-v[56]$/.test(prepared.sourceFormat??'');
+      const sourceActions=prepared.sourceFormat?.endsWith('-v6')?validateSourceOperations(prepared.sourceOperationPlan,req,this.facts(),prepared.facts,prepared.messages):undefined;
       const transitions=semanticTransitions?validateTransitions(prepared.transitionPlan,transitionWork(req,this.facts(),prepared.facts,prepared.operations)):undefined;
       let sourceCuts=new Map<string,{start:number;end:number}[]>();const reviewedSources=new Set<string>();
       const forcedErased=new Set<string>();
@@ -106,6 +108,7 @@ export class TenantStore {
         for(const id of validated.erasedFacts)forcedErased.add(id);
         for(const c of work.candidates)if(c.kind==='source')reviewedSources.add(c.id);
       }
+      if(sourceActions)for(const [id,cuts] of sourceActions.cuts)sourceCuts.set(id,[...(sourceCuts.get(id)??[]),...cuts]);
       const sourceWitnesses=sourceErasure?[...this.facts(),...prepared.facts].map(f=>({id:f.id,source_ids:[...f.source_ids],source_quotes:[...f.source_quotes]})):[];
       const revision=expectedRevision+1;
       if(prepared.sourceFormat){
@@ -339,6 +342,11 @@ export class TenantStore {
         const original=originalFacts.find(f=>ids.includes(f.id))??prepared.facts.find(f=>ids.includes(f.id));
         event(o.type,{...o,content:original?.content??''},[source.id],ids,after,source.content.indexOf(o.source.quote),source.role==='user'?'user':'participant');
         this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:o.type,target_ids:ids,subject:o.subject,predicate:o.predicate,scope:o.scope,boundary:o.boundary,source_id:source.id,revision}));
+      }
+      if(sourceActions)for(const d of sourceActions.plan.decisions.filter(d=>d.action==='reject_source')){
+        const instruction=sourceActions.work.instructions[d.instruction]!,source=inserted[instruction.message]!;
+        event('forget',{subject:'user',predicate:'rejected assistant assertion',scope:'source',content:''},[source.id],[],[],instruction.start,'user');
+        this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:'reject_source',source_id:source.id,target_ids:d.target_slots.map(i=>inserted[i]!.id),revision}));
       }
       for(const e of events)this.db.prepare('INSERT INTO memory_events VALUES (?,?)').run(e.id,JSON.stringify(e));
       if(failAt==='indexes')throw new ServiceError('INJECTED_FAILURE','Fault injection after index writes');

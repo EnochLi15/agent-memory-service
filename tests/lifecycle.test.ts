@@ -73,7 +73,11 @@ test('querying with another embedding space uses lexical fallback rather than mi
 test('a valid but unrelated target ID cannot authorize deletion',()=>fixture(async({s,c,add}:any)=>{
  await add('I like coffee.');const f=s.facts()[0];const req={request_id:'bad',user_id:'u',session_id:'s',messages:[{role:'user',content:'That gym schedule is wrong. Do not store that.',timestamp:'2026-01-02T00:00:00Z'}]};
  const x=new Extractor({...c,mode:'enhanced'},{verify:async()=>[],json:async(system:string)=>system.includes('PATCH_SCHEMA')?{}:({facts:[],operations:[{type:'forget',target_ids:[f.id],subject:f.subject,predicate:f.predicate,source:{index:0,quote:req.messages[0].content}}]})} as any);
- const p=await x.prepare(req,s.snapshot('s'),AbortSignal.timeout(1000));assert.equal(p.operations.length,0);assert.ok(p.degraded.includes('extraction_offline'));assert.equal(s.facts()[0].state,'active');
+ // A recognized no-store instruction cannot be acknowledged as an unchecked
+ // offline no-op when no source target or fact target has been resolved.
+ const before=JSON.stringify(s.snapshot('s'));
+ await assert.rejects(()=>x.prepare(req,s.snapshot('s'),AbortSignal.timeout(1000)));
+ assert.equal(JSON.stringify(s.snapshot('s')),before);assert.equal(s.facts()[0].state,'active');
 }));
 test('partially recovered raw evidence becomes invisible when a linked fact is superseded or erased',()=>fixture(async({s,c,add,find}:any)=>{
  const req={request_id:'partial',user_id:'u',session_id:'s',messages:[{role:'user',content:'I like kayaking. My current city is Seattle.',timestamp:'2026-01-01T00:00:00Z'}]};
