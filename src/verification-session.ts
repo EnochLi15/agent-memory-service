@@ -11,6 +11,10 @@ const empty=():Checks=>({fact_checks:[],operation_checks:[],replacement_checks:[
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const rawWitnessKey=({slot:_,...witness}:SourceCoverageWork['candidates'][number])=>digest(witness);
 const checkKey=(type:CheckArray,c:Check)=>type==='replacement_checks'?`${type}:${c.fact_index}:${c.target_id}`:`${type}:${c.index}`;
+// A fact's exact proposition, sources and transitive evidence define its
+// certificate. Its array position may move when an unrelated fact is removed.
+// Operations, replacements and message coverage retain their stricter keys.
+const certificateKey=(key:string,fingerprint:string)=>key.startsWith('fact_checks:')?`fact_checks:${fingerprint}`:key;
 type Plan={scope:VerificationScope;cached:Checks;fingerprints:Map<string,string|null>;blockedFindings:string[];req:AddRequest;proposal:Extraction;reused:number;sourceCoverage?:SourceCoverageWork};
 
 /** Owned by one prepare() call, never kept on the shared Models instance.
@@ -73,11 +77,13 @@ export class VerificationSession {
     const [type,index]=key.split(':');const label=type==='fact_checks'?'fact':type==='operation_checks'?'operation':type==='message_checks'?'message':'replacement fact';
     blockedFindings.push(`${label} ${index}: Verification dependency evidence is missing or cyclic`);
    }
-   const failed=this.#failed.get(key);if(fingerprint&&failed?.fingerprint===fingerprint)blockedFindings.push(failed.finding);
-   const passed=this.#passed.get(key);
+   const storedKey=fingerprint?certificateKey(key,fingerprint):key;
+   const failed=this.#failed.get(storedKey);if(fingerprint&&failed?.fingerprint===fingerprint)blockedFindings.push(key.startsWith('fact_checks:')?failed.finding.replace(/^fact \d+:/,`fact ${key.split(':')[1]}:`):failed.finding);
+   const passed=this.#passed.get(storedKey);
    if(this.reusePassed&&fingerprint&&passed?.fingerprint===fingerprint&&
       (passed.rawKeys??[]).every(k=>rawSlots.get(k)?.length===1)){
     const check=structuredClone(passed.check);
+    if(key.startsWith('fact_checks:'))check.index=Number(key.split(':')[1]);
     if(passed.rawKeys?.length)check.raw_slots=passed.rawKeys.map(k=>rawSlots.get(k)![0]!);
     cached[key.split(':')[0] as CheckArray].push(check);
    }else needed.add(key);
@@ -115,11 +121,13 @@ export class VerificationSession {
    throw error;
   }
   const rejected=this.rememberFailures(plan,findings);
+  const rejectedCertificates=new Set([...rejected].flatMap(key=>{const fp=plan.fingerprints.get(key);return fp?[certificateKey(key,fp)]:[];}));
   for(const type of arrays)for(const check of merged[type]){
    const key=checkKey(type,check),fingerprint=plan.fingerprints.get(key);
-   if(fingerprint&&!rejected.has(key)){
+   if(fingerprint&&!rejectedCertificates.has(certificateKey(key,fingerprint))){
     const rawKeys=type==='message_checks'?(check.raw_slots??[]).map((slot:number)=>rawWitnessKey(plan.sourceCoverage!.candidates[slot]!)):undefined;
-    this.#passed.set(key,{fingerprint,check:structuredClone(check),rawKeys});this.#failed.delete(key);
+    const storedKey=certificateKey(key,fingerprint);
+    this.#passed.set(storedKey,{fingerprint,check:structuredClone(check),rawKeys});this.#failed.delete(storedKey);
    }
   }
   if(!findings.length&&plan.sourceCoverage)this.#accepted={fingerprint:digest({req:plan.req,proposal:plan.proposal}),rows:structuredClone(merged.message_checks) as SourceCoverageRow[]};
@@ -139,8 +147,9 @@ export class VerificationSession {
    const prefix=`${type}:${match[2]}`;
    for(const [key,fingerprint] of plan.fingerprints){
     if(key!==prefix&&!(type==='replacement_checks'&&key.startsWith(prefix+':')))continue;
-    rejected.add(key);this.#passed.delete(key);
-    if(fingerprint)this.#failed.set(key,{fingerprint,finding});
+    rejected.add(key);
+    const storedKey=fingerprint?certificateKey(key,fingerprint):key;this.#passed.delete(storedKey);
+    if(fingerprint)this.#failed.set(storedKey,{fingerprint,finding});
    }
   }
   return rejected;

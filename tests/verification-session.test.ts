@@ -55,9 +55,9 @@ test('request, tenant, source and model identity changes cannot reuse certificat
  const plan=state.plan(req,p,[],{protocol:'v3'});assert.equal(plan.reused,0);
 });
 
-test('deletion and index remapping recheck the remaining fact and removed message coverage',async()=>{
+test('deletion and index remapping reuse unchanged fact evidence but recheck removed message coverage',async()=>{
  const state=session(),m=new Models(configFromEnv({})),p=proposal();let calls=0;
- m.json=async(_s,input)=>{const d=JSON.parse(input);calls++;const out=success(d);if(calls===2){assert.deepEqual(d.CHECK_SCOPE.fact_indices,[0]);assert.deepEqual(d.CHECK_SCOPE.message_indices,[0,1]);assert.equal(d.PROPOSAL.facts[0].value,'Firefox');out.message_checks[0]={index:0,disposition:'missing',quote:req.messages[0]!.content,reason:'salary was removed'};}return out;};
+ m.json=async(_s,input)=>{const d=JSON.parse(input);calls++;const out=success(d);if(calls===2){assert.deepEqual(d.CHECK_SCOPE.fact_indices,[]);assert.deepEqual(d.CHECK_SCOPE.message_indices,[0,1]);assert.equal(d.PROPOSAL.facts[0].value,'Firefox');out.message_checks[0]={index:0,disposition:'missing',quote:req.messages[0]!.content,reason:'salary was removed'};}return out;};
  assert.deepEqual(await verify(m,p,state),[]);p.facts.shift();assert.match((await verify(m,p,state))[0]!,/message 0:/);assert.equal(calls,2);
 });
 
@@ -230,4 +230,26 @@ test('repair coverage links resolve same-request handles without confusing them 
   checks++;const out=success(d);if(checks===1)out.message_checks=out.message_checks.map((c:any)=>c.index===1?{index:1,disposition:'missing',quote:r.messages[1].content,reason:'Earlier favorite dish remains uncovered.'}:c);return out;
  };
  m.embedBatch=async xs=>xs.map(()=>[1,0]);const prepared=await new Extractor(config,m).prepare(r,{facts:[historical],tail:[],anchor:null,revision:1} as any,AbortSignal.timeout(3000));assert.equal(repairs,1);assert.equal(checks,2);assert.ok(prepared.operations.some(o=>o.target_ids.includes(prepared.facts[0].id)));assert.ok(prepared.operations.some(o=>o.target_ids.includes(historical.id)));
+});
+
+
+test('a rejected unchanged fact stays rejected after an earlier item is removed',async()=>{
+ const state=session(),m=new Models(configFromEnv({})),p=proposal();let calls=0;
+ m.json=async(_s,input)=>{calls++;const out=success(JSON.parse(input));out.fact_checks[1].supported=false;out.fact_checks[1].reason='The browser claim lacks support.';return out;};
+ assert.match((await verify(m,p,state))[0],/^fact 1:/);p.facts.shift();
+ assert.match((await verify(m,p,state))[0],/^fact 0:/);assert.equal(calls,1,'index movement cannot unlock a rejected claim for favorable resampling');
+});
+
+test('moving a fact does not reuse a certificate after its referenced evidence changes',async()=>{
+ const state=session(),m=new Models(configFromEnv({})),p=proposal(),pool=[oldFact('evidence')];p.facts[1].depends_on=['evidence'];let calls=0;
+ m.json=async(_s,input)=>{calls++;const d=JSON.parse(input);if(calls===2)assert.deepEqual(d.CHECK_SCOPE.fact_indices,[0]);return success(d);};
+ assert.deepEqual(await verify(m,p,state,req,pool),[]);p.facts.shift();pool[0].content='changed source evidence';
+ assert.deepEqual(await verify(m,p,state,req,pool),[]);assert.equal(calls,2);
+});
+
+test('contradictory duplicate verdicts cannot overwrite a semantic rejection with a positive certificate',async()=>{
+ const state=session(),m=new Models(configFromEnv({})),p=proposal();p.facts[1]=structuredClone(p.facts[0]);let calls=0;
+ m.json=async(_s,input)=>{calls++;const out=success(JSON.parse(input));out.fact_checks[0].supported=false;out.fact_checks[0].reason='Unsupported claim.';return out;};
+ assert.match((await verify(m,p,state))[0],/^fact 0:/);p.facts.shift();
+ assert.match((await verify(m,p,state))[0],/^fact 0:/);assert.equal(calls,1);
 });
