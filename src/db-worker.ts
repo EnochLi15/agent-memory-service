@@ -15,6 +15,9 @@ parentPort!.on('message',(job:{id:number;method:string;userId:string;args:unknow
     if(job.deadline&&Date.now()>=job.deadline)throw new ServiceError('DEADLINE','Storage deadline exceeded');
     const s=store(job.userId);let result:unknown;
     switch(job.method){
+      case 'preparation_present':result=s.preparation.has(job.args[0] as string,job.args[1] as string);break;
+      case 'preparation_begin':result=s.preparation.begin(...job.args as [string,string,string,string,boolean,number]);break;
+      case 'preparation_finish':result=s.preparation.finish(...job.args as [string,string,boolean]);break;
       case 'snapshot':result=s.snapshot(job.args[0] as string);break;
       case 'receipt':result=s.receipt(job.args[0] as string,job.args[1] as string);break;
       case 'revision':result=s.revision();break;

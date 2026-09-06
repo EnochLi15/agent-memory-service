@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 export interface Config {
   port: number; host: string; dataDir: string; mode: 'enhanced' | 'offline'; llmBase: string; llmKey: string; llmModel: string; llmReasoningEffort?:'low'|'medium'|'high';
   llmStageModels:Partial<Record<'extraction'|'verification'|'repair',string>>;
-  modelTransportAttempts:1|2|3;maxRepairRounds:1|2;extractionWorkers:number;sourceErasureWorkers:number;sourceErasureGrouped:boolean;
+  writeContinuation:boolean;modelTransportAttempts:1|2|3;maxRepairRounds:1|2;extractionWorkers:number;sourceErasureWorkers:number;sourceErasureGrouped:boolean;
   extractionFormat:'flat'|'message_groups'|'source_refs';
   verificationFormat:'verbose'|'compact';
   verificationResponseFormat:'json_object'|'json_schema';
@@ -40,6 +40,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   const extractionWorkers=num('MEMORY_EXTRACTION_WORKERS',1);
   if(!Number.isInteger(extractionWorkers)||extractionWorkers<1||extractionWorkers>3)throw new Error('Invalid MEMORY_EXTRACTION_WORKERS');
   if(extractionWorkers>1&&(env.MEMORY_MODE!=='enhanced'||!['message_groups','source_refs'].includes(env.MEMORY_EXTRACTION_FORMAT??'')))throw new Error('Parallel extraction requires enhanced grouped extraction');
+  if(env.MEMORY_WRITE_CONTINUATION==='true'&&(env.MEMORY_MODE!=='enhanced'||env.MEMORY_EXPERIMENT_RAW_ONLY==='true'))throw new Error('Write continuation requires enhanced structured extraction');
   const modelTransportAttempts=num('MEMORY_MODEL_TRANSPORT_ATTEMPTS',2);
   if(modelTransportAttempts!==1&&modelTransportAttempts!==2&&modelTransportAttempts!==3)throw new Error('Invalid MEMORY_MODEL_TRANSPORT_ATTEMPTS');
   const maxRepairRounds=num('MEMORY_MAX_REPAIR_ROUNDS',1);
@@ -62,7 +63,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     ...(effort?{llmReasoningEffort:effort as 'low'|'medium'|'high'}:{}),
     llmStageModels:stageModels,
     relationMode:relationMode as Config['relationMode'],rerankPolicy:rerankPolicy as Config['rerankPolicy'],rerankFormat:rerankFormat as Config['rerankFormat'],
-    modelTransportAttempts,maxRepairRounds,extractionWorkers,sourceErasureWorkers,sourceErasureGrouped:env.MEMORY_SOURCE_ERASURE_GROUPED==='true',
+    writeContinuation:env.MEMORY_WRITE_CONTINUATION==='true',modelTransportAttempts,maxRepairRounds,extractionWorkers,sourceErasureWorkers,sourceErasureGrouped:env.MEMORY_SOURCE_ERASURE_GROUPED==='true',
     extractionFormat:extractionFormat as Config['extractionFormat'],
     verificationFormat,
     verificationResponseFormat:verificationResponseFormat as Config['verificationResponseFormat'],

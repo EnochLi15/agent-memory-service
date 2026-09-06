@@ -1,3 +1,4 @@
+import {PreparationLedger} from './preparation-ledger.js';
 import {validateSourceCoveragePlan,assertSourceCoverageStored} from './source-coverage.js';
 import {validateSourceRoutePlan} from './source-operation-routing.js';
 import {validateSourceBatchPlan} from './source-operation-batches.js';
@@ -30,7 +31,7 @@ function markerConcerns(m:Marker,f:Fact):boolean{
   return canonical(m.subject)===canonical(f.subject)&&(!f.scope||canonical(m.scope)===canonical(f.scope));
 }
 export class TenantStore {
-  readonly db: Database.Database;
+  readonly db: Database.Database;readonly preparation:PreparationLedger;
   constructor(dir:string, readonly userId:string) {
     const folder = join(dir,digest(userId)); mkdirSync(folder,{recursive:true});
     this.db = new Database(join(folder,'memory.sqlite'));
@@ -50,6 +51,7 @@ export class TenantStore {
       CREATE VIRTUAL TABLE IF NOT EXISTS evidence_fts USING fts5(id UNINDEXED,text,tokenize='unicode61');
       CREATE VIRTUAL TABLE IF NOT EXISTS passage_fts USING fts5(id UNINDEXED,text,tokenize='unicode61');
     `);
+    this.preparation=new PreparationLedger(this.db);
     const existing = this.meta('user_id');
     if (existing !== null && existing !== userId) throw new ServiceError('TENANT_ID','Tenant identity mismatch');
     this.setMeta('user_id',userId); if (this.meta('revision')===null) this.setMeta('revision','0');
@@ -372,7 +374,7 @@ export class TenantStore {
       if(coveragePrepared)assertSourceCoverageStored(prepared.sourceCoveragePlan!,req,coveragePrepared,this.passages(),new Set((this.db.prepare('SELECT id FROM passage_fts').all() as {id:string}[]).map(x=>x.id)),coverageErasureCuts);
       if(failAt==='indexes')throw new ServiceError('INJECTED_FAILURE','Fault injection after index writes');
       const receipt:Receipt={success:true,request_id:req.request_id,user_id:req.user_id,session_id:req.session_id};
-      this.db.prepare('INSERT INTO requests VALUES (?,?,?)').run(req.request_id,payloadHash,JSON.stringify(receipt));this.setMeta('revision',String(revision));return receipt;
+      this.db.prepare('INSERT INTO requests VALUES (?,?,?)').run(req.request_id,payloadHash,JSON.stringify(receipt));this.setMeta('revision',String(revision));this.preparation.committed(req.request_id);return receipt;
     })();
   }
   lexical(query:string,limit:number):{id:string;score:number}[]{

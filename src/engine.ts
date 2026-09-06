@@ -1,3 +1,5 @@
+import {ContinuationCache,ContinuationAttempt,withContinuation,CONTINUATION_TTL} from './write-continuation.js';
+import {randomUUID} from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { Models } from './models.js';
 import { Extractor,hash } from './extraction.js';
@@ -8,6 +10,7 @@ import {appendFileSync} from 'node:fs';
 import {rerankPayload,decodeRerank} from './reranking.js';
 
 export class Engine {
+  private continuations=new ContinuationCache();private continuationOwner=randomUUID();
   private worker:Worker; private counter=0; private pending=new Map<number,{resolve:(v:unknown)=>void;reject:(e:Error)=>void}>();
   private queues=new Map<string,Promise<unknown>>();private models:Models;private extractor:Extractor;ready:Promise<void>;private healthy=true;
   constructor(readonly config:Config){
@@ -27,12 +30,46 @@ export class Engine {
     const deadline=Date.now()+this.config.addTimeout;
     const prior=this.queues.get(req.user_id)??Promise.resolve();
     const run=prior.catch(()=>{}).then(async()=>{
-      signal.throwIfAborted();const payloadHash=hash(JSON.stringify(req));const existing=await this.call<Receipt|null>('receipt',req.user_id,[req.request_id,payloadHash]);if(existing)return existing;
-      const snapshot=await this.call<Snapshot>('snapshot',req.user_id,[req.session_id]);const prepared=await this.extractor.prepare(req,snapshot,signal);signal.throwIfAborted();
-      // Explicit experiment only. The production default always applies lifecycle.
-      if(this.config.experimental?.lifecycle===false){prepared.operations=[];for(const f of prepared.facts){f.cardinality='multiple';f.supersedes=[];f.depends_on=[];}}
-      const receipt=await this.call<Receipt>('commit',req.user_id,[req,payloadHash,prepared,snapshot.revision],deadline);
-      if(prepared.degraded.length)process.stdout.write(JSON.stringify({event:'degraded',request_id:req.request_id,reasons:prepared.degraded})+'\n');return receipt;
+      signal.throwIfAborted();const payloadHash=hash(JSON.stringify(req)),cacheKey=hash(JSON.stringify([req.user_id,req.request_id]));
+      const existing=await this.call<Receipt|null>('receipt',req.user_id,[req.request_id,payloadHash]);if(existing){this.continuations.drop(cacheKey);return existing;}
+      if(!this.config.writeContinuation&&await this.call<boolean>('preparation_present',req.user_id,[req.request_id,payloadHash]))throw new ServiceError('EVIDENCE_VALIDATION','Write continuation metadata prevents regenerating this request');
+      const snapshot=await this.call<Snapshot>('snapshot',req.user_id,[req.session_id]);
+      let continuation:ContinuationAttempt|undefined,attemptNumber=0;
+      if(this.config.writeContinuation){
+        const identity=hash(JSON.stringify({req,snapshot,config:this.config})),prior=this.continuations.get(cacheKey,identity);
+        // Validate identity in durable metadata before replacing any cache entry;
+        // a conflicting payload must not destroy the original continuation.
+        try{attemptNumber=await this.call<number>('preparation_begin',req.user_id,[req.request_id,payloadHash,identity,this.continuationOwner,!!prior,prior?.expires??Date.now()+CONTINUATION_TTL],deadline);}
+        catch(error){if(prior)this.continuations.drop(cacheKey);throw error;}
+        const entry=prior??this.continuations.create(cacheKey,req.user_id,identity);
+        continuation=new ContinuationAttempt(entry,signal);
+      }
+      try{
+        const prepare=()=>this.extractor.prepare(req,snapshot,signal);
+        const prepared=await (continuation?withContinuation(continuation,prepare):prepare());signal.throwIfAborted();
+        // A lower layer may have attempted its ordinary fallback. A pending
+        // interrupted model stage must never be committed as fallback success.
+        if(continuation?.pending)throw new ServiceError('WRITE_CONTINUATION_PENDING','Model preparation is incomplete');
+        if(continuation&&(continuation.terminalModelFailure||prepared.degraded.includes('extraction_offline')))throw new ServiceError('EVIDENCE_VALIDATION','Write continuation cannot commit an unverified extraction fallback');
+        continuation?.assertComplete();
+        // Explicit experiment only. The production default always applies lifecycle.
+        if(this.config.experimental?.lifecycle===false){prepared.operations=[];for(const f of prepared.facts){f.cardinality='multiple';f.supersedes=[];f.depends_on=[];}}
+        const receipt=await this.call<Receipt>('commit',req.user_id,[req,payloadHash,prepared,snapshot.revision],deadline);
+        this.continuations.invalidateTenant(req.user_id);
+        if(prepared.degraded.length)process.stdout.write(JSON.stringify({event:'degraded',request_id:req.request_id,reasons:prepared.degraded})+'\n');
+        if(continuation)this.continuationAudit(req,continuation,attemptNumber,'committed');
+        return receipt;
+      }catch(error){
+        if(continuation){
+          const retryable=continuation.pending&&!continuation.terminalModelFailure&&!signal.aborted&&continuation.entry.valid&&Date.now()<continuation.entry.expires&&attemptNumber<3;
+          try{await this.call('preparation_finish',req.user_id,[req.request_id,this.continuationOwner,retryable]);}
+          catch{this.continuations.drop(cacheKey);throw new ServiceError('EVIDENCE_VALIDATION','Could not preserve write continuation state');}
+          this.continuationAudit(req,continuation,attemptNumber,retryable?'pending':'closed');
+          if(!retryable)this.continuations.drop(cacheKey);
+          if(retryable)throw new ServiceError('WRITE_CONTINUATION_PENDING','Retry the identical request to continue its interrupted model preparation');
+        }
+        throw error;
+      }
     });
     this.queues.set(req.user_id,run);
     void run.finally(()=>{if(this.queues.get(req.user_id)===run)this.queues.delete(req.user_id);}).catch(()=>{});
@@ -69,5 +106,8 @@ export class Engine {
     if(process.env.MEMORY_RETRIEVAL_AUDIT)appendFileSync(process.env.MEMORY_RETRIEVAL_AUDIT,JSON.stringify({event:'retrieval_policy',query_sha256:hash(req.query),tenant_sha256:hash(req.user_id),revision:result.revision,initial_revision:initialRevision,rerank_policy:this.config.rerankPolicy,rerank_format:this.config.rerankFormat,decision:decision??{enabled:false,reason:'disabled'},rerank_outcome:rerankOutcome,elapsed_ms:performance.now()-rerankStart,scores_discarded:!!scores&&result.revision!==initialRevision})+'\n');
     signal.throwIfAborted();return result.response;
   }
-  async close():Promise<void>{await this.worker.terminate();}
+  private continuationAudit(req:AddRequest,attempt:ContinuationAttempt,number:number,outcome:string):void{
+    try{if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),kind:'write_continuation',tenant_sha256:hash(req.user_id),request_sha256:hash(req.request_id),attempt:number,outcome,replayed_packets:attempt.replayed,fresh_calls:attempt.fresh})+'\n');}catch{/* Optional metrics cannot turn a committed write into a failure. */}
+  }
+  async close():Promise<void>{this.continuations.clear();await this.worker.terminate();}
 }

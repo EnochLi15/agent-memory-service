@@ -1,3 +1,4 @@
+import {continuationCall} from './write-continuation.js';
 import {setTimeout as retryWait} from 'node:timers/promises';
 import {modelRetryDelay} from './model-retry.js';
 import {sourceCoverageWork,SOURCE_COVERAGE_PROMPT} from './source-coverage.js';
@@ -63,6 +64,9 @@ export class Models {
   }
 
   async json(system: string, user: string, signal: AbortSignal,context?:GenerationContext): Promise<unknown> {
+    return continuationCall({system,user,context,base:this.config.llmBase,models:this.config.llmStageModels,model:this.config.llmModel,effort:this.config.llmReasoningEffort,responseFormat:this.config.verificationResponseFormat},signal,()=>this.generateJson(system,user,signal,context));
+  }
+  private async generateJson(system:string,user:string,signal:AbortSignal,context?:GenerationContext):Promise<unknown>{
     // Streaming prevents idle gateway disconnects during long structured generations.
     // Nothing is published until the entire JSON object is validated and committed.
     const purpose=context?.purpose??(system.startsWith('Rank evidence')?'rerank':system.startsWith('Validate memory evidence')?'verification':system.includes('PATCH_SCHEMA')?'repair':'extraction');
@@ -84,7 +88,7 @@ export class Models {
         },{signal});
         streamStarted=true;
         for await(const chunk of stream){refusalDetected ||= !!chunk.choices[0]?.delta?.refusal;content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
-        if(!content||finish!=='stop')throw new ServiceError('MODEL_OUTPUT','Incomplete model output');
+        if(!content||finish!=='stop'){signal.throwIfAborted();throw new ServiceError('MODEL_OUTPUT','Incomplete model output');}
         const parsed=JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
         saveTrace({attempt,outcome:'ok',output:parsed});
         audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage,output_chars:content.length});return parsed;
