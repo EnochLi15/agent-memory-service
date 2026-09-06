@@ -1,7 +1,7 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {decodeSourceErasureResponse,validateSourceErasure,maskSource} from '../dist/source-erasure.js';
 const work=(text:string,kind='source')=>({fingerprint:'fixed-source-identity',candidates:[{id:'source-1',kind,start:0,text,key:'boundary',boundary:{},authorization:null,matching_words:[],context:{}}]}) as any;
-const row=(effect:string,erase_quotes:string[]=[])=>({index:0,effect,erase_quotes,reason:'Fixture scope decision.'});
+const row=(effect:string,erase_quotes:string[]=[])=>({index:0,effect,erase_quotes,reason:({erase:'same_erased_record',retain:'independent_record',mixed:'mixed_source',uncertain:'uncertain_scope'} as any)[effect]});
 const decode=(text:string,decision:any,kind='source')=>decodeSourceErasureResponse({decisions:[decision]},work(text,kind));
 test('uniform compact decisions resolve the untouched original text, including Unicode and whitespace',()=>{
  const text='甲😀\n  Original\ttext.\r\n';
@@ -25,6 +25,20 @@ test('compact uncertainty and mixed facts cannot produce a deletion plan',()=>{
 });
 test('compact protocol requires every candidate exactly once and rejects extra decision fields',()=>{
  const w=work('detail'),valid=row('retain');
- for(const raw of [{decisions:[]},{decisions:[valid,valid]},{decisions:[{...valid,index:-1}]},{decisions:[{...valid,parts:[]}]},{decisions:[{...valid,reason:''}]},{decisions:[{...valid,erase_quotes:null}]},{decisions:[valid],ignore_all:true}])assert.throws(()=>decodeSourceErasureResponse(raw,w));
+ for(const raw of [{decisions:[]},{decisions:[valid,valid]},{decisions:[{...valid,index:-1}]},{decisions:[{...valid,parts:[]}]},{decisions:[{...valid,reason:''}]},{decisions:[{...valid,reason:'unlisted_reason'}]},{decisions:[{...valid,reason:'same_erased_record'}]},{decisions:[{...valid,erase_quotes:null}]},{decisions:[valid],ignore_all:true}])assert.throws(()=>decodeSourceErasureResponse(raw,w));
  const two={...w,candidates:[...w.candidates,{...w.candidates[0],id:'other'}]};assert.throws(()=>decodeSourceErasureResponse({decisions:[valid,valid]},two),/Invalid/);
+});
+import {sourceErasureInput,sourceErasureBatches} from '../dist/source-erasure.js';
+test('reference tables reconstruct every candidate including different boundaries on the same source',()=>{
+ const base=work('My backup is Iris. My colleague Iris stays.').candidates[0];
+ const candidates=[{...base,boundary:{subject:'user',scope:'backup'},authorization:{source:{quote:'Forget my backup.'}},matching_words:['backup']},{...base,key:'other-boundary',boundary:{subject:'user',scope:'old note'},authorization:null,matching_words:['note']},{...base,id:'different-source',boundary:{subject:'user',scope:'backup'},authorization:{source:{quote:'Forget my backup.'}},matching_words:['backup']}];
+ const packed=sourceErasureInput({candidates});assert.equal(packed.SOURCES.length,2);assert.equal(packed.BOUNDARIES.length,2);
+ const restored=packed.CANDIDATES.map(c=>({...packed.SOURCES[c.source_slot],...packed.BOUNDARIES[c.boundary_slot],matching_words:c.matching_words}));assert.deepEqual(restored,candidates);assert.deepEqual(packed.CANDIDATES.map(c=>c.index),[0,1,2]);
+});
+test('packed batch capacity is checked on transmitted JSON and never drops repeated source-boundary pairs',()=>{
+ const base=work('Context '+('long detail '.repeat(250))).candidates[0];
+ const candidates=Array.from({length:90},(_,i)=>({...base,key:'boundary-'+(i%3),boundary:{scope:String(i%3)},matching_words:[String(i)]}));
+ const batches=sourceErasureBatches({fingerprint:'f',candidates});assert.equal(batches.length,2);assert.deepEqual(batches.flatMap(b=>b.candidates),candidates);
+ for(const batch of batches){assert.ok(batch.candidates.length<=64);assert.ok(JSON.stringify(sourceErasureInput(batch)).length<=64000);}
+ assert.ok(JSON.stringify(sourceErasureInput({candidates})).length<JSON.stringify({CANDIDATES:candidates}).length/3);
 });

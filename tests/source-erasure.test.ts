@@ -1,17 +1,17 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {Extractor,hash} from '../dist/extraction.js';import {TenantStore} from '../dist/storage.js';import {configFromEnv} from '../dist/config.js';
-import {decodeSourceErasure,maskSource,sourceErasureWork,sourceErasureBatches} from '../dist/source-erasure.js';
+import {decodeSourceErasure,maskSource,sourceErasureWork,sourceErasureBatches,sourceErasureInput} from '../dist/source-erasure.js';
 import {valueDigest} from '../dist/erasure.js';
 const config=configFromEnv({MEMORY_MODE:'enhanced',MEMORY_ERASURE_BINDING:'true',MEMORY_SOURCE_ERASURE:'true'});
 const request=(id:string,text:string)=>({request_id:id,user_id:'u',session_id:'s',messages:[{role:'user',content:text,timestamp:'2026-01-01T00:00:00Z'}]});
 const fact=(quote:string,subject='user',scope='dentist')=>({content:quote,subject,predicate:'appointment',value:"dentist appointment with Dr. Pham's office on Elm Street",scope,sources:[{index:0,quote}]});
-const compactFixture=(raw:any)=>({decisions:raw.decisions.map((r:any)=>({index:r.index,effect:r.parts.some((p:any)=>p.effect==='uncertain')?'uncertain':r.parts.every((p:any)=>p.effect===r.parts[0].effect)?r.parts[0].effect:'mixed',erase_quotes:r.parts.some((p:any)=>p.effect==='retain')&&r.parts.some((p:any)=>p.effect==='erase')?r.parts.filter((p:any)=>p.effect==='erase').map((p:any)=>p.text):[],reason:r.reason}))});
+const compactFixture=(raw:any)=>({decisions:raw.decisions.map((r:any)=>({index:r.index,effect:r.parts.some((p:any)=>p.effect==='uncertain')?'uncertain':r.parts.every((p:any)=>p.effect===r.parts[0].effect)?r.parts[0].effect:'mixed',erase_quotes:r.parts.some((p:any)=>p.effect==='retain')&&r.parts.some((p:any)=>p.effect==='erase')?r.parts.filter((p:any)=>p.effect==='erase').map((p:any)=>p.text):[],reason:r.parts.some((p:any)=>p.effect==='uncertain')?'uncertain_scope':r.parts.some((p:any)=>p.effect==='retain')&&r.parts.some((p:any)=>p.effect==='erase')?'mixed_source':r.parts[0].effect==='erase'?'same_erased_record':'independent_record'}))});
 async function fixture(fn:any){
  const dir=mkdtempSync(join(tmpdir(),'source-erasure-')),store=new TenantStore(dir,'u');let calls=0;
  const prepare=(req:any,p:any,override?:any)=>new Extractor(config,{verify:async()=>[],embedBatch:async(xs:string[])=>xs.map(()=>[1,0]),json:async(_s:string,input:string,_signal:any,ctx:any)=>{
   if(ctx?.purpose==='source_erasure'){
-   calls++;const data=JSON.parse(input);if(override)return compactFixture(override(data));
+   calls++;const packed=JSON.parse(input),data={CANDIDATES:packed.CANDIDATES.map((c:any)=>({...packed.SOURCES[c.source_slot],...packed.BOUNDARIES[c.boundary_slot],index:c.index,matching_words:c.matching_words}))};if(override)return compactFixture(override(data));
    return compactFixture({decisions:data.CANDIDATES.map((c:any,index:number)=>{
     if(c.text.includes('Kevin'))return {index,parts:[{text:c.text,effect:'retain'}],reason:'Explicitly a different person.'};
     const split=c.text.indexOf('; I still use Firefox');
@@ -95,7 +95,7 @@ test('source batches obey payload limits and preserve every original candidate i
  const messages=Array.from({length:100},(_,i)=>({id:String(i),session_id:'s',ordinal:i,role:'user',content:'Pham '+('word '.repeat(100)),timestamp:'2026-01-01T00:00:00Z',searchable:true}));
  const work=sourceErasureWork(r,[],[],[],[boundary],[],messages),batches=sourceErasureBatches(work);assert.ok(batches.length>1);
  assert.deepEqual(batches.flatMap(b=>b.candidates),work.candidates);
- for(const batch of batches){assert.ok(batch.candidates.length<=64);assert.ok(JSON.stringify({CANDIDATES:batch.candidates.map((c,index)=>({index,...c}))}).length<=64000);}
+ for(const batch of batches){assert.ok(batch.candidates.length<=64);assert.ok(JSON.stringify(sourceErasureInput(batch)).length<=64000);}
  const decisions=batches.flatMap(b=>decodeSourceErasure({decisions:b.candidates.map((c,index)=>({index,parts:[{text:c.text,effect:'erase'}],reason:'Authorized.'}))},b).decisions.map(d=>({...d,index:d.index+b.offset})));
  assert.equal(decodeSourceErasure({decisions},work).decisions.length,100);assert.throws(()=>decodeSourceErasure({decisions:decisions.slice(0,-1)},work),/Incomplete/);
 });
