@@ -47,7 +47,7 @@ test('erasure scope uses the verifier model and its own strict decision schema',
   const c=config();c.llmBase=http.base;c.llmModel='extractor-model';c.llmStageModels.verification='verifier-model';
   await new Models(c).json('Resolve erasure scope','{}',AbortSignal.timeout(1000),{purpose:'erasure_binding'});
   assert.equal(http.bodies.length,1);assert.equal(http.bodies[0].model,'verifier-model');
-  assert.equal(http.bodies[0].response_format.json_schema.name,'erasure_scope_v1');
+  assert.equal(http.bodies[0].response_format.json_schema.name,'erasure_scope_v2');
   assert.deepEqual(http.bodies[0].response_format.json_schema.schema.required,['decisions']);
  }finally{await http.close();}
 });

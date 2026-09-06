@@ -398,11 +398,11 @@ export class Extractor {
     const useErasure=this.config.erasureBinding&&!this.config.experimental?.rawOnly;
     let erasurePlan:Prepared['erasurePlan'];
     if(useErasure){
-      const work=erasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[]);
+      const work=erasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[],this.config.sourceErasure?[...(snapshot.erasureSources??[]),...messages]:[]);
       if(work.candidates.length){
         if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Erasure scope requires semantic binding; offline recovery cannot certify independence');
         let raw:unknown;
-        try{raw=await this.models.json(ERASURE_PROMPT,JSON.stringify({NEW_MESSAGES:req.messages,CONTEXT_ONLY:snapshot.tail,CANDIDATES:work.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'erasure_binding',trace:traceIdentity});}
+        try{raw=await this.models.json(ERASURE_PROMPT,JSON.stringify({NEW_MESSAGES:req.messages,CONTEXT_ONLY:snapshot.tail,SOURCE_CONTEXTS:work.source_contexts,CANDIDATES:work.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'erasure_binding',trace:traceIdentity});}
         catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not bind erasure scope within the shared model budget');}
         erasurePlan=decodeErasure(raw,work);
       }else erasurePlan={fingerprint:work.fingerprint,decisions:work.automatic};

@@ -17,7 +17,7 @@ import {eventCategory} from './events.js';
 import {resolveOperationTargets} from './binding.js';
 import {retirementEffectMismatch,missingForgetObligations} from './operation-intent.js';
 import {erasureAnchors,sourceErasureWork,validateSourceErasure,maskSource,assertErasedWitnessProgress} from './source-erasure.js';
-import {valueWords,valueDigest,containsValue,factContainsValue,valueOccurrences,boundaryKey,protectBoundary,retainedAgainst,erasureWork,validateErasurePlan} from './erasure.js';
+import {valueWords,valueDigest,containsValue,factContainsValue,valueOccurrences,boundaryKey,protectBoundary,retainedAgainst,erasureWork,validateErasurePlan,validateRetainedValueContexts} from './erasure.js';
 import type {ErasureBoundary} from './types.js';
 import {transitionKey,transitionWork,validateTransitions} from './transitions.js';
 
@@ -119,7 +119,7 @@ export class TenantStore {
       const retained=new Map<string,NonNullable<Fact['erasure_exemptions']>>();
       if(semanticErasure){
         const boundaries=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
-        const work=erasureWork(req,this.facts(),prepared.facts,prepared.operations,boundaries);
+        const work=erasureWork(req,this.facts(),prepared.facts,prepared.operations,boundaries,sourceErasure?[...(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage),...prepared.messages]:[]);
         validateErasurePlan(prepared.erasurePlan,work);
         for(const d of prepared.erasurePlan!.decisions){if(d.effect==='erase')forcedErased.add(d.fact_id);else retained.set(d.fact_id,[...(retained.get(d.fact_id)??[]),{key:d.key,quote:d.quote}]);}
       }
@@ -275,6 +275,7 @@ export class TenantStore {
         }
         for(const o of prepared.operations.filter(o=>o.type==='forget')){const m=prepared.messages[o.source.index];if(m&&!reviewedSources.has(m.id)){const start=m.content.indexOf(o.source.quote);if(start>=0)sourceCuts.set(m.id,[...(sourceCuts.get(m.id)??[]),{start,end:start+o.source.quote.length}]);}}
         const originals=new Map((this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>{const m=JSON.parse(r.body) as StoredMessage;return [m.id,m] as const;}));
+        validateRetainedValueContexts(prepared.erasurePlan,sourceCuts,erasedIds);
         assertErasedWitnessProgress(sourceWitnesses,originals,sourceCuts,erasedIds);
         for(const f of all.filter(f=>f.state!=='erased')){
           const quotes:string[]=[];
