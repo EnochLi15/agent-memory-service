@@ -10,7 +10,7 @@ import {messageAnchors,normalizeFactTime} from './temporal.js';
 import {humanQuote} from './verification.js';
 import {VerificationSession} from './verification-session.js';
 import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,type RepairScope} from './repair.js';
-import {sourceErasureWork,sourceErasureBatches,decodeSourceErasure,SOURCE_ERASURE_PROMPT} from './source-erasure.js';
+import {sourceErasureWork,sourceErasureBatches,decodeSourceErasureResponse,decodeSourceErasure,SOURCE_ERASURE_PROMPT} from './source-erasure.js';
 import {erasureWork,decodeErasure,ERASURE_PROMPT} from './erasure.js';
 import {transitionWork,decodeTransitions,TRANSITION_PROMPT} from './transitions.js';
 
@@ -330,7 +330,7 @@ export class Extractor {
         for(const batch of sourceErasureBatches(work)){
           let raw:unknown;try{raw=await this.models.json(SOURCE_ERASURE_PROMPT,JSON.stringify({CANDIDATES:batch.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'source_erasure',trace:traceIdentity});}
           catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Source erasure unavailable within shared model budget');}
-          const checked=decodeSourceErasure(raw,batch);
+          const checked=decodeSourceErasureResponse(raw,batch);
           decisions.push(...checked.decisions.map(d=>({...d,index:d.index+batch.offset})));
         }
         sourceErasurePlan=decodeSourceErasure({decisions},work);

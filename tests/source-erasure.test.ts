@@ -6,16 +6,17 @@ import {valueDigest} from '../dist/erasure.js';
 const config=configFromEnv({MEMORY_MODE:'enhanced',MEMORY_ERASURE_BINDING:'true',MEMORY_SOURCE_ERASURE:'true'});
 const request=(id:string,text:string)=>({request_id:id,user_id:'u',session_id:'s',messages:[{role:'user',content:text,timestamp:'2026-01-01T00:00:00Z'}]});
 const fact=(quote:string,subject='user',scope='dentist')=>({content:quote,subject,predicate:'appointment',value:"dentist appointment with Dr. Pham's office on Elm Street",scope,sources:[{index:0,quote}]});
+const compactFixture=(raw:any)=>({decisions:raw.decisions.map((r:any)=>({index:r.index,effect:r.parts.some((p:any)=>p.effect==='uncertain')?'uncertain':r.parts.every((p:any)=>p.effect===r.parts[0].effect)?r.parts[0].effect:'mixed',erase_quotes:r.parts.some((p:any)=>p.effect==='retain')&&r.parts.some((p:any)=>p.effect==='erase')?r.parts.filter((p:any)=>p.effect==='erase').map((p:any)=>p.text):[],reason:r.reason}))});
 async function fixture(fn:any){
  const dir=mkdtempSync(join(tmpdir(),'source-erasure-')),store=new TenantStore(dir,'u');let calls=0;
  const prepare=(req:any,p:any,override?:any)=>new Extractor(config,{verify:async()=>[],embedBatch:async(xs:string[])=>xs.map(()=>[1,0]),json:async(_s:string,input:string,_signal:any,ctx:any)=>{
   if(ctx?.purpose==='source_erasure'){
-   calls++;const data=JSON.parse(input);if(override)return override(data);
-   return {decisions:data.CANDIDATES.map((c:any,index:number)=>{
+   calls++;const data=JSON.parse(input);if(override)return compactFixture(override(data));
+   return compactFixture({decisions:data.CANDIDATES.map((c:any,index:number)=>{
     if(c.text.includes('Kevin'))return {index,parts:[{text:c.text,effect:'retain'}],reason:'Explicitly a different person.'};
     const split=c.text.indexOf('; I still use Firefox');
     return {index,parts:split>=0?[{text:c.text.slice(0,split),effect:'erase'},{text:c.text.slice(split),effect:'retain'}]:[{text:c.text,effect:'erase'}],reason:'Same appointment; retain only independent browser information.'};
-   })};
+   })});
   }
   if(ctx?.purpose==='erasure_binding'){const data=JSON.parse(input);return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,effect:c.fact.subject==='Kevin'?'retain':'erase',quote:c.fact.source_quotes[0],reason:'Actor-specific appointment.'}))};}
   return structuredClone(p);

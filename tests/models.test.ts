@@ -57,3 +57,9 @@ test('unsupported stage model errors retain the actual route in audit and never 
   const audit=readFileSync(path,'utf8').trim().split('\n').map(x=>JSON.parse(x));assert.equal(audit.length,2);assert.ok(audit.every(x=>x.purpose==='repair'&&x.model==='unsupported-repair'&&x.outcome==='error'));
  }finally{if(previous===undefined)delete process.env.MEMORY_MODEL_AUDIT;else process.env.MEMORY_MODEL_AUDIT=previous;await new Promise<void>(r=>server.close(()=>r()));rmSync(dir,{recursive:true});}
 });
+test('source erasure sends the compact strict schema to the verification model',async()=>{
+ const reply={decisions:[{index:0,effect:'mixed',erase_quotes:['My backup is Iris.'],reason:'Remove the authorized backup; retain the colleague.'}]};
+ const server=createServer(async(req,res)=>{let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);assert.equal(body.model,'critic');assert.equal(body.response_format.json_schema.name,'source_erasure_v2');assert.equal(body.response_format.json_schema.strict,true);res.writeHead(200,{'content-type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{index:0,delta:{content:JSON.stringify(reply)},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');});
+ await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
+ try{const c=configFromEnv({MEMORY_VERIFICATION_MODEL:'critic',MEMORY_VERIFICATION_FORMAT:'compact',MEMORY_VERIFICATION_RESPONSE_FORMAT:'json_schema'});c.llmBase=`http://127.0.0.1:${(server.address() as any).port}`;assert.deepEqual(await new Models(c).json('scope','input',AbortSignal.timeout(1000),{purpose:'source_erasure'}),reply);}finally{await new Promise<void>(r=>server.close(()=>r()));}
+});

@@ -11,7 +11,7 @@ async function fixture(body:any){
   const data=JSON.parse(input);
   if(ctx.purpose==='state_transition'){calls++;return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,relation,old_source_slot:0,new_source_slot:0,reason:'Fixture relationship supported by the cited statements.'}))};}
   if(ctx.purpose==='erasure_binding')return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,effect:'erase',quote:c.fact.source_quotes[0],reason:'Fixture forget scope.'}))};
-  if(ctx.purpose==='source_erasure')return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,parts:sourceParts?sourceParts(c):[{text:c.text,effect:'erase'}],reason:'Fixture authorized forgotten property.'}))};
+  if(ctx.purpose==='source_erasure')return {decisions:data.CANDIDATES.map((c:any,index:number)=>{const parts=sourceParts?sourceParts(c):[{text:c.text,effect:'erase'}];const mixed=parts.some((p:any)=>p.effect==='retain')&&parts.some((p:any)=>p.effect==='erase');return {index,effect:mixed?'mixed':parts[0].effect,erase_quotes:mixed?parts.filter((p:any)=>p.effect==='erase').map((p:any)=>p.text):[],reason:'Fixture authorized forgotten property.'};})};
   return {facts,operations};
  }} as any).prepare(r,store.snapshot('s'),AbortSignal.timeout(2000));
  const commit=(r:any,p:any,failAt?:string)=>store.commit(r,hash(JSON.stringify(r)),p,store.revision(),failAt);
