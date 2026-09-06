@@ -6,7 +6,7 @@ export interface Config {
   extractionFormat:'flat'|'message_groups'|'source_refs';
   verificationFormat:'verbose'|'compact';
   verificationResponseFormat:'json_object'|'json_schema';
-  erasureBinding:boolean;sourceErasure:boolean;semanticTransitions:boolean;sourceOperations:boolean;sourceOperationHistory:boolean;sourceOperationBatches:boolean;sourceOperationRouting:boolean;
+  erasureBinding:boolean;sourceErasure:boolean;semanticTransitions:boolean;sourceOperations:boolean;sourceOperationHistory:boolean;sourceOperationBatches:boolean;sourceOperationRouting:boolean;sourceFirst:boolean;
   embeddingBase: string; embeddingModel: string; embeddingDigest: string | null; embeddingDimensions: number; embeddingSpace: string;
   addTimeout: number; searchTimeout: number; maxEvidence: number; tokenBudget: number; retrieval: 'hybrid' | 'lexical' | 'mem0';
   rerank: boolean; rawFallback: boolean;incrementalVerification:boolean;
@@ -31,6 +31,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   if(env.MEMORY_SOURCE_OPERATION_HISTORY==='true'&&env.MEMORY_SOURCE_OPERATIONS!=='true')throw new Error('Historical source operations require source operations');
   if(env.MEMORY_SOURCE_OPERATION_BATCHES==='true'&&env.MEMORY_SOURCE_OPERATION_HISTORY!=='true')throw new Error('Batched source operations require source history');
   if(env.MEMORY_SOURCE_OPERATION_ROUTING==='true'&&env.MEMORY_SOURCE_OPERATION_BATCHES!=='true')throw new Error('Source routing requires batched source history');
+  if(env.MEMORY_SOURCE_FIRST==='true'&&(env.MEMORY_SOURCE_OPERATION_ROUTING!=='true'||env.MEMORY_SOURCE_INDEX==='false'||env.MEMORY_RAW_FALLBACK==='false'||env.MEMORY_EXTRACTION_FORMAT!=='source_refs'||env.MEMORY_VERIFICATION_FORMAT!=='compact'||['lexical','mem0'].includes(env.MEMORY_RETRIEVAL??'')))throw new Error('Source-first requires v9 routing, source references, compact verification and hybrid raw retrieval');
   const stageModels:Config['llmStageModels']={};
   const maxRepairRounds=num('MEMORY_MAX_REPAIR_ROUNDS',1);
   if(maxRepairRounds!==1&&maxRepairRounds!==2)throw new Error('Invalid MEMORY_MAX_REPAIR_ROUNDS');
@@ -56,7 +57,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     extractionFormat:extractionFormat as Config['extractionFormat'],
     verificationFormat,
     verificationResponseFormat:verificationResponseFormat as Config['verificationResponseFormat'],
-    sourceOperationRouting:env.MEMORY_SOURCE_OPERATION_ROUTING==='true',sourceOperations:env.MEMORY_SOURCE_OPERATIONS==='true',sourceOperationHistory:env.MEMORY_SOURCE_OPERATION_HISTORY==='true',sourceOperationBatches:env.MEMORY_SOURCE_OPERATION_BATCHES==='true',
+    sourceFirst:env.MEMORY_SOURCE_FIRST==='true',sourceOperationRouting:env.MEMORY_SOURCE_OPERATION_ROUTING==='true',sourceOperations:env.MEMORY_SOURCE_OPERATIONS==='true',sourceOperationHistory:env.MEMORY_SOURCE_OPERATION_HISTORY==='true',sourceOperationBatches:env.MEMORY_SOURCE_OPERATION_BATCHES==='true',
     erasureBinding:env.MEMORY_ERASURE_BINDING==='true',sourceErasure:env.MEMORY_SOURCE_ERASURE==='true',semanticTransitions:env.MEMORY_SEMANTIC_TRANSITIONS==='true',
     embeddingBase: (env.MEMORY_EMBEDDING_BASE_URL ?? 'http://127.0.0.1:11434').replace(/\/$/, ''), embeddingModel: model, embeddingDigest: env.MEMORY_EMBEDDING_DIGEST??null,
     embeddingDimensions: dimensions, embeddingSpace: `${model}:${env.MEMORY_EMBEDDING_DIGEST ?? 'configured'}:${dimensions}:${model.startsWith('nomic-embed-text')?'nomic-prefix-v1':'none'}`,

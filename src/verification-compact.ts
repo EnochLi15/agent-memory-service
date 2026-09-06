@@ -1,5 +1,6 @@
 import type {Extraction} from './types.js';
 import {VERIFICATION_SEMANTICS,type VerificationScope} from './verification.js';
+import type {SourceCoverageWork} from './source-coverage.js';
 
 export const COMPACT_VERIFICATION_PROTOCOL='source-reference-tuples-v1';
 // Constrain the transport envelope. Tuple positions, source identity, check
@@ -23,7 +24,7 @@ const reason=(x:unknown):x is string=>typeof x==='string'&&!!x.trim();
 /** Resolve only references supplied in this request. A malformed sibling must
  * not erase a well-formed semantic rejection. Protocol errors are returned to
  * the session alongside canonical checks, so they cannot produce certificates. */
-export function decodeCompactVerification(raw:unknown,proposal:Extraction,scope:VerificationScope){
+export function decodeCompactVerification(raw:unknown,proposal:Extraction,scope:VerificationScope,sourceCoverage?:SourceCoverageWork){
  const canonical:Record<Name,Record<string,unknown>[]>=Object.fromEntries(arrayNames.map(k=>[k,[]])) as any;
  const protocolErrors:string[]=[];const invalid=(message:string)=>protocolErrors.push(message);
  const object=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Record<string,unknown>:{};
@@ -54,6 +55,8 @@ export function decodeCompactVerification(raw:unknown,proposal:Extraction,scope:
     if(!scope.message_indices.includes(index)){invalid('Message outside compact check scope');continue;}
     if(row[1]==='not_memorable'&&row.length===2)canonical.message_checks.push({index,disposition:row[1]});
     else if(row[1]==='represented'&&row.length===4&&Array.isArray(row[2])&&Array.isArray(row[3])&&[...row[2],...row[3]].every(integer))canonical.message_checks.push({index,disposition:row[1],fact_indices:row[2],operation_indices:row[3]});
+    else if(sourceCoverage&&row[1]==='represented'&&row.length===5&&[row[2],row[3],row[4]].every(Array.isArray)&&[...row[2],...row[3],...row[4]].every(integer)&&row[2].length+row[3].length>0)canonical.message_checks.push({index,disposition:row[1],fact_indices:row[2],operation_indices:row[3],raw_slots:row[4]});
+    else if(sourceCoverage&&row[1]==='source_backed'&&row.length===4&&Array.isArray(row[2])&&row[2].length&&row[2].every(integer)&&reason(row[3]))canonical.message_checks.push({index,disposition:'represented',fact_indices:[],operation_indices:[],raw_slots:row[2],reason:row[3]});
     else if(row[1]==='missing'&&row.length===4&&reason(row[2])&&reason(row[3]))canonical.message_checks.push({index,disposition:row[1],quote:row[2],reason:row[3]});
     else invalid('Invalid compact message tuple');
    }

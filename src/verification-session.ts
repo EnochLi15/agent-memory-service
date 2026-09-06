@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {ServiceError,type AddRequest,type Extraction,type Fact} from './types.js';
 import {participantIndices,verificationIssues,VerificationProtocolError,type VerificationScope} from './verification.js';
+import type {SourceCoverageWork,SourceCoverageRow} from './source-coverage.js';
 
 const arrays=['fact_checks','operation_checks','replacement_checks','message_checks'] as const;
 type CheckArray=typeof arrays[number];
@@ -9,7 +10,7 @@ type Checks=Record<CheckArray,Check[]>;
 const empty=():Checks=>({fact_checks:[],operation_checks:[],replacement_checks:[],message_checks:[]});
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const checkKey=(type:CheckArray,c:Check)=>type==='replacement_checks'?`${type}:${c.fact_index}:${c.target_id}`:`${type}:${c.index}`;
-type Plan={scope:VerificationScope;cached:Checks;fingerprints:Map<string,string|null>;blockedFindings:string[];req:AddRequest;proposal:Extraction;reused:number};
+type Plan={scope:VerificationScope;cached:Checks;fingerprints:Map<string,string|null>;blockedFindings:string[];req:AddRequest;proposal:Extraction;reused:number;sourceCoverage?:SourceCoverageWork};
 
 /** Owned by one prepare() call, never kept on the shared Models instance.
  * Only validated checks become certificates. Semantic failures remain failures
@@ -20,9 +21,11 @@ export class VerificationSession {
  #passed=new Map<string,{fingerprint:string;check:Check}>();
  #failed=new Map<string,{fingerprint:string;finding:string}>();
  #active:Plan|undefined;
+ #accepted:{fingerprint:string;rows:SourceCoverageRow[]}|undefined;
 
- plan(req:AddRequest,proposal:Extraction,facts:Fact[],identity:unknown):Plan{
-  const context=digest({req,identity});
+ plan(req:AddRequest,proposal:Extraction,facts:Fact[],identity:unknown,sourceCoverage?:SourceCoverageWork):Plan{
+  this.#accepted=undefined;
+  const context=digest({req,identity,sourceCoverage:sourceCoverage?.fingerprint});
   if(context!==this.#context){this.#context=context;this.#passed.clear();this.#failed.clear();}
   const fingerprints=new Map<string,string|null>();
   const byId=new Map(facts.map(f=>[f.id,f]));
@@ -67,7 +70,7 @@ export class VerificationSession {
    else needed.add(key);
   }
   const scope:VerificationScope={fact_indices:proposal.facts.flatMap((_,i)=>needed.has(`fact_checks:${i}`)?[i]:[]),operation_indices:proposal.operations.flatMap((_,i)=>needed.has(`operation_checks:${i}`)?[i]:[]),replacements:replacements.filter(c=>needed.has(`replacement_checks:${c.fact_index}:${c.target_id}`)),message_indices:participantIndices(req).filter(i=>needed.has(`message_checks:${i}`))};
-  const plan:Plan={scope,cached,fingerprints,blockedFindings:[...new Set(blockedFindings)],req:structuredClone(req),proposal:structuredClone(proposal),reused:arrays.reduce((n,k)=>n+cached[k].length,0)};
+  const plan:Plan={scope,cached,fingerprints,blockedFindings:[...new Set(blockedFindings)],req:structuredClone(req),proposal:structuredClone(proposal),reused:arrays.reduce((n,k)=>n+cached[k].length,0),sourceCoverage};
   this.#active=plan;return plan;
  }
 
@@ -81,7 +84,7 @@ export class VerificationSession {
    merged[type]=[...values,...plan.cached[type]];
   }
   let findings:string[];
-  try{findings=verificationIssues(merged,plan.req,plan.proposal);if(protocolErrors.length)throw new VerificationProtocolError(protocolErrors[0]!,findings);}
+  try{findings=verificationIssues(merged,plan.req,plan.proposal,plan.sourceCoverage);if(protocolErrors.length)throw new VerificationProtocolError(protocolErrors[0]!,findings);}
   catch(error){
    if(error instanceof VerificationProtocolError){
     // A malformed earlier array must not hide a valid rejection in a later
@@ -89,7 +92,7 @@ export class VerificationSession {
     const failures=new Set(error.findings);
     for(const type of arrays)for(const check of merged[type]){
      const single=empty();single[type]=[check];
-     try{for(const finding of verificationIssues(single,plan.req,plan.proposal))failures.add(finding);}
+     try{for(const finding of verificationIssues(single,plan.req,plan.proposal,plan.sourceCoverage))failures.add(finding);}
      catch(partial){if(partial instanceof VerificationProtocolError)for(const finding of partial.findings)failures.add(finding);}
     }
     const findings=[...failures];this.rememberFailures(plan,findings);
@@ -103,7 +106,13 @@ export class VerificationSession {
    const key=checkKey(type,check),fingerprint=plan.fingerprints.get(key);
    if(fingerprint&&!rejected.has(key)){this.#passed.set(key,{fingerprint,check:structuredClone(check)});this.#failed.delete(key);}
   }
+  if(!findings.length&&plan.sourceCoverage)this.#accepted={fingerprint:digest({req:plan.req,proposal:plan.proposal}),rows:structuredClone(merged.message_checks) as SourceCoverageRow[]};
   return findings;
+ }
+
+ acceptedSourceCoverage(req:AddRequest,proposal:Extraction):SourceCoverageRow[]{
+  if(!this.#accepted||this.#accepted.fingerprint!==digest({req,proposal}))throw new ServiceError('EVIDENCE_VALIDATION','Source coverage lacks an accepted independent verification');
+  return structuredClone(this.#accepted.rows);
  }
 
  private rememberFailures(plan:Plan,findings:string[]):Set<string>{

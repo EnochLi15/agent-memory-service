@@ -1,3 +1,4 @@
+import {validateSourceCoveragePlan,assertSourceCoverageStored} from './source-coverage.js';
 import {validateSourceRoutePlan} from './source-operation-routing.js';
 import {validateSourceBatchPlan} from './source-operation-batches.js';
 import {hasRestoreWording} from './types.js';
@@ -72,7 +73,7 @@ export class TenantStore {
   snapshot(session:string):Snapshot {
     const rows=this.db.prepare('SELECT body FROM messages WHERE session_id=? ORDER BY ordinal DESC LIMIT 10').all(session) as Row[];
     const boundaries=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
-    return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null,...(/-v[3456789]$/.test(this.meta('source_format')??'')?{erasureBoundaries:boundaries}:{}),...(/-v[456789]$/.test(this.meta('source_format')??'')?{erasureSources:(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage)}:{})};
+    return {revision:this.revision(),facts:this.facts(),tail:rows.reverse().map(r=>JSON.parse(r.body) as StoredMessage),anchor:(this.db.prepare('SELECT anchor FROM sessions WHERE id=?').get(session) as {anchor:string|null}|undefined)?.anchor??null,...(/-v(?:[3-9]|10)$/.test(this.meta('source_format')??'')?{erasureBoundaries:boundaries}:{}),...(/-v(?:[4-9]|10)$/.test(this.meta('source_format')??'')?{erasureSources:(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage)}:{})};
   }
   private put(f:Fact):void {
     // Extraction proposals carry a sources array, but persisted facts have one
@@ -86,19 +87,21 @@ export class TenantStore {
   commit(req:AddRequest,payloadHash:string,prepared:Prepared,expectedRevision:number,failAt?:string):Receipt {
     // A rejected/rolled-back transaction must not mutate a fingerprinted plan
     // or its transient target records in the caller's prepared object.
-    if(/-v[3456789]$/.test(prepared.sourceFormat??''))prepared=structuredClone(prepared);
+    if(/-v(?:[3-9]|10)$/.test(prepared.sourceFormat??''))prepared=structuredClone(prepared);
     return this.db.transaction(()=>{
       const already=this.receipt(req.request_id,payloadHash); if(already)return already;
       if(this.revision()!==expectedRevision)throw new ServiceError('REVISION_CONFLICT','Concurrent mutation; retry request');
       if(prepared.operations.some(o=>retirementEffectMismatch(o,req)))throw new ServiceError('OPERATION_INTENT','Retraction cannot satisfy an erasure request');
-      const semanticErasure=/-v[3456789]$/.test(prepared.sourceFormat??''),sourceErasure=/-v[456789]$/.test(prepared.sourceFormat??''),semanticTransitions=/-v[56789]$/.test(prepared.sourceFormat??'');
-      const sourceActions=/-v[6789]$/.test(prepared.sourceFormat??'')?validateSourceOperations(prepared.sourceOperationPlan,req,this.facts(),prepared.facts,prepared.messages,/-v[789]$/.test(prepared.sourceFormat??'')?this.snapshot(req.session_id).erasureSources??[]:[]):undefined;
-      if(prepared.sourceFormat?.endsWith('-v9')&&sourceActions){
+      const semanticErasure=/-v(?:[3-9]|10)$/.test(prepared.sourceFormat??''),sourceErasure=/-v(?:[4-9]|10)$/.test(prepared.sourceFormat??''),semanticTransitions=/-v(?:[5-9]|10)$/.test(prepared.sourceFormat??'');
+      const sourceActions=/-v(?:[6-9]|10)$/.test(prepared.sourceFormat??'')?validateSourceOperations(prepared.sourceOperationPlan,req,this.facts(),prepared.facts,prepared.messages,/-v(?:[7-9]|10)$/.test(prepared.sourceFormat??'')?this.snapshot(req.session_id).erasureSources??[]:[]):undefined;
+      if(/-v(?:9|10)$/.test(prepared.sourceFormat??'')&&sourceActions){
         validateSourceRoutePlan(prepared.sourceOperationPlan!,sourceActions.work);
         const resolved=sourceActions.plan.decisions.filter(d=>d.action==='reject_source').map(d=>sourceActions.work.instructions[d.instruction]!);
         if(missingForgetObligations(req,{facts:[],operations:prepared.operations}).some(o=>!resolved.some(i=>i.message===o.index&&i.start===o.span.start&&i.end===o.span.end)))throw new ServiceError('OPERATION_INTENT','Ordinary routing does not fulfill an unexecuted forget instruction');
       }
       if(prepared.sourceFormat?.endsWith('-v8')&&sourceActions?.work.enabled)validateSourceBatchPlan(prepared.sourceOperationPlan!,sourceActions.work);
+      const coveragePrepared=prepared.sourceFormat==='dual-source-v10'?{...prepared,facts:prepared.facts.map(({vector,...f})=>({...structuredClone(f),vector:null})),operations:structuredClone(prepared.operations),messages:structuredClone(prepared.messages)}:undefined;
+      if(coveragePrepared)validateSourceCoveragePlan(prepared.sourceCoveragePlan,req,coveragePrepared);
       const transitions=semanticTransitions?validateTransitions(prepared.transitionPlan,transitionWork(req,this.facts(),prepared.facts,prepared.operations)):undefined;
       let sourceCuts=new Map<string,{start:number;end:number}[]>();const reviewedSources=new Set<string>();
       const forcedErased=new Set<string>();
@@ -358,6 +361,7 @@ export class TenantStore {
         this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:'reject_source',source_id:source.id,target_ids:d.target_slots.map(i=>sourceActions.work.sources[i]!.id),revision}));
       }
       for(const e of events)this.db.prepare('INSERT INTO memory_events VALUES (?,?)').run(e.id,JSON.stringify(e));
+      if(coveragePrepared)assertSourceCoverageStored(prepared.sourceCoveragePlan!,req,coveragePrepared,this.passages(),new Set((this.db.prepare('SELECT id FROM passage_fts').all() as {id:string}[]).map(x=>x.id)));
       if(failAt==='indexes')throw new ServiceError('INJECTED_FAILURE','Fault injection after index writes');
       const receipt:Receipt={success:true,request_id:req.request_id,user_id:req.user_id,session_id:req.session_id};
       this.db.prepare('INSERT INTO requests VALUES (?,?,?)').run(req.request_id,payloadHash,JSON.stringify(receipt));this.setMeta('revision',String(revision));return receipt;

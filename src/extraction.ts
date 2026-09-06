@@ -1,3 +1,4 @@
+import {SOURCE_FIRST_EXTRACTION_PROMPT,makeSourceCoveragePlan,type SourceCoverageRow} from './source-coverage.js';
 import {SOURCE_ROUTE_PROMPT,sourceRouteInput,decodeSourceRoute,ordinarySourceRoute,validateSourceRoutePlan} from './source-operation-routing.js';
 import {sourceOperationNeedsBatches,sourceOperationWholeInput,prepareSourceBatches,validateSourceBatchPlan} from './source-operation-batches.js';
 import {sourceOperationWork,sourceOperationInput,sourceRejectionFindings,SOURCE_OPERATION_PROMPT,SOURCE_OPERATION_HISTORY_PROMPT,decodeSourceOperations,resolvedSourceInstructions,validateSourceOperations} from './source-operations.js';
@@ -195,7 +196,7 @@ export class Extractor {
     const sourceActions=sourceOperationPlan?resolvedSourceInstructions(sourceOperationPlan,req,snapshot.facts,sourceHistory):[];
     const pendingForget=(proposal:Extraction)=>missingForgetObligations(req,proposal).filter(o=>!sourceActions.some(a=>a.message===o.index&&a.start===o.span.start&&a.end===o.span.end));
     const chronology=messageAnchors(req,snapshot.anchor);const anchor=chronology.last;
-    let parsed: Extraction;
+    let parsed: Extraction;let sourceCoverageRows:SourceCoverageRow[]|undefined;
     if(this.config.experimental?.rawOnly){
       parsed={operations:[],facts:req.messages.flatMap((m,index)=>m.content.match(/[\s\S]{1,2000}/g)?.map(quote=>({content:`${m.role}: ${quote}`,subject:m.role,predicate:'raw_evidence',value:quote,scope:'',kind:'event' as const,modality:'confirmed' as const,cardinality:'multiple' as const,time_text:'',valid_from:null,valid_to:null,sources:[{index,quote}],supersedes:[],depends_on:[]}))??[])};
     }
@@ -215,7 +216,7 @@ export class Extractor {
         }
       };
       const references=this.config.extractionFormat==='source_refs',grouped=this.config.extractionFormat!=='flat';
-      const extractionPrompt=(references?SOURCE_REFERENCE_PROMPT:grouped?GROUPED_EXTRACTION_PROMPT:EXTRACTION_PROMPT)+(sourceActions.length?'\nRESOLVED_SOURCE_ACTIONS have a separate independently verified source removal plan that will commit atomically with your facts. Do not produce duplicate fact-ID operations for those exact instructions, and never bind them to unrelated existing facts. Preserve remaining corrected user facts and all other real instructions. Do not turn a rejected assistant value into a negative fact such as "user does not use REJECTED_VALUE"; that still stores the detail the user rejected. Generic rejection statements need no separate fact, while independent human preferences remain memorable. Do not cite any cut interval as a fact source; select the exact surviving user subclause if its whole sentence overlaps a cut.':'');
+      const extractionPrompt=(references?SOURCE_REFERENCE_PROMPT:grouped?GROUPED_EXTRACTION_PROMPT:EXTRACTION_PROMPT)+(this.config.sourceFirst?SOURCE_FIRST_EXTRACTION_PROMPT:'')+(sourceActions.length?'\nRESOLVED_SOURCE_ACTIONS have a separate independently verified source removal plan that will commit atomically with your facts. Do not produce duplicate fact-ID operations for those exact instructions, and never bind them to unrelated existing facts. Preserve remaining corrected user facts and all other real instructions. Do not turn a rejected assistant value into a negative fact such as "user does not use REJECTED_VALUE"; that still stores the detail the user rejected. Generic rejection statements need no separate fact, while independent human preferences remain memorable. Do not cite any cut interval as a fact source; select the exact surviving user subclause if its whole sentence overlaps a cut.':'');
       const user=JSON.stringify({...(sourceActions.length?{RESOLVED_SOURCE_ACTIONS:sourceActions}:{}),...(grouped?{EXTRACTION_PROTOCOL:references?SOURCE_REFERENCE_PROTOCOL:GROUPED_EXTRACTION_PROTOCOL,PARTICIPANT_INDEX:participantIndices(req)}:{}),OBSERVATION_DATE:anchor,EXISTING_FACTS:relevant,CONTEXT_ONLY:snapshot.tail.map(m=>({role:m.role,content:m.content})),NEW_MESSAGES:references?sourceReferenceMessages(req):req.messages.map((m,index)=>({index,...m}))});
       // Reserve time for grounded fallback, local embedding and atomic commit.
       // This inner budget never extends the caller's absolute request deadline.
@@ -328,6 +329,7 @@ export class Extractor {
         if(!accepted&&issue.startsWith('Operation effect mismatch'))throw new ServiceError('OPERATION_INTENT','Retirement still has the wrong operation effect after repair');
         if(!accepted)throw new ServiceError('EXTRACTION_SCHEMA','Could not validate structured evidence and exact sources');
         parsed=accepted;
+        if(this.config.sourceFirst)sourceCoverageRows=verificationSession.acceptedSourceCoverage(req,parsed);
       } catch (error) {
         if (signal.aborted || (error instanceof ServiceError && ['OPERATION_TARGET','OPERATION_SCOPE','OPERATION_INTENT','EVIDENCE_VALIDATION','VERIFICATION_UNAVAILABLE'].includes(error.code))) throw error;
         if(semanticallyRejected)throw new ServiceError('EVIDENCE_VALIDATION',modelSignal.aborted?'A rejected proposal could not be repaired before the request deadline':'A rejected proposal could not be repaired after a model or protocol failure');
@@ -410,7 +412,9 @@ export class Extractor {
         if (facts.some(f=>f.content.length>=3500)) degraded.push('long_evidence_lexical');
       } catch(error) { if (signal.aborted) throw error; degraded.push('embedding_lexical'); }
     }
-    const sourceFormat=`${this.config.sourceIndex&&!this.config.experimental?.rawOnly?'dual-source':'facts-only'}-v${useErasure?(this.config.sourceOperationRouting?9:this.config.sourceOperationBatches?8:this.config.sourceOperationHistory?7:this.config.sourceOperations?6:this.config.semanticTransitions?5:this.config.sourceErasure?4:3):2}` as Prepared['sourceFormat'];
-    return { ...(sourceOperationPlan?{sourceOperationPlan}:{}),facts,operations:parsed.operations,messages,passages,sourceFormat,...(erasurePlan?{erasurePlan}:{}),...(sourceErasurePlan?{sourceErasurePlan}:{}),...(transitionPlan?{transitionPlan}:{}),anchor,degraded,embeddingSpace:this.config.embeddingSpace };
+    const sourceFormat=`${this.config.sourceIndex&&!this.config.experimental?.rawOnly?'dual-source':'facts-only'}-v${useErasure?(this.config.sourceFirst?10:this.config.sourceOperationRouting?9:this.config.sourceOperationBatches?8:this.config.sourceOperationHistory?7:this.config.sourceOperations?6:this.config.semanticTransitions?5:this.config.sourceErasure?4:3):2}` as Prepared['sourceFormat'];
+    const prepared:Prepared={ ...(sourceOperationPlan?{sourceOperationPlan}:{}),facts,operations:parsed.operations,messages,passages,sourceFormat,...(erasurePlan?{erasurePlan}:{}),...(sourceErasurePlan?{sourceErasurePlan}:{}),...(transitionPlan?{transitionPlan}:{}),anchor,degraded,embeddingSpace:this.config.embeddingSpace };
+    if(this.config.sourceFirst){if(!sourceCoverageRows)throw new ServiceError('EVIDENCE_VALIDATION','Source-first write lacks independent coverage');prepared.sourceCoveragePlan=makeSourceCoveragePlan(req,prepared,sourceCoverageRows);}
+    return prepared;
   }
 }
