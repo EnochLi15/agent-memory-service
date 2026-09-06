@@ -15,8 +15,8 @@ reason is exactly one category: same_erased_record or erased_record_echo for era
 /** One indivisible review owns every boundary for the same exact evidence.
  * Original candidate membership is retained only on the server for expansion. */
 export function groupSourceErasureWork(original:Work){
- // Preserve the original candidate and total workload limits before grouping.
- sourceErasureBatches(original);
+ // Admission applies to the actual indivisible source reviews below. Every
+ // original boundary pair remains in members and in the transmitted references.
  const candidates:Candidate[]=[],members:number[][]=[],slots=new Map<string,number>();
  for(const [index,c] of original.candidates.entries()){
   const {key,boundary,authorization,matching_words,...source}=c;

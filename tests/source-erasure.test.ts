@@ -79,8 +79,8 @@ test('v4 cannot silently reuse a pre-existing v3 directory',async()=>{
 test('candidate capacity fails instead of truncating source coverage',()=>{
  const r=request('capacity','hi'),boundary={subject:'user',predicate:'appointment',scope:'',boundary:'value',valueHash:valueDigest('Pham'),tokenCount:1,revision:1};
  const m=(i:number,text='Pham')=>({id:String(i),session_id:'s',ordinal:i,role:'user',content:text,timestamp:'2026-01-01T00:00:00Z',searchable:true});
- assert.throws(()=>sourceErasureWork(r,[],[],[],[boundary],[],Array.from({length:257},(_,i)=>m(i))),/capacity/);
- assert.throws(()=>sourceErasureWork(r,[],[],[],[boundary],[],[m(0,'Pham '.repeat(14000))]),/capacity/);
+ assert.throws(()=>sourceErasureBatches(sourceErasureWork(r,[],[],[],[boundary],[],Array.from({length:257},(_,i)=>m(i)))),/capacity/);
+ assert.throws(()=>sourceErasureBatches(sourceErasureWork(r,[],[],[],[boundary],[],[m(0,'Pham '.repeat(14000))])),/capacity/);
 });
 test('source work capacity uses complete transmitted batches instead of repeated authorization copies',()=>{
  const r=request('deduplicated-capacity','Forget Pham.'),target={id:'target',content:'Appointment with Pham. '+('detail '.repeat(800)),value:'Pham',subject:'user',predicate:'appointment',scope:'dentist',state:'active',source_ids:[],source_quotes:['Appointment with Pham.'],vector:null} as any;

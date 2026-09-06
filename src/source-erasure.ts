@@ -44,9 +44,9 @@ export function sourceErasureWork(req:AddRequest,prior:Fact[],incoming:Fact[],op
   const linked_facts=linked.filter(f=>!direct.has(f.id)).map(witness),linked_erased_facts=linked.filter(f=>direct.has(f.id)).map(witness);
   nominate('source',m.id,0,m.content,{role:m.role,linked_facts,linked_erased_facts},newSources.some(x=>x.id===m.id));
  }
- // Enforce the actual complete wire workload. Repeated authorization/source
- // objects are losslessly shared by sourceErasureInput and are not sent per pair.
- sourceErasureBatches({fingerprint:'capacity-check',candidates});
+ // This is the complete transaction coverage, independent of transport. The
+ // selected executor admits its actual wire workload before any model call;
+ // grouped review may cover many boundary pairs with one source decision.
  const fingerprint=digest(JSON.stringify({req,prior:prior.map(meaning),incoming:incoming.map(meaning),operations,existing,oldSources,newSources,verifiedErasedIds:[...new Set(verifiedErasedIds)].sort(),candidates}));
  return {fingerprint,candidates};
 }
