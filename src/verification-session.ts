@@ -9,6 +9,7 @@ type Check=Record<string,any>;
 type Checks=Record<CheckArray,Check[]>;
 const empty=():Checks=>({fact_checks:[],operation_checks:[],replacement_checks:[],message_checks:[]});
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const rawWitnessKey=({slot:_,...witness}:SourceCoverageWork['candidates'][number])=>digest(witness);
 const checkKey=(type:CheckArray,c:Check)=>type==='replacement_checks'?`${type}:${c.fact_index}:${c.target_id}`:`${type}:${c.index}`;
 type Plan={scope:VerificationScope;cached:Checks;fingerprints:Map<string,string|null>;blockedFindings:string[];req:AddRequest;proposal:Extraction;reused:number;sourceCoverage?:SourceCoverageWork};
 
@@ -18,14 +19,16 @@ type Plan={scope:VerificationScope;cached:Checks;fingerprints:Map<string,string|
 export class VerificationSession {
  constructor(private readonly reusePassed=true){}
  #context='';
- #passed=new Map<string,{fingerprint:string;check:Check}>();
+ #passed=new Map<string,{fingerprint:string;check:Check;rawKeys?:string[]}>();
  #failed=new Map<string,{fingerprint:string;finding:string}>();
  #active:Plan|undefined;
  #accepted:{fingerprint:string;rows:SourceCoverageRow[]}|undefined;
 
  plan(req:AddRequest,proposal:Extraction,facts:Fact[],identity:unknown,sourceCoverage?:SourceCoverageWork):Plan{
   this.#accepted=undefined;
-  const context=digest({req,identity,sourceCoverage:sourceCoverage?.fingerprint});
+  // Candidate slot numbers can shift when an unrelated message is repaired.
+  // Bind coverage per message below; numbering is not a new semantic context.
+  const context=digest({req,identity,sourceCoverage:!!sourceCoverage});
   if(context!==this.#context){this.#context=context;this.#passed.clear();this.#failed.clear();}
   const fingerprints=new Map<string,string|null>();
   const byId=new Map(facts.map(f=>[f.id,f]));
@@ -56,7 +59,12 @@ export class VerificationSession {
   for(const index of participantIndices(req)){
    const factItems=proposal.facts.flatMap((f,i)=>f.sources.some(s=>s.index===index)?[[i,factPrints[i]]]:[]);
    const opItems=proposal.operations.flatMap((o,i)=>o.source.index===index?[[i,opPrints[i]]]:[]);
-   fingerprints.set(`message_checks:${index}`,[...factItems,...opItems].some(x=>x[1]===null)?null:digest({message:req.messages[index],factItems,opItems}));
+   const rawCandidates=sourceCoverage?.candidates.filter(c=>c.message===index).map(rawWitnessKey);
+   fingerprints.set(`message_checks:${index}`,[...factItems,...opItems].some(x=>x[1]===null)?null:digest({message:req.messages[index],factItems,opItems,rawCandidates}));
+  }
+  const rawSlots=new Map<string,number[]>();
+  for(const candidate of sourceCoverage?.candidates??[]){
+   const key=rawWitnessKey(candidate);rawSlots.set(key,[...(rawSlots.get(key)??[]),candidate.slot]);
   }
   const cached=empty(),needed=new Set<string>(),blockedFindings:string[]=[];
   for(const [key,fingerprint] of fingerprints){
@@ -66,8 +74,12 @@ export class VerificationSession {
    }
    const failed=this.#failed.get(key);if(fingerprint&&failed?.fingerprint===fingerprint)blockedFindings.push(failed.finding);
    const passed=this.#passed.get(key);
-   if(this.reusePassed&&fingerprint&&passed?.fingerprint===fingerprint)cached[key.split(':')[0] as CheckArray].push(structuredClone(passed.check));
-   else needed.add(key);
+   if(this.reusePassed&&fingerprint&&passed?.fingerprint===fingerprint&&
+      (passed.rawKeys??[]).every(k=>rawSlots.get(k)?.length===1)){
+    const check=structuredClone(passed.check);
+    if(passed.rawKeys?.length)check.raw_slots=passed.rawKeys.map(k=>rawSlots.get(k)![0]!);
+    cached[key.split(':')[0] as CheckArray].push(check);
+   }else needed.add(key);
   }
   const scope:VerificationScope={fact_indices:proposal.facts.flatMap((_,i)=>needed.has(`fact_checks:${i}`)?[i]:[]),operation_indices:proposal.operations.flatMap((_,i)=>needed.has(`operation_checks:${i}`)?[i]:[]),replacements:replacements.filter(c=>needed.has(`replacement_checks:${c.fact_index}:${c.target_id}`)),message_indices:participantIndices(req).filter(i=>needed.has(`message_checks:${i}`))};
   const plan:Plan={scope,cached,fingerprints,blockedFindings:[...new Set(blockedFindings)],req:structuredClone(req),proposal:structuredClone(proposal),reused:arrays.reduce((n,k)=>n+cached[k].length,0),sourceCoverage};
@@ -104,7 +116,10 @@ export class VerificationSession {
   const rejected=this.rememberFailures(plan,findings);
   for(const type of arrays)for(const check of merged[type]){
    const key=checkKey(type,check),fingerprint=plan.fingerprints.get(key);
-   if(fingerprint&&!rejected.has(key)){this.#passed.set(key,{fingerprint,check:structuredClone(check)});this.#failed.delete(key);}
+   if(fingerprint&&!rejected.has(key)){
+    const rawKeys=type==='message_checks'?(check.raw_slots??[]).map((slot:number)=>rawWitnessKey(plan.sourceCoverage!.candidates[slot]!)):undefined;
+    this.#passed.set(key,{fingerprint,check:structuredClone(check),rawKeys});this.#failed.delete(key);
+   }
   }
   if(!findings.length&&plan.sourceCoverage)this.#accepted={fingerprint:digest({req:plan.req,proposal:plan.proposal}),rows:structuredClone(merged.message_checks) as SourceCoverageRow[]};
   return findings;
