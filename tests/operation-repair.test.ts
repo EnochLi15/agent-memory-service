@@ -38,6 +38,35 @@ test('replacement fact references cannot supersede a different property without 
  let calls=0;const x=new Extractor({...config,mode:'enhanced'},{verify:async()=>[],json:async()=>{calls++;return calls===1?{facts:[{...structuredClone(fact),scope:'',supersedes:['m0']}],operations:[]}:{fact_edits:[{index:0,changes:{supersedes:[]}}]};},embedBatch:async()=>{throw Error('fixture embedding unavailable');}} as any);
  const before=store.facts()[0];const p=await x.prepare(req,store.snapshot('s'),AbortSignal.timeout(1000));assert.equal(calls,2);store.commit(req,hash(JSON.stringify(req)),p,store.revision());assert.deepEqual(store.facts().find((f:any)=>f.id===before.id),before);
 }));
+test('a binding failure in an appended fact gets a new repair scope without exposing unrelated facts',()=>fixture(async({store,config,req,fact}:any)=>{
+ let calls=0,checks=0,repairScope:any;const before=store.facts()[0];
+ const x=new Extractor({...config,mode:'enhanced',maxRepairRounds:2},{verify:async()=>++checks===1?['message 1: Missing the confirmed purchase reason.']:[],json:async(_system:string,input:string)=>{
+  calls++;if(calls===1)return {facts:[structuredClone(fact)],operations:[]};
+  if(calls===2)return {append_facts:[{...structuredClone(fact),modality:'confirmed',supersedes:['m0']}]};
+  repairScope=JSON.parse(input).REPAIR_SCOPE;
+  return {fact_edits:[{index:1,changes:{supersedes:[]}}]};
+ },embedBatch:async()=>{throw Error('fixture embedding unavailable');}} as any);
+ const prepared=await x.prepare(req,store.snapshot('s'),AbortSignal.timeout(1000));assert.equal(calls,3);assert.equal(checks,2);assert.deepEqual(repairScope.fact_indices,[1]);assert.deepEqual(repairScope.operation_indices,[]);
+ store.commit(req,hash(JSON.stringify(req)),prepared,store.revision());assert.deepEqual(store.facts().find((f:any)=>f.id===before.id),before);
+}));
+test('a newly appended operation can be repaired after a localized coverage failure',()=>fixture(async({store,config,req,fact,operation}:any)=>{
+ let calls=0,checks=0,repairScope:any;const before=store.facts()[0];
+ const x=new Extractor({...config,mode:'enhanced',maxRepairRounds:2},{verify:async()=>++checks===1?['message 1: Missing the confirmed reason.']:[],json:async(_system:string,input:string)=>{
+  calls++;if(calls===1)return {facts:[structuredClone(fact)],operations:[]};
+  if(calls===2)return {append_operations:[structuredClone(operation)]};
+  repairScope=JSON.parse(input).REPAIR_SCOPE;return {operation_edits:[{index:0,remove:true}]};
+ },embedBatch:async()=>{throw Error('fixture embedding unavailable');}} as any);
+ const prepared=await x.prepare(req,store.snapshot('s'),AbortSignal.timeout(1000));assert.equal(calls,3);assert.equal(checks,2);assert.deepEqual(repairScope.operation_indices,[0]);assert.deepEqual(repairScope.fact_indices,[]);
+ store.commit(req,hash(JSON.stringify(req)),prepared,store.revision());assert.deepEqual(store.facts().find((f:any)=>f.id===before.id),before);
+}));
+test('refreshing a binding repair scope still rejects changes to unflagged facts',()=>fixture(async({store,config,req,fact}:any)=>{
+ let calls=0;const x=new Extractor({...config,mode:'enhanced',maxRepairRounds:2},{verify:async()=>['message 1: Missing a detail.'],json:async()=>{
+  calls++;if(calls===1)return {facts:[structuredClone(fact)],operations:[]};
+  if(calls===2)return {append_facts:[{...structuredClone(fact),modality:'confirmed',supersedes:['m0']}]};
+  return {fact_edits:[{index:1,changes:{supersedes:[]}},{index:0,remove:true}]};
+ }} as any);
+ await assert.rejects(x.prepare(req,store.snapshot('s'),AbortSignal.timeout(1000)),/Invalid target\/scope repair patch/);assert.equal(calls,3);assert.equal(store.revision(),1);
+}));
 test('a complete personal-state message cannot disappear behind a later unrelated topic',()=>fixture(async({store,config}:any)=>{
  const req={request_id:'coverage',user_id:'u',session_id:'s',messages:[{role:'user',content:'I set up an auto-invest of $250 every two weeks into the index fund.',timestamp:'2026-02-01T00:00:00Z'},{role:'user',content:'I might visit the island for photos.',timestamp:'2026-02-01T00:00:01Z'}]};
  const fund={content:req.messages[0].content,subject:'user',predicate:'auto_invest',value:'$250 every two weeks',sources:[{index:0,quote:req.messages[0].content}]};

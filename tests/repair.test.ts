@@ -1,9 +1,22 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
-import {applyRepair,scopeForFindings} from '../dist/repair.js';
+import {applyRepair,scopeForFindings,replacementTargetGroups} from '../dist/repair.js';
 import {extractionSchema} from '../dist/types.js';
 const fact=(value:string,index:number)=>({content:value,subject:'user',predicate:value,value,sources:[{index,quote:value}]});
 const base=()=>extractionSchema.parse({facts:[fact('unrelated',0),fact('retired',1),{...fact('derived',2),depends_on:['new:1']}],operations:[{type:'forget',subject:'user',predicate:'retired',target_ids:['new:1'],source:{index:3,quote:'forget retired'}}]});
 const all={fact_indices:[0,1,2],operation_indices:[0],source_indices:[0,1,2,3,4]};
+test('replacement groups distinguish a commitment from a backup name, other owners and scopes',()=>{
+ const proposal=extractionSchema.parse({facts:[{...fact('Elara',0),predicate:'name_commitment',scope:'daughter name'}]});
+ const existing=[
+  {id:'m0',subject:'user',predicate:'backup_first_name',scope:'daughter name'},
+  {id:'m1',subject:'user',predicate:'alternate_name',scope:'daughter name'},
+  {id:'m2',subject:'Diane',predicate:'name_commitment',scope:'daughter name'},
+  {id:'m3',subject:'user',predicate:'name_commitment',scope:'project name'},
+  {id:'m4',subject:'User',predicate:'name_commitment',scope:'daughter_name'},
+ ];
+ const groups=replacementTargetGroups(proposal,existing);
+ assert.deepEqual(groups.find(g=>g.target_ids.includes('new:0'))?.target_ids,['m4','new:0']);
+ assert.deepEqual(groups.find(g=>g.target_ids.includes('m0'))?.target_ids,['m0','m1']);assert.equal(groups.length,4);
+});
 test('removing an earlier slot keeps every remaining reference bound to the same fact',()=>{
  const original=base();const p=applyRepair(original,{fact_edits:[{index:0,remove:true}]},all);
  assert.equal(p.facts[0]!.value,'retired');assert.deepEqual(p.facts[1]!.depends_on,['new:0']);assert.deepEqual(p.operations[0]!.target_ids,['new:0']);assert.equal(original.facts[0]!.value,'unrelated');
