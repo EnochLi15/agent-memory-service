@@ -16,7 +16,7 @@ import {humanQuote,participantIndices} from './verification.js';
 import {SOURCE_REFERENCE_PROTOCOL,SOURCE_REFERENCE_PROMPT,sourceReferenceMessages,decodeSourceReferences} from './source-references.js';
 import {GROUPED_EXTRACTION_PROTOCOL,GROUPED_EXTRACTION_PROMPT,decodeGroupedExtraction} from './extraction-groups.js';
 import {VerificationSession} from './verification-session.js';
-import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,type RepairScope} from './repair.js';
+import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,replacementBindingProblems,type RepairScope} from './repair.js';
 import {sourceErasureWork,sourceErasureBatches,sourceErasureInput,sourceQuoteProblems,applySourceQuoteRepairs,SOURCE_QUOTE_REPAIR_PROMPT,decodeSourceErasureResponse,decodeSourceErasure,SOURCE_ERASURE_PROMPT} from './source-erasure.js';
 import {erasureWork,decodeErasure,ERASURE_PROMPT} from './erasure.js';
 import {transitionWork,transitionInput,decodeTransitions,TRANSITION_PROMPT} from './transitions.js';
@@ -286,7 +286,10 @@ export class Extractor {
             const operations=new Set([...badScopes.map(o=>o.operation),...valid.data.operations.flatMap((o,index)=>badOps.includes(o)?[index]:[]),...unauthorized]);
             repairScope=scopeForFindings(valid.data,[...facts].map(i=>`fact ${i}: Invalid binding or source`).concat([...operations].map(i=>`operation ${i}: Invalid binding or source`)));
           }
-          if(badScopes.length||badReplacements.length){issue='Operation target binding: subject, property or scope does not match its selected targets. '+JSON.stringify({operations:badScopes,replacement_facts:badReplacements})+sourceFeedback+'. Reuse matching existing fields only if that record is actually the requested target. For same-chunk transient targets, proposal_index identifies the editable fact slot. If the user forgets multiple properties of one concrete entity, give those transient facts that same entity scope when their original statements support it; preserve unrelated devices. Alternatively split operations only when the source actually authorizes each distinct scope. Changing sources alone does not fix a scope mismatch. Never rename an existing or unrelated record to pass validation. If correcting an assistant claim that was never stored, keep the grounded USER facts but emit no operation or supersedes reference against an unrelated record. Cite the user correction itself, not the assistant restatement. Return the corrected object.';continue;}
+          if(badScopes.length||badReplacements.length){
+            const labels=new Map([...aliases].map(([alias,id])=>[id,alias]));valid.data.facts.forEach((_,i)=>labels.set(factId(req,i),`new:${i}`));
+            const replacement_details=replacementBindingProblems(valid.data,bindingPool,id=>labels.get(id)??id);
+            issue='Operation target binding: subject, property or scope does not match its selected targets. '+JSON.stringify({operations:badScopes,replacement_facts:badReplacements,replacement_details})+sourceFeedback+'. Reuse matching existing fields only if that record is actually the requested target. For same-chunk transient targets, proposal_index identifies the editable fact slot. If the user forgets multiple properties of one concrete entity, give those transient facts that same entity scope when their original statements support it; preserve unrelated devices. Alternatively split operations only when the source actually authorizes each distinct scope. Changing sources alone does not fix a scope mismatch. Never rename an existing or unrelated record to pass validation. If correcting an assistant claim that was never stored, keep the grounded USER facts but emit no operation or supersedes reference against an unrelated record. Cite the user correction itself, not the assistant restatement. Return the corrected object.';continue;}
           if(unauthorized.length){
             const findings=unauthorized.map(index=>`operation ${index}: The cited source is not an authorizing user deletion instruction.`);
             repairScope=scopeForFindings(valid.data,findings);
