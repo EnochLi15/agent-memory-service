@@ -1,12 +1,13 @@
 import {createHash} from 'node:crypto';
-import type {Fact,StoredMessage,Passage,Operation} from './types.js';
+import {ServiceError,type Fact,type StoredMessage,type Passage,type Operation} from './types.js';
 import {instructionSpans} from './operation-intent.js';
 import {speakerPrefix} from './text.js';
 
 const digest=(s:string):string=>createHash('sha256').update(s).digest('hex');
-export function sourceSpans(f:{sources:{index:number;quote:string}[]},messages:StoredMessage[]):NonNullable<Fact['source_spans']>{
+export function sourceSpans(f:{sources:{index:number;quote:string;start?:number}[]},messages:StoredMessage[]):NonNullable<Fact['source_spans']>{
  return f.sources.flatMap(s=>{
   const m=messages[s.index];if(!m)return [];
+  if(s.start!==undefined){if(!Number.isInteger(s.start)||s.start<0||m.content.slice(s.start,s.start+s.quote.length)!==s.quote)throw new ServiceError('FACT_SOURCE','Source offset does not match the declared quote');return [{source_id:m.id,start:s.start,end:s.start+s.quote.length}];}
   const spans:NonNullable<Fact['source_spans']>=[];
   for(let start=m.content.indexOf(s.quote);start>=0;start=m.content.indexOf(s.quote,start+Math.max(1,s.quote.length)))spans.push({source_id:m.id,start,end:start+s.quote.length});
   return spans;

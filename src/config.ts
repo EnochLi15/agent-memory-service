@@ -3,7 +3,7 @@ export interface Config {
   port: number; host: string; dataDir: string; mode: 'enhanced' | 'offline'; llmBase: string; llmKey: string; llmModel: string; llmReasoningEffort?:'low'|'medium'|'high';
   llmStageModels:Partial<Record<'extraction'|'verification'|'repair',string>>;
   maxRepairRounds:1|2;
-  extractionFormat:'flat'|'message_groups';
+  extractionFormat:'flat'|'message_groups'|'source_refs';
   verificationFormat:'verbose'|'compact';
   verificationResponseFormat:'json_object'|'json_schema';
   erasureBinding:boolean;sourceErasure:boolean;semanticTransitions:boolean;
@@ -25,7 +25,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   const maxRepairRounds=num('MEMORY_MAX_REPAIR_ROUNDS',1);
   if(maxRepairRounds!==1&&maxRepairRounds!==2)throw new Error('Invalid MEMORY_MAX_REPAIR_ROUNDS');
   const extractionFormat=env.MEMORY_EXTRACTION_FORMAT??'flat';
-  if(!['flat','message_groups'].includes(extractionFormat))throw new Error('Invalid MEMORY_EXTRACTION_FORMAT');
+  if(!['flat','message_groups','source_refs'].includes(extractionFormat))throw new Error('Invalid MEMORY_EXTRACTION_FORMAT');
   const verificationFormat=env.MEMORY_VERIFICATION_FORMAT??'verbose';
   if(verificationFormat!=='verbose'&&verificationFormat!=='compact')throw new Error('Invalid MEMORY_VERIFICATION_FORMAT');
   const verificationResponseFormat=env.MEMORY_VERIFICATION_RESPONSE_FORMAT??'json_object';

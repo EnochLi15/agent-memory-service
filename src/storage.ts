@@ -135,6 +135,8 @@ export class TenantStore {
           const i=prepared.messages.findIndex(m=>m.id===id);if(i<0||i>operation.source.index)return false;
           if(i<operation.source.index)return true;
           const text=prepared.messages[i]!.content,start=text.indexOf(operation.source.quote);
+          const spans=f.source_spans?.filter(s=>s.source_id===id)??[];
+          if(spans.length)return start>=0&&spans.every(s=>s.end<=start);
           const quotes=f.source_quotes.filter(q=>text.includes(q));
           return start>=0&&quotes.length>0&&quotes.every(q=>text.indexOf(q)===text.lastIndexOf(q)&&text.indexOf(q)+q.length<=start);
         }));

@@ -16,7 +16,7 @@ export const factSchema = z.object({
   modality: z.enum(['confirmed', 'tentative', 'hypothetical', 'quoted', 'inferred']).default('confirmed'),
   cardinality: z.enum(['single', 'multiple']).default('multiple'),
   time_text: z.string().default(''), valid_from: z.string().nullable().default(null), valid_to: z.string().nullable().default(null),
-  depends_on: z.array(z.string()).default([]), sources: z.array(sourceSchema).min(1), supersedes: z.array(z.string()).default([]),
+  depends_on: z.array(z.string()).default([]), sources: z.array(sourceSchema.extend({start:z.number().int().nonnegative().optional()})).min(1), supersedes: z.array(z.string()).default([]),
 });
 export const operationSchema = z.object({
   type: z.enum(['update', 'correct', 'retract', 'forget', 'restore']),

@@ -8,6 +8,7 @@ import { entities, overlap, tokens, speakerPrefix } from './text.js';
 import {preparePassages,sourceSpans} from './passages.js';
 import {messageAnchors,normalizeFactTime} from './temporal.js';
 import {humanQuote,participantIndices} from './verification.js';
+import {SOURCE_REFERENCE_PROTOCOL,SOURCE_REFERENCE_PROMPT,sourceReferenceMessages,decodeSourceReferences} from './source-references.js';
 import {GROUPED_EXTRACTION_PROTOCOL,GROUPED_EXTRACTION_PROMPT,decodeGroupedExtraction} from './extraction-groups.js';
 import {VerificationSession} from './verification-session.js';
 import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,type RepairScope} from './repair.js';
@@ -101,7 +102,9 @@ function humanOperation(o:Operation,req:AddRequest):boolean {
   const name=speakerPrefix(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim())?.[1];
   return !!name && (canonical(o.subject)===canonical(name)||canonical(o.subject).startsWith(canonical(name)+"'s "));
 }
-function resolveSource(source:{index:number;quote:string},req:AddRequest):void {
+function sourceMatches(source:{index:number;quote:string;start?:number},req:AddRequest):boolean{const text=req.messages[source.index]?.content;return !!text&&(source.start===undefined?text.includes(source.quote):text.slice(source.start,source.start+source.quote.length)===source.quote);}
+function resolveSource(source:{index:number;quote:string;start?:number},req:AddRequest):void {
+  if(source.start!==undefined)return;
   // Correct unambiguous index/copying mistakes without accepting paraphrased evidence.
   if(req.messages[source.index]?.content.includes(source.quote))return;
   const escaped=source.quote.trim().split(/\s+/).map(x=>x.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('\\s+');
@@ -117,11 +120,12 @@ function resolveSource(source:{index:number;quote:string},req:AddRequest):void {
   if(local.length===1)source.quote=local[0]![0];
 }
 const factId=(req:AddRequest,index:number):string=>hash(`${req.user_id}\0${req.request_id}\0fact\0${index}`);
-function before(a:{index:number;quote:string},b:{index:number;quote:string},req:AddRequest):boolean{
+function before(a:{index:number;quote:string;start?:number},b:{index:number;quote:string;start?:number},req:AddRequest):boolean{
+  if(!sourceMatches(a,req)||!sourceMatches(b,req))return false;
   if(a.index!==b.index)return a.index<b.index;
   const text=req.messages[a.index]?.content??'';
-  const start=text.indexOf(a.quote),end=text.indexOf(b.quote);
-  return start>=0&&end>=0&&start===text.lastIndexOf(a.quote)&&end===text.lastIndexOf(b.quote)&&start+a.quote.length<=end;
+  const start=a.start??text.indexOf(a.quote),end=b.start??text.indexOf(b.quote);
+  return start>=0&&end>=0&&(a.start!==undefined||start===text.lastIndexOf(a.quote))&&(b.start!==undefined||end===text.lastIndexOf(b.quote))&&start+a.quote.length<=end;
 }
 function bindNewFactHandles(parsed:Extraction,req:AddRequest):Set<string>{
   const ids=new Map(parsed.facts.map((_,i)=>[factId(req,i),i]));
@@ -182,9 +186,9 @@ export class Extractor {
           relevant.push({id,content:f.content,subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,state:f.state,modality:f.modality});
         }
       };
-      const grouped=this.config.extractionFormat==='message_groups';
-      const extractionPrompt=grouped?GROUPED_EXTRACTION_PROMPT:EXTRACTION_PROMPT;
-      const user=JSON.stringify({...(grouped?{EXTRACTION_PROTOCOL:GROUPED_EXTRACTION_PROTOCOL,PARTICIPANT_INDEX:participantIndices(req)}:{}),OBSERVATION_DATE:anchor,EXISTING_FACTS:relevant,CONTEXT_ONLY:snapshot.tail.map(m=>({role:m.role,content:m.content})),NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))});
+      const references=this.config.extractionFormat==='source_refs',grouped=this.config.extractionFormat!=='flat';
+      const extractionPrompt=references?SOURCE_REFERENCE_PROMPT:grouped?GROUPED_EXTRACTION_PROMPT:EXTRACTION_PROMPT;
+      const user=JSON.stringify({...(grouped?{EXTRACTION_PROTOCOL:references?SOURCE_REFERENCE_PROTOCOL:GROUPED_EXTRACTION_PROTOCOL,PARTICIPANT_INDEX:participantIndices(req)}:{}),OBSERVATION_DATE:anchor,EXISTING_FACTS:relevant,CONTEXT_ONLY:snapshot.tail.map(m=>({role:m.role,content:m.content})),NEW_MESSAGES:references?sourceReferenceMessages(req):req.messages.map((m,index)=>({index,...m}))});
       // Reserve time for grounded fallback, local embedding and atomic commit.
       // This inner budget never extends the caller's absolute request deadline.
       let semanticallyRejected=false;const verificationSession=new VerificationSession(this.config.incrementalVerification);
@@ -198,11 +202,11 @@ export class Extractor {
           // validation pass, whose indices may include newly appended facts.
           repairScope=undefined;
           const repairSystem=issue?(patchMode?PATCH_PROMPT:'\nRepair the malformed proposal; return the complete extraction schema.'):'';
-          const repairInput=issue?JSON.stringify({...JSON.parse(user),...(grouped&&patchMode?{EXTRACTION_PROTOCOL:'flat-patch-v1'}:{}),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:failedProposal,...(patchMode?{REPAIR_SCOPE:scope,REPLACEMENT_TARGET_GROUPS:replacementTargetGroups(prior.data!,relevant),FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
+          const repairInput=issue?JSON.stringify({...JSON.parse(user),...(grouped&&patchMode?{EXTRACTION_PROTOCOL:'flat-patch-v1',NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))}:{}),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:failedProposal,...(patchMode?{REPAIR_SCOPE:scope,REPLACEMENT_TARGET_GROUPS:replacementTargetGroups(prior.data!,relevant),FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
           const output=await this.models.json(patchMode?PATCH_PROMPT:extractionPrompt+repairSystem,repairInput,modelSignal,{purpose:issue?'repair':'extraction',trace:traceIdentity});
           let raw:unknown=output;
           if(grouped&&!patchMode){
-            try{raw=decodeGroupedExtraction(output,req);}
+            try{raw=references?decodeSourceReferences(output,req):decodeGroupedExtraction(output,req);}
             catch(error){
               failedProposal=output;
               if(attempt===this.config.maxRepairRounds)throw new ServiceError('EVIDENCE_VALIDATION','Grouped extraction could not cover every participant within bounded repair rounds');
@@ -235,7 +239,7 @@ export class Extractor {
           const unknown=[...valid.data.facts.flatMap(f=>[...f.supersedes,...f.depends_on]),...valid.data.operations.flatMap(o=>o.target_ids)].filter(id=>!knownIds.has(id)&&!localIds.has(id));
           if(unknown.length){expandTargets(valid.data);issue='Unknown target IDs. Use ONLY short IDs from EXISTING_FACTS, never invent IDs. This list now includes bounded operation-specific candidates. Candidate similarity is not authorization; bind only actual targets supported by the user statement. If a rejected assistant claim was not in existing memories, emit no delete/correct operation for it. Unknown IDs: '+JSON.stringify(unknown.slice(0,8));continue;}
           const bindingPool=[...snapshot.facts,...proposalFacts(valid.data,req)];
-          const invalid=valid.data.facts.flatMap((f,i)=>f.sources.filter(s=>!req.messages[s.index]?.content.includes(s.quote)).map(s=>({fact:i,index:s.index,quote:s.quote})));
+          const invalid=valid.data.facts.flatMap((f,i)=>f.sources.filter(s=>!sourceMatches(s,req)).map(s=>({fact:i,index:s.index,quote:s.quote,start:s.start})));
           const unauthorized=valid.data.operations.flatMap((o,index)=>o.type==='forget'&&!authorizesForget(o,req)?[index]:[]);
           const badOps=valid.data.operations.filter(o=>!req.messages[o.source.index]?.content.includes(o.source.quote)||!humanOperation(o,req));
           const sourceFeedback=invalid.length||badOps.length||unauthorized.length?' SOURCE_ERRORS: '+JSON.stringify({facts:invalid,operations:badOps,authorization_errors:unauthorized.map(operation=>({operation,source:valid.data.operations[operation]!.source,reason:'Cited span does not authorize deletion of this target.'}))})+'. Also repair these exact human source spans in this same patch; copy from NEW_MESSAGES without paraphrasing. For authorization errors cite an actual deletion instruction for the same target, not a reason for removal; remove only that unsupported operation if no such instruction exists. Preserve valid sibling operations.':'';
@@ -301,7 +305,7 @@ export class Extractor {
         degraded.push('extraction_offline'); parsed = offlineExtract(req,snapshot);
       }
     }
-    const validSource = (s:{index:number;quote:string}): boolean => !!req.messages[s.index]?.content.includes(s.quote);
+    const validSource = (s:{index:number;quote:string;start?:number}): boolean => sourceMatches(s,req);
     if (parsed.operations.some(o => !validSource(o.source) || !humanOperation(o,req))) throw new ServiceError('OPERATION_SOURCE','Operation lacks valid user evidence');
     // Reject nonexistent operation targets; the model may only bind tenant-local evidence.
     const localIds=bindNewFactHandles(parsed,req);
