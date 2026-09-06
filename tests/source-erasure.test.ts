@@ -18,7 +18,7 @@ async function fixture(fn:any,sourceErasureWorkers=1){
     return {index,parts:split>=0?[{text:c.text.slice(0,split),effect:'erase'},{text:c.text.slice(split),effect:'retain'}]:[{text:c.text,effect:'erase'}],reason:'Same appointment; retain only independent browser information.'};
    })});
   }
-  if(ctx?.purpose==='erasure_binding'){const data=JSON.parse(input);return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,effect:c.fact.subject==='Kevin'?'retain':'erase',quote:c.fact.source_quotes[0],reason:'Actor-specific appointment.'}))};}
+  if(ctx?.purpose==='erasure_binding'){const data=JSON.parse(input);return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,effect:data.FACTS[c.fact_slot].fact.subject==='Kevin'?'retain':'erase',quote:data.FACTS[c.fact_slot].fact.source_quotes[0],reason:'Actor-specific appointment.'}))};}
   return structuredClone(p);
  }} as any).prepare(req,store.snapshot('s'),AbortSignal.timeout(2000));
  const commit=(r:any,p:any,fail?:string)=>store.commit(r,hash(JSON.stringify(r)),p,store.revision(),fail);
@@ -151,7 +151,7 @@ for(const workers of [1,3])for(const repeatDefect of [false,true])test(`source q
    })};
   }
   if(ctx.purpose==='source_erasure_repair'){repairs++;return {repairs:d.PROBLEMS.map((p:any)=>({index:p.index,status:'resolved',quote:p.candidate.text.split(';')[0]}))};}
-  if(ctx.purpose==='erasure_binding')return {decisions:d.CANDIDATES.map((c:any,index:number)=>({index,effect:'erase',quote:c.fact.source_quotes[0],reason:'Same appointment.'}))};
+  if(ctx.purpose==='erasure_binding')return {decisions:d.CANDIDATES.map((c:any,index:number)=>({index,effect:'erase',quote:d.FACTS[c.fact_slot].fact.source_quotes[0],reason:'Same appointment.'}))};
   return deletion(target);
  }};
  const outer=new AbortController(),prepare=()=>new Extractor({...config,sourceErasureWorkers:workers},model as any).prepare(del,before,outer.signal);

@@ -10,7 +10,7 @@ async function fixture(body:any){
  const prepare=async(r:any,facts:any[],relation='compatible',operations:any[]=[],sourceParts?:any)=>new Extractor(config,{verify:async()=>[],embedBatch:async(xs:string[])=>xs.map(()=>[1,0]),json:async(_system:string,input:string,_signal:any,ctx:any)=>{
   const data=JSON.parse(input);
   if(ctx.purpose==='state_transition'){calls++;return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,relation,old_source_slot:0,new_source_slot:0,reason:'Fixture relationship supported by the cited statements.'}))};}
-  if(ctx.purpose==='erasure_binding')return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,effect:'erase',quote:c.fact.source_quotes[0],reason:'Fixture forget scope.'}))};
+  if(ctx.purpose==='erasure_binding')return {decisions:data.CANDIDATES.map((c:any,index:number)=>({index,effect:'erase',quote:data.FACTS[c.fact_slot].fact.source_quotes[0],reason:'Fixture forget scope.'}))};
   if(ctx.purpose==='source_erasure'){data.CANDIDATES=data.CANDIDATES.map((c:any)=>({...data.SOURCES[c.source_slot],...data.BOUNDARIES[c.boundary_slot],index:c.index,matching_words:c.matching_words}));return {decisions:data.CANDIDATES.map((c:any,index:number)=>{const parts=sourceParts?sourceParts(c):[{text:c.text,effect:'erase'}];const mixed=parts.some((p:any)=>p.effect==='retain')&&parts.some((p:any)=>p.effect==='erase');return {index,effect:mixed?'mixed':parts[0].effect,erase_quotes:mixed?parts.filter((p:any)=>p.effect==='erase').map((p:any)=>p.text):[],reason:mixed?'mixed_source':parts[0].effect==='erase'?'same_erased_record':'independent_record'};})};}
   return {facts,operations};
  }} as any).prepare(r,store.snapshot('s'),AbortSignal.timeout(2000));

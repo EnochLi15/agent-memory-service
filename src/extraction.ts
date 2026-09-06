@@ -21,7 +21,7 @@ import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,replac
 import {sourceErasureWork} from './source-erasure.js';
 import {executeSourceErasure} from './source-erasure-execution.js';
 import {executeGroupedSourceErasure} from './source-erasure-grouped.js';
-import {erasureWork,decodeErasure,ERASURE_PROMPT} from './erasure.js';
+import {erasureWork,erasureInput,decodeErasure,ERASURE_PROMPT} from './erasure.js';
 import {transitionWork,transitionInput,decodeTransitions,TRANSITION_PROMPT} from './transitions.js';
 
 export function hash(s: string): string { return createHash('sha256').update(s).digest('hex'); }
@@ -402,7 +402,7 @@ export class Extractor {
       if(work.candidates.length){
         if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Erasure scope requires semantic binding; offline recovery cannot certify independence');
         let raw:unknown;
-        try{raw=await this.models.json(ERASURE_PROMPT,JSON.stringify({NEW_MESSAGES:req.messages,CONTEXT_ONLY:snapshot.tail,SOURCE_CONTEXTS:work.source_contexts,CANDIDATES:work.candidates.map((c,index)=>({index,...c}))}),modelSignal,{purpose:'erasure_binding',trace:traceIdentity});}
+        try{raw=await this.models.json(ERASURE_PROMPT,JSON.stringify(erasureInput(req,snapshot.tail,work)),modelSignal,{purpose:'erasure_binding',trace:traceIdentity});}
         catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not bind erasure scope within the shared model budget');}
         erasurePlan=decodeErasure(raw,work);
       }else erasurePlan={fingerprint:work.fingerprint,decisions:work.automatic};

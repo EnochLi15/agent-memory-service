@@ -11,7 +11,7 @@ test('erasure removes scope payloads atomically while restart, neighbors, replay
  let proposal:any;
  const model={verify:async()=>[],embedBatch:async(xs:string[])=>xs.map(()=>[1,0]),json:async(_s:string,input:string,_signal:any,ctx:any)=>{
   const d=JSON.parse(input);
-  if(ctx.purpose==='erasure_binding')return {decisions:d.CANDIDATES.map((c:any,index:number)=>({index,effect:c.fact.scope==='mild soup'?'retain':'erase',quote:c.fact.source_quotes[0],reason:'The soup is a separately supported independent meal.'}))};
+  if(ctx.purpose==='erasure_binding')return {decisions:d.CANDIDATES.map((c:any,index:number)=>({index,effect:d.FACTS[c.fact_slot].fact.scope==='mild soup'?'retain':'erase',quote:d.FACTS[c.fact_slot].fact.source_quotes[0],reason:'The soup is a separately supported independent meal.'}))};
   if(ctx.purpose==='source_erasure')return {decisions:d.SOURCES.map((s:any)=>({index:s.index,effect:s.text.includes('mild soup')?'retain':'erase',erase_quotes:[],reason:s.text.includes('mild soup')?'independent_record':'same_erased_record'}))};
   return structuredClone(proposal);
  }} as any;
