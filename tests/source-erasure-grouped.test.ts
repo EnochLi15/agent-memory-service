@@ -7,8 +7,8 @@ const fixture=()=>({fingerprint:'original',candidates:[0,1,2].map(i=>({kind:'sou
 const mixed=(index=0)=>({index,effect:'mixed',reason:'mixed_source',erase_quotes:['Our backup is Iris.','Iris has the understated feel we like.']});
 test('joint review includes every authorization and fixed erased obligation exactly once per source',()=>{
  const original=fixture(),saved=structuredClone(original),{work,members}=groupSourceErasureWork(original),input=groupedSourceErasureInput(work);
- assert.deepEqual(members,[[0,1,2]]);assert.equal(input.SOURCES.length,1);assert.equal(input.SOURCES[0].BOUNDARIES.length,3);
- assert.deepEqual(input.SOURCES[0].context,original.candidates[0].context);assert.deepEqual(input.SOURCES[0].BOUNDARIES.map(b=>b.key),['b0','b1','b2']);assert.notEqual(work.fingerprint,original.fingerprint);assert.deepEqual(original,saved);
+ assert.deepEqual(members,[[0,1,2]]);assert.equal(input.SOURCES.length,1);assert.equal(input.SOURCES[0].boundary_refs.length,3);
+ assert.deepEqual(input.SOURCES[0].context,original.candidates[0].context);assert.deepEqual(input.SOURCES[0].boundary_refs.map(r=>input.BOUNDARIES[r.boundary_slot].key),['b0','b1','b2']);assert.notEqual(work.fingerprint,original.fingerprint);assert.deepEqual(original,saved);
  original.candidates[1].authorization.source.quote='Different authority';assert.notEqual(groupSourceErasureWork(original).work.fingerprint,work.fingerprint);
 });
 test('one joint partition maps back to complete original coverage and preserves independent neighbors',async()=>{
@@ -47,4 +47,25 @@ test('joint mode is opt in, configuration constrained, and cancellation and orig
  assert.equal(configFromEnv({MEMORY_MODE:'enhanced',MEMORY_SOURCE_ERASURE:'true',MEMORY_ERASURE_BINDING:'true',MEMORY_SOURCE_ERASURE_GROUPED:'true'}).sourceErasureGrouped,true);
  const work=fixture();work.candidates=Array.from({length:257},()=>work.candidates[0]);assert.throws(()=>groupSourceErasureWork(work),/candidate capacity/);
  const controller=new AbortController();controller.abort();let calls=0;await assert.rejects(()=>executeGroupedSourceErasure(fixture(),3,controller.signal,async()=>{calls++;return {decisions:[mixed()]};}));assert.equal(calls,0);
+});
+
+test('shared boundary table losslessly reconstructs every source authorization and its own matching words',()=>{
+ const original=fixture();original.candidates.push(...fixture().candidates.map((c:any,i:number)=>({...c,id:'other',matching_words:['word-'+i]})));
+ const {work}=groupSourceErasureWork(original),before=structuredClone(work),wire=groupedSourceErasureInput(work);
+ assert.equal(wire.SOURCES.length,2);assert.equal(wire.BOUNDARIES.length,3);
+ for(const [i,source] of wire.SOURCES.entries()){
+  assert.deepEqual(source.boundary_refs.map(r=>({...wire.BOUNDARIES[r.boundary_slot],matching_words:r.matching_words})),(work.candidates[i].context as any).boundaries);
+  assert.deepEqual(source.context,(work.candidates[i].context as any).source_context);assert.equal(source.text,work.candidates[i].text);
+ }
+ assert.deepEqual(work,before);
+ original.candidates[3].authorization={source:{quote:'Separate authorization'}};
+ assert.equal(groupedSourceErasureInput(groupSourceErasureWork(original).work).BOUNDARIES.length,4);
+});
+test('every batch carries complete local reference tables including repeated authorizations',()=>{
+ const original=fixture();original.candidates=[];for(let i=0;i<70;i++)for(const c of fixture().candidates)original.candidates.push({...c,id:'s'+i});
+ const {work}=groupSourceErasureWork(original),batches=sourceErasureBatches(work,groupedSourceErasureInput);assert.equal(batches.length,2);
+ for(const batch of batches){const wire=groupedSourceErasureInput(batch);assert.equal(wire.BOUNDARIES.length,3);
+  assert.ok(JSON.stringify(wire).length<=64000);for(const [i,s] of wire.SOURCES.entries())assert.deepEqual(s.boundary_refs.map(r=>({...wire.BOUNDARIES[r.boundary_slot],matching_words:r.matching_words})),(batch.candidates[i].context as any).boundaries);
+ }
+ assert.equal(batches.reduce((n,b)=>n+b.candidates.length,0),70);
 });
