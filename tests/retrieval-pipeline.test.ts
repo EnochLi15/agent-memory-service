@@ -74,11 +74,11 @@ test('reranking considers candidates beyond top_k and packs only the chosen evid
 }));
 test('mutation during rerank invalidates its snapshot and rechecks all returned content',()=>fixture(async({config,add}:any)=>{
  await add('code','My access code is ZX-482. My manager is Alice.');
- const engine=new Engine({...config,mode:'enhanced',rerank:true});
+ const engine=new Engine({...config,mode:'enhanced',rerank:true,rerankPolicy:'selective',rerankFormat:'indices'});
  let entered!:()=>void,release!:()=>void;const started=new Promise<void>(r=>entered=r),gate=new Promise<void>(r=>release=r);
- (engine as any).models={embedBatch:async()=>{throw Error('offline');},json:async(_:string,user:string)=>{const rows=JSON.parse(user).evidence;assert.match(JSON.stringify(rows),/ZX-482/);entered();await gate;return {ranked:rows.map((x:any)=>({id:x.id,score:1}))};}};
+ (engine as any).models={embedBatch:async()=>{throw Error('offline');},json:async(_:string,user:string)=>{const rows=JSON.parse(user).evidence;assert.match(JSON.stringify(rows),/ZX-482/);entered();await gate;return {ranked:rows.map((x:any)=>[x.slot,1])};}};
  (engine as any).extractor=new Extractor(config,{} as any);
- try{const pending=engine.search({user_id:'u',query:'access code manager',top_k:10},AbortSignal.timeout(3000));await started;await engine.add(req('delete','Forget my access code.'),AbortSignal.timeout(3000));release();const result=await pending;assert.doesNotMatch(JSON.stringify(result),/ZX-482/);assert.match(JSON.stringify(result),/Alice/);}finally{release();await engine.close();}
+ try{const pending=engine.search({user_id:'u',query:'List all access code and manager records',top_k:10},AbortSignal.timeout(3000));await started;await engine.add(req('delete','Forget my access code.'),AbortSignal.timeout(3000));release();const result=await pending;assert.doesNotMatch(JSON.stringify(result),/ZX-482/);assert.match(JSON.stringify(result),/Alice/);}finally{release();await engine.close();}
 }));
 test('list packing prefers distinct items without increasing the terminal budget',()=>fixture(async({store,config,add}:any)=>{
  for(let i=0;i<4;i++)await add('item'+i,`I like item${i}.`);

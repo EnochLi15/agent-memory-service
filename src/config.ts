@@ -10,6 +10,7 @@ export interface Config {
   embeddingBase: string; embeddingModel: string; embeddingDigest: string | null; embeddingDimensions: number; embeddingSpace: string;
   addTimeout: number; searchTimeout: number; maxEvidence: number; tokenBudget: number; retrieval: 'hybrid' | 'lexical' | 'mem0';
   rerank: boolean; rawFallback: boolean;incrementalVerification:boolean;
+  relationMode:'off'|'cooccurrence'|'conditional';rerankPolicy:'always'|'selective';rerankFormat:'ids'|'indices';
   candidateLimit:number;rerankCandidates:number;coveragePacking:boolean;sourceIndex:boolean;eventView:boolean;
   experimental: {rawOnly:boolean;lifecycle:boolean;temporal:boolean;multiHop:boolean;reflection:boolean};
 }
@@ -18,6 +19,11 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   const model = env.MEMORY_EMBEDDING_MODEL ?? 'nomic-embed-text:latest';
   const dimensions = num('MEMORY_EMBEDDING_DIMENSIONS', 768);
   const effort=env.MEMORY_LLM_REASONING_EFFORT;
+  const relationMode=env.MEMORY_RELATION_MODE??'cooccurrence',rerankPolicy=env.MEMORY_RERANK_POLICY??'always';
+  const rerankFormat=env.MEMORY_RERANK_FORMAT??'ids';
+  if(!['ids','indices'].includes(rerankFormat))throw new Error('Invalid MEMORY_RERANK_FORMAT');
+  if(!['off','cooccurrence','conditional'].includes(relationMode))throw new Error('Invalid MEMORY_RELATION_MODE');
+  if(!['always','selective'].includes(rerankPolicy))throw new Error('Invalid MEMORY_RERANK_POLICY');
   if(effort!==undefined&&!['low','medium','high'].includes(effort))throw new Error('Invalid MEMORY_LLM_REASONING_EFFORT');
   if(env.MEMORY_SOURCE_ERASURE==='true'&&env.MEMORY_ERASURE_BINDING!=='true')throw new Error('Source erasure requires erasure binding');
   if(env.MEMORY_SEMANTIC_TRANSITIONS==='true'&&env.MEMORY_SOURCE_ERASURE!=='true')throw new Error('Semantic transitions require source erasure');
@@ -44,6 +50,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     llmBase: (env.MEMORY_LLM_BASE_URL ?? 'http://127.0.0.1:11434/v1').replace(/\/$/, ''), llmKey: env.MEMORY_LLM_API_KEY ?? '', llmModel: env.MEMORY_LLM_MODEL ?? 'gpt-5.4-mini',
     ...(effort?{llmReasoningEffort:effort as 'low'|'medium'|'high'}:{}),
     llmStageModels:stageModels,
+    relationMode:relationMode as Config['relationMode'],rerankPolicy:rerankPolicy as Config['rerankPolicy'],rerankFormat:rerankFormat as Config['rerankFormat'],
     maxRepairRounds,
     extractionFormat:extractionFormat as Config['extractionFormat'],
     verificationFormat,

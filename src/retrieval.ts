@@ -7,10 +7,11 @@ import {createHash} from 'node:crypto';
 import {appendFileSync} from 'node:fs';
 import {projectEvents} from './events.js';
 import {temporalEvidenceText} from './temporal.js';
+import {relationDecision,expandTypedRelations,type RelationDecision,type RelationExpansion} from './retrieval-policy.js';
 
 // Cosine computation derived from mem0 MemoryVectorStore; vectors are normalized at ingress.
 export function cosine(a:number[],b:number[]):number {if(a.length!==b.length)return -1;let sum=0,aa=0,bb=0;for(let i=0;i<a.length;i++){sum+=a[i]!*b[i]!;aa+=a[i]!**2;bb+=b[i]!**2;}return aa&&bb?sum/Math.sqrt(aa*bb):-1;}
-export type RetrievalFrame={ranked:Candidate[];allFacts:Fact[];visibleIds:Set<string>;qi:QueryIntent;allPassages:Passage[];trace:{eligible:string[];filtered:string[];routes:Record<string,string[]>;candidate_ids:string[];source_indexed_ids:string[];source_filtered_ids:string[]}};
+export type RetrievalFrame={ranked:Candidate[];allFacts:Fact[];visibleIds:Set<string>;qi:QueryIntent;allPassages:Passage[];trace:{eligible:string[];filtered:string[];routes:Record<string,string[]>;candidate_ids:string[];source_indexed_ids:string[];source_filtered_ids:string[];relation_plan?:RelationDecision;relation_expansion?:RelationExpansion}};
 export type RankedEvidence={id:string;score:number};
 export function collectCandidates(store:TenantStore,req:SearchRequest,vector:number[]|null,config:Config):RetrievalFrame {
   const qi=intent(req.query);if(config.experimental?.temporal===false){qi.historical=false;qi.trajectory=false;qi.asOf=null;}
@@ -50,7 +51,7 @@ export function collectCandidates(store:TenantStore,req:SearchRequest,vector:num
     }
   }
   // Bounded two-hop entity expansion, always from eligible facts and backed by sources.
-  if(config.retrieval==='hybrid'&&config.experimental?.multiHop!==false){
+  if(config.retrieval==='hybrid'&&config.experimental?.multiHop!==false&&config.relationMode==='cooccurrence'){
     const seeds=[...candidates.values()].sort((a,b)=>b.score-a.score).slice(0,6);
     let frontier=new Set([...qi.entities,...seeds.flatMap(c=>c.fact.entities)]);const visited=new Set<string>();let count=0;
     for(let depth=0;depth<2&&frontier.size;depth++){
@@ -91,9 +92,16 @@ export function collectCandidates(store:TenantStore,req:SearchRequest,vector:num
       candidates.set(f.id,{fact:f,score:.006*relevance,signals:['raw']});
     }
   }
+  const initial=[...candidates.values()].sort((a,b)=>b.score-a.score||a.fact.id.localeCompare(b.fact.id));
+  const relationPlan=relationDecision(req.query,qi,initial,config);
+  let relationExpansion:RelationExpansion|undefined;
+  if(config.relationMode==='conditional'&&relationPlan.enabled){
+    relationExpansion=expandTypedRelations(req.query,qi,facts,initial);
+    for(const hit of relationExpansion.hits)add(hit.id,.012/(hit.depth+1),`relation-typed-${hit.depth+1}`);
+  }
   const ranked=[...candidates.values()].filter(c=>c.score>0).sort((a,b)=>b.score-a.score||a.fact.id.localeCompare(b.fact.id)).slice(0,config.candidateLimit);
   const routes:Record<string,string[]>={};for(const c of candidates.values())for(const route of c.signals)(routes[route]??=[]).push(c.fact.id);
-  return {ranked,allFacts,visibleIds,qi,allPassages,trace:{eligible:[...visibleIds,...[...candidates.values()].filter(c=>c.signals.includes('operation-event')).map(c=>c.fact.id)],filtered:allFacts.filter(f=>!visibleIds.has(f.id)).map(f=>f.id),routes,candidate_ids:ranked.map(c=>c.fact.id),source_indexed_ids:allPassages.map(p=>p.id),source_filtered_ids:allPassages.filter(p=>p.state!=='active'||!p.content||p.fact_ids.some(id=>!visibleIds.has(id))).map(p=>p.id)}};
+  return {ranked,allFacts,visibleIds,qi,allPassages,trace:{eligible:[...visibleIds,...[...candidates.values()].filter(c=>c.signals.includes('operation-event')).map(c=>c.fact.id)],filtered:allFacts.filter(f=>!visibleIds.has(f.id)).map(f=>f.id),routes,candidate_ids:ranked.map(c=>c.fact.id),source_indexed_ids:allPassages.map(p=>p.id),source_filtered_ids:allPassages.filter(p=>p.state!=='active'||!p.content||p.fact_ids.some(id=>!visibleIds.has(id))).map(p=>p.id),relation_plan:relationPlan,...(relationExpansion?{relation_expansion:relationExpansion}:{})}};
 }
 export function compactCandidates(frame:RetrievalFrame,limit:number):SearchResponse{
   return {data:frame.ranked.slice(0,limit).map(c=>({id:c.fact.id,content:`${c.fact.content.slice(0,1200)}\n${temporalEvidenceText(c.fact.event_time)}\n[subject: ${c.fact.subject}; scope: ${c.fact.scope}; status: ${c.fact.predicate==='raw_evidence'?'original source, verify speaker, negation and plans':c.fact.state+'/'+c.fact.modality}; ${c.fact.time_basis==='ordering'?'synthetic order':'observed'}: ${c.fact.observed_at}; original time: ${c.fact.time_text}; valid from: ${c.fact.valid_from??'unspecified'}; valid until: ${c.fact.valid_to??'unspecified'}]`,score:c.score,created_at:c.fact.created_at}))};

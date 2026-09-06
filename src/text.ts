@@ -27,7 +27,7 @@ export function entities(text: string): string[] {
 export function intent(query: string): QueryIntent {
   const trajectory = /\b(history|progress|evolved|changed over|over (?:our|the) conversation|sequence|trajectory|initially)\b|变化|变迁|历程|最初|先后/.test(query.toLowerCase());
   const operation=/\b(?:ask(?:ed)? (?:you )?to|operation|affected|removed?|forgot|forget|forgotten|correct(?:ed|ion)?|retract(?:ed)?|restor(?:e|ed)|tak(?:e|ing) .{0,60} off|took .{0,60} off)\b|删除|忘记|移除|纠正|撤回|恢复/.test(query.toLowerCase());
-  const list=/\b(all|list|which .*s|what .*s|summarize)\b|哪些|列出|所有|总结/.test(query.toLowerCase());
+  const list=/\b(all|list|summarize)\b|\b(?:which|what)\s+(?:(?:my|your|our|the|his|her|their)\s+)?(?!is\b|was\b|has\b|does\b|this\b|its\b)[a-z]{2,}s\b|哪些|列出|所有|总结/.test(query.toLowerCase());
   const historical=trajectory||/\b(previous|previously|before|used to|in 20\d\d|as of|back then|last year)\b|以前|之前|曾经|当时|去年/.test(query.toLowerCase());
   return {mode:trajectory?'trajectory':operation?'operation':list?'list':historical?'historical':'current',operation,temporal:/\b(when|date|year|month|week|day|how long)\b|何时|什么时候|哪年|多久|哪天/.test(query.toLowerCase()),historical,trajectory,list,
     asOf: /\bas of\b|截至|截止/.test(query.toLowerCase())?(query.match(/\b20\d\d-\d\d-\d\d\b/)?.[0]??null):null, entities: entities(query) };
