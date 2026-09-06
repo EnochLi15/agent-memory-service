@@ -75,12 +75,17 @@ type ScopeIdentity={scope:string;scopeHash?:string};
 export function scopeKey(f:ScopeIdentity):string{return f.scopeHash??createHash('sha256').update(canonical(f.scope)).digest('hex');}
 export function sameScope(a:ScopeIdentity,b:ScopeIdentity):boolean{return scopeKey(a)===scopeKey(b);}
 export function sameSlot(a:Pick<Fact,'subject'|'predicate'|'scope'>&{scopeHash?:string},b:Pick<Fact,'subject'|'predicate'|'scope'>&{scopeHash?:string}):boolean{return canonical(a.subject)===canonical(b.subject)&&propertyFamily(a.predicate)===propertyFamily(b.predicate)&&sameScope(a,b);}
-/** The same scope guard is used before model repair and again inside commit. */
+/** Report every known structural conflict for one bounded repair. Runtime
+ * callers retain the original first-error priority through operationScopeProblem. */
+export function operationScopeProblems(operation:Operation,targets:Pick<Fact,'subject'|'scope'|'predicate'>[]):('OPERATION_SCOPE'|'OPERATION_TARGET'|'AMBIGUOUS_OPERATION')[]{
+  const problems:('OPERATION_SCOPE'|'OPERATION_TARGET'|'AMBIGUOUS_OPERATION')[]=[];
+  if(targets.some(f=>canonical(f.subject)!==canonical(operation.subject)||(operation.scope&&!sameScope(f,operation))))problems.push('OPERATION_SCOPE');
+  if(new Set(targets.map(scopeKey)).size>1)problems.push('AMBIGUOUS_OPERATION');
+  if(['correct','update'].includes(operation.type)&&targets.some(f=>propertyFamily(f.predicate)!==propertyFamily(operation.predicate)))problems.push('OPERATION_TARGET');
+  return problems;
+}
 export function operationScopeProblem(operation:Operation,targets:Pick<Fact,'subject'|'scope'|'predicate'>[]):'OPERATION_SCOPE'|'OPERATION_TARGET'|'AMBIGUOUS_OPERATION'|null {
-  if(targets.some(f=>canonical(f.subject)!==canonical(operation.subject)||(operation.scope&&!sameScope(f,operation))))return 'OPERATION_SCOPE';
-  if(new Set(targets.map(scopeKey)).size>1)return 'AMBIGUOUS_OPERATION';
-  if(['correct','update'].includes(operation.type)&&targets.some(f=>propertyFamily(f.predicate)!==propertyFamily(operation.predicate)))return 'OPERATION_TARGET';
-  return null;
+  return operationScopeProblems(operation,targets)[0]??null;
 }
 export function replacementMatches(f:Pick<Fact,'subject'|'scope'|'predicate'>,target:Pick<Fact,'subject'|'scope'|'predicate'>):boolean {
   return canonical(f.subject)===canonical(target.subject)&&sameScope(f,target)&&propertyFamily(f.predicate)===propertyFamily(target.predicate);

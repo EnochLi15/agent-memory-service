@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import {sourceFormatFor,type Config} from './config.js';
 import { Models } from './models.js';
 import { EXTRACTION_PROMPT } from './prompts.js';
-import { factId, addSchema, extractionSchema, canonical, operationScopeProblem, replacementMatches, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation } from './types.js';
+import { factId, addSchema, extractionSchema, canonical, replacementMatches, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation } from './types.js';
 import {bindingCandidates,resolveOperationTargets} from './binding.js';
 import { entities, overlap, tokens, speakerPrefix } from './text.js';
 import {preparePassages,sourceSpans} from './passages.js';
@@ -17,7 +17,7 @@ import {forgetScopeContext,humanQuote,participantIndices} from './verification.j
 import {SOURCE_REFERENCE_PROTOCOL,SOURCE_REFERENCE_PROMPT,sourceReferenceMessages,decodeSourceReferences} from './source-references.js';
 import {GROUPED_EXTRACTION_PROTOCOL,GROUPED_EXTRACTION_PROMPT,decodeGroupedExtraction} from './extraction-groups.js';
 import {VerificationSession} from './verification-session.js';
-import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,replacementBindingProblems,type RepairScope} from './repair.js';
+import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,replacementBindingProblems,operationBindingProblems,type RepairScope} from './repair.js';
 import {sourceErasureWork} from './source-erasure.js';
 import {executeSourceErasure} from './source-erasure-execution.js';
 import {executeGroupedSourceErasure} from './source-erasure-grouped.js';
@@ -296,10 +296,7 @@ export class Extractor {
           const unauthorized=valid.data.operations.flatMap((o,index)=>o.type==='forget'&&!authorizesForget(o,req)?[index]:[]);
           const badOps=valid.data.operations.filter(o=>!req.messages[o.source.index]?.content.includes(o.source.quote)||!humanOperation(o,req));
           const sourceFeedback=invalid.length||badOps.length||unauthorized.length?' SOURCE_ERRORS: '+JSON.stringify({facts:invalid,operations:badOps,authorization_errors:unauthorized.map(operation=>({operation,source:valid.data.operations[operation]!.source,reason:'Cited span does not authorize deletion of this target.'}))})+'. Also repair these exact human source spans in this same patch; copy from NEW_MESSAGES without paraphrasing. For authorization errors cite an actual deletion instruction for the same target, not a reason for removal; remove only that unsupported operation if no such instruction exists. Preserve valid sibling operations.':'';
-          const badScopes=valid.data.operations.flatMap((o,index)=>{
-            const code=operationScopeProblem(o,bindingPool.filter(f=>o.target_ids.includes(f.id)));
-            return code?[{operation:index,code,requested:{subject:o.subject,predicate:o.predicate,scope:o.scope},selected_targets:bindingPool.filter(f=>o.target_ids.includes(f.id)).map(f=>({id:f.id,proposal_index:valid.data.facts.findIndex((_,i)=>factId(req,i)===f.id),subject:f.subject,predicate:f.predicate,scope:f.scope,content:f.content}))}]:[];
-          });
+          const badScopes=operationBindingProblems(valid.data,bindingPool,id=>id,id=>valid.data.facts.findIndex((_,i)=>factId(req,i)===id));
           // Resolve a copy to expose independent selector failures in the same
           // bounded patch as scope errors. Do not silently bind the failed proposal
           // or grant permission to edit valid sibling operations.
@@ -313,8 +310,9 @@ export class Extractor {
           }
           if(badScopes.length||badReplacements.length||selectorIssues.length){
             const labels=new Map([...aliases].map(([alias,id])=>[id,alias]));valid.data.facts.forEach((_,i)=>labels.set(factId(req,i),`new:${i}`));
+            const operation_details=operationBindingProblems(valid.data,bindingPool,id=>labels.get(id)??id,id=>valid.data.facts.findIndex((_,i)=>factId(req,i)===id));
             const replacement_details=replacementBindingProblems(valid.data,bindingPool,id=>labels.get(id)??id);
-            issue='Operation target binding: subject, property or scope does not match its selected targets. '+JSON.stringify({operations:badScopes,selector_issues:selectorIssues,replacement_facts:badReplacements,replacement_details})+sourceFeedback+'. Reuse matching existing fields only if that record is actually the requested target. For unresolved selectors, select actual targets from EXISTING_FACTS or earlier new:N facts; a missing target is not an executed operation. For same-chunk transient targets, proposal_index identifies the editable fact slot. If the user forgets multiple properties of one concrete entity, give those transient facts that same entity scope when their original statements support it; preserve unrelated devices. Alternatively split operations only when the source actually authorizes each distinct scope. Changing sources alone does not fix a scope mismatch. Never rename an existing or unrelated record to pass validation. If correcting an assistant claim that was never stored, keep the grounded USER facts but emit no operation or supersedes reference against an unrelated record. Cite the user correction itself, not the assistant restatement. Return the corrected object.';continue;}
+            issue='Operation target binding: subject, property or scope does not match its selected targets. '+JSON.stringify({operations:operation_details,selector_issues:selectorIssues,replacement_facts:badReplacements,replacement_details})+sourceFeedback+'. Reuse matching existing fields only if that record is actually the requested target. For unresolved selectors, select actual targets from EXISTING_FACTS or earlier new:N facts; a missing target is not an executed operation. For same-chunk transient targets, proposal_index identifies the editable fact slot. If the user forgets multiple properties of one concrete entity, give those transient facts that same entity scope when their original statements support it; preserve unrelated devices. Alternatively split operations only when the source actually authorizes each distinct scope. Changing sources alone does not fix a scope mismatch. Never rename an existing or unrelated record to pass validation. If correcting an assistant claim that was never stored, keep the grounded USER facts but emit no operation or supersedes reference against an unrelated record. Cite the user correction itself, not the assistant restatement. Return the corrected object.';continue;}
           if(unauthorized.length){
             const findings=unauthorized.map(index=>`operation ${index}: The cited source is not an authorizing user deletion instruction.`);
             repairScope=scopeForFindings(valid.data,findings);
