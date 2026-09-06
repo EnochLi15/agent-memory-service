@@ -230,6 +230,14 @@ export class Extractor {
           relevant.push({id,content:f.content,subject:f.subject,predicate:f.predicate,value:f.value,scope:f.scope,state:f.state,modality:f.modality});
         }
       };
+      const repairForgetContext=(proposal:Extraction)=>{
+        const labels=new Map([...aliases].map(([label,id])=>[id,label]));
+        proposal.facts.forEach((_,index)=>labels.set(factId(req,index),`new:${index}`));
+        const resolved=structuredClone(proposal);
+        for(const op of resolved.operations)op.target_ids=op.target_ids.map(id=>aliases.get(id)??(/^new:\d+$/.test(id)?factId(req,Number(id.slice(4))):id));
+        return forgetScopeContext(resolved,[...snapshot.facts,...proposalFacts(proposal,req)]).map(c=>({...c,
+          facts:c.facts.flatMap(f=>{const id=labels.get(f.id);return id?[{...f,id}]:[];})}));
+      };
       const references=this.config.extractionFormat==='source_refs',grouped=this.config.extractionFormat!=='flat';
       const extractionPrompt=(references?SOURCE_REFERENCE_PROMPT:grouped?GROUPED_EXTRACTION_PROMPT:EXTRACTION_PROMPT)+(this.config.sourceFirst?SOURCE_FIRST_EXTRACTION_PROMPT:'')+(sourceActions.length?'\nRESOLVED_SOURCE_ACTIONS have a separate independently verified source removal plan that will commit atomically with your facts. Do not produce duplicate fact-ID operations for those exact instructions, and never bind them to unrelated existing facts. Preserve remaining corrected user facts and all other real instructions. Do not turn a rejected assistant value into a negative fact such as "user does not use REJECTED_VALUE"; that still stores the detail the user rejected. Generic rejection statements need no separate fact, while independent human preferences remain memorable. Do not cite any cut interval as a fact source; select the exact surviving user subclause if its whole sentence overlaps a cut.':'');
       const user=JSON.stringify({...(sourceActions.length?{RESOLVED_SOURCE_ACTIONS:sourceActions}:{}),...(grouped?{EXTRACTION_PROTOCOL:references?SOURCE_REFERENCE_PROTOCOL:GROUPED_EXTRACTION_PROTOCOL,PARTICIPANT_INDEX:participantIndices(req)}:{}),OBSERVATION_DATE:anchor,EXISTING_FACTS:relevant,CONTEXT_ONLY:snapshot.tail.map(m=>({role:m.role,content:m.content})),NEW_MESSAGES:references?sourceReferenceMessages(req):req.messages.map((m,index)=>({index,...m}))});
@@ -246,7 +254,7 @@ export class Extractor {
           // validation pass, whose indices may include newly appended facts.
           repairScope=undefined;
           const repairSystem=issue?(patchMode?PATCH_PROMPT:'\nRepair the malformed proposal; return the complete extraction schema.'):'';
-          const repairInput=issue?JSON.stringify({...JSON.parse(user),...(grouped&&patchMode?{EXTRACTION_PROTOCOL:'flat-patch-v1',NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))}:{}),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:patchMode?indexedProposal(prior.data!):failedProposal,...(patchMode?{REPAIR_SCOPE:scope,REPLACEMENT_TARGET_GROUPS:replacementTargetGroups(prior.data!,relevant),FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
+          const repairInput=issue?JSON.stringify({...JSON.parse(user),...(grouped&&patchMode?{EXTRACTION_PROTOCOL:'flat-patch-v1',NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))}:{}),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:patchMode?indexedProposal(prior.data!):failedProposal,...(patchMode?{REPAIR_SCOPE:scope,REPLACEMENT_TARGET_GROUPS:replacementTargetGroups(prior.data!,relevant),FORGET_SCOPE_CONTEXT:repairForgetContext(prior.data!),FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
           const output=!issue&&grouped&&this.config.extractionWorkers>1&&participantIndices(req).length>=4
             ?await prepareExtractionShards(req,extractionPrompt,user,this.config.extractionWorkers,modelSignal,(prompt,input,s,extraction_shard)=>this.models.json(prompt,input,s,{purpose:'extraction',trace:traceIdentity,extraction_shard}))
             :await this.models.json(patchMode?PATCH_PROMPT:extractionPrompt+repairSystem,repairInput,modelSignal,{purpose:issue?'repair':'extraction',trace:traceIdentity});

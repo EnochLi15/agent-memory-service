@@ -177,6 +177,7 @@ test('forget verification sees unselected historical properties and scopes certi
  const pool=[historical,selected,joint,neighbor,erased],state=session(),m=new Models(configFromEnv({}));let calls=0;
  m.json=async(_s,input)=>{calls++;const d=JSON.parse(input);assert.deepEqual(d.TARGET_FACTS.map((f:any)=>f.id),['new-subscription']);
   assert.deepEqual(d.FORGET_SCOPE_CONTEXT[0].facts.map((f:any)=>f.id),['historical-food','new-subscription','joint']);
+  assert.deepEqual(d.FORGET_SCOPE_CONTEXT[0].facts.map((f:any)=>f.forget_operation_indices),[[],[0],[]]);
   if(calls===2)assert.deepEqual(d.CHECK_SCOPE,{fact_indices:[],operation_indices:[],replacements:[],message_indices:[0]});
   return success(d);
  };
@@ -210,10 +211,23 @@ test('a historical omission outside initial retrieval is exposed to the existing
  m.json=async(_s,input,_signal,ctx)=>{
   const d=JSON.parse(input);
   if(ctx?.purpose==='extraction'){assert.ok(!d.EXISTING_FACTS.some((f:any)=>f.predicate===historical.predicate));return {facts:[],operations:[{type:'forget',target_ids:['selected'],subject:selected.subject,predicate:selected.predicate,scope:'',value:selected.value,boundary:'property',source:{index:0,quote:r.messages[0].content}}]};}
-  if(ctx?.purpose==='repair'){repairs++;const exposed=d.EXISTING_FACTS.find((f:any)=>f.predicate===historical.predicate);assert.ok(exposed,'repair must receive the historical record and its usable alias');assert.ok(/^m\d+$/.test(exposed.id));
+  if(ctx?.purpose==='repair'){repairs++;const exposed=d.EXISTING_FACTS.find((f:any)=>f.predicate===historical.predicate);assert.ok(exposed,'repair must receive the historical record and its usable alias');assert.ok(/^m\d+$/.test(exposed.id));assert.ok(d.FORGET_SCOPE_CONTEXT[0].facts.some((f:any)=>f.id===exposed.id&&f.forget_operation_indices.length===0));
    return {append_operations:[{type:'forget',target_ids:[exposed.id],subject:historical.subject,predicate:historical.predicate,scope:historical.scope,value:historical.value,boundary:'property',source:{index:0,quote:r.messages[0].content}}]};}
   checks++;const out=success(d);if(checks===1)out.message_checks=[{index:0,disposition:'missing',quote:r.messages[0].content,reason:'Historical spice preference difference was omitted.'}];return out;
  };
  m.embedBatch=async xs=>xs.map(()=>[1,0]);
  const prepared=await new Extractor(config,m).prepare(r,snapshot,AbortSignal.timeout(3000));assert.equal(repairs,1);assert.equal(checks,2);assert.ok(prepared.operations.some(o=>o.target_ids.includes('historical')));
+});
+
+test('repair coverage links resolve same-request handles without confusing them with stored aliases',async()=>{
+ const r={...req,messages:[{...req.messages[0],content:'Priya has a sauce subscription.'},{...req.messages[1],content:"Forget Priya's food details."}]};
+ const historical={...oldFact('historical-food'),subject:'Priya',predicate:'favorite_dish',scope:'',value:'curry',content:'Priya likes curry.'};
+ const config=configFromEnv({MEMORY_MODE:'enhanced'}),m=new Models(config);let checks=0,repairs=0;
+ m.json=async(_s,input,_signal,ctx)=>{const d=JSON.parse(input);
+  if(ctx?.purpose==='extraction')return {facts:[{subject:'Priya',predicate:'subscription',scope:'',value:'sauce subscription',content:r.messages[0].content,sources:[{index:0,quote:r.messages[0].content}]}],operations:[{type:'forget',target_ids:['new:0'],subject:'Priya',predicate:'subscription',scope:'',value:'sauce subscription',boundary:'property',source:{index:1,quote:r.messages[1].content}}]};
+  if(ctx?.purpose==='repair'){repairs++;const records=d.FORGET_SCOPE_CONTEXT[0].facts;assert.deepEqual(records.find((f:any)=>f.id==='new:0').forget_operation_indices,[0]);const old=records.find((f:any)=>f.predicate==='favorite_dish');assert.ok(/^m\d+$/.test(old.id));assert.deepEqual(old.forget_operation_indices,[]);
+   return {append_operations:[{type:'forget',target_ids:[old.id],subject:'Priya',predicate:old.predicate,scope:old.scope,value:old.value,boundary:'property',source:{index:1,quote:r.messages[1].content}}]};}
+  checks++;const out=success(d);if(checks===1)out.message_checks=out.message_checks.map((c:any)=>c.index===1?{index:1,disposition:'missing',quote:r.messages[1].content,reason:'Earlier favorite dish remains uncovered.'}:c);return out;
+ };
+ m.embedBatch=async xs=>xs.map(()=>[1,0]);const prepared=await new Extractor(config,m).prepare(r,{facts:[historical],tail:[],anchor:null,revision:1} as any,AbortSignal.timeout(3000));assert.equal(repairs,1);assert.equal(checks,2);assert.ok(prepared.operations.some(o=>o.target_ids.includes(prepared.facts[0].id)));assert.ok(prepared.operations.some(o=>o.target_ids.includes(historical.id)));
 });
