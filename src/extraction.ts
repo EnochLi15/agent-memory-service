@@ -112,7 +112,14 @@ function humanOperation(o:Operation,req:AddRequest):boolean {
 }
 function sourceMatches(source:{index:number;quote:string;start?:number},req:AddRequest):boolean{const text=req.messages[source.index]?.content;return !!text&&(source.start===undefined?text.includes(source.quote):text.slice(source.start,source.start+source.quote.length)===source.quote);}
 function resolveSource(source:{index:number;quote:string;start?:number},req:AddRequest):void {
-  if(source.start!==undefined)return;
+  if(source.start!==undefined){
+    if(sourceMatches(source,req))return;
+    // Model-authored patches can miscount a numeric offset. Resolve only one
+    // exact occurrence in the SAME message; no fuzzy quote or speaker change.
+    const text=req.messages[source.index]?.content,start=text?.indexOf(source.quote)??-1;
+    if(source.quote.length&&start>=0&&text!.indexOf(source.quote,start+1)<0)source.start=start;
+    return;
+  }
   // Correct unambiguous index/copying mistakes without accepting paraphrased evidence.
   if(req.messages[source.index]?.content.includes(source.quote))return;
   const escaped=source.quote.trim().split(/\s+/).map(x=>x.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('\\s+');
@@ -342,6 +349,12 @@ export class Extractor {
       } catch (error) {
         if (signal.aborted || (error instanceof ServiceError && ['OPERATION_TARGET','OPERATION_SCOPE','OPERATION_INTENT','EVIDENCE_VALIDATION','VERIFICATION_UNAVAILABLE','EXTRACTION_UNAVAILABLE'].includes(error.code))) throw error;
         if(semanticallyRejected)throw new ServiceError('EVIDENCE_VALIDATION',modelSignal.aborted?'A rejected proposal could not be repaired before the request deadline':'A rejected proposal could not be repaired after a model or protocol failure');
+        // Source-first commits require independent coverage. Offline extraction
+        // cannot provide it and must not obscure the original failure.
+        if(this.config.sourceFirst){
+          if(error instanceof ServiceError)throw error;
+          throw new ServiceError('EXTRACTION_UNAVAILABLE','Source-first extraction did not complete within the model/protocol budget');
+        }
         degraded.push('extraction_offline'); parsed = offlineExtract(req,snapshot);
       }
     }

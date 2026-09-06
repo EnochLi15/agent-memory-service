@@ -5,6 +5,9 @@ import type { QueryIntent } from './types.js';
 export function speakerPrefix(text:string):RegExpMatchArray|null{
   const match=text.match(/^([\p{L}][\p{L} .'-]{0,40}):\s*/u);if(!match)return null;
   const name=match[1]!.trim();
+  // Assistant document headings are not a named human participant. Treating
+  // recipe steps as human speech can turn "Remove from heat" into erasure.
+  if(/^(?:ingredients|instructions|steps|directions|recipe|requirements|examples?|output|input|method|procedure|materials|preparation|serving suggestions)$/i.test(name))return null;
   if(/\b(?:said|says|quoted)\b/i.test(name)||/^(?:correction|remember(?: again)?|reminder|update|note|please|forget|remove|actually|context|summary|important|question|answer)$/i.test(name)||/^(?:my|our|your|the|this|that)\b/i.test(name))return null;
   return match;
 }

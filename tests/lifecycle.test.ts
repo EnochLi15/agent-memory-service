@@ -50,6 +50,13 @@ test('invalid extraction schema and wrong vector dimensions degrade without fabr
  let calls=0;const models={verify:async()=>[],json:async()=>{calls++;return {bad:true};},embedBatch:async()=>{throw new Error('dimension');}};
  const x=new Extractor({...c,mode:'enhanced'},models as any);const p=await x.prepare({request_id:'a',user_id:'u',session_id:'s',messages:[{role:'user',content:'I like hiking.',timestamp:'2026-01-01T00:00:00Z'}]},s.snapshot('s'),AbortSignal.timeout(1000));assert.equal(calls,2);assert.deepEqual(p.degraded,['extraction_offline','embedding_lexical']);assert.ok(p.facts.every(f=>f.vector===null));
 }));
+test('source-first schema failure preserves its cause instead of falling back to unchecked extraction',()=>fixture(async({s,c}:any)=>{
+ let embeddings=0;
+ const models={verify:async()=>[],json:async()=>({bad:true}),embedBatch:async()=>{embeddings++;return [];}};
+ const x=new Extractor({...c,mode:'enhanced',sourceFirst:true},models as any);
+ await assert.rejects(x.prepare({request_id:'a',user_id:'u',session_id:'s',messages:[{role:'user',content:'I like hiking.',timestamp:'2026-01-01T00:00:00Z'}]},s.snapshot('s'),AbortSignal.timeout(1000)),{code:'EXTRACTION_SCHEMA'});
+ assert.equal(embeddings,0);assert.equal(s.revision(),0);
+}));
 test('fabricated source is replaced only by grounded recovery; unknown operation ID is rejected',()=>fixture(async({s,c}:any)=>{
  const req={request_id:'a',user_id:'u',session_id:'s',messages:[{role:'user',content:'I like hiking.',timestamp:'2026-01-01T00:00:00Z'}]};
  const x=new Extractor({...c,mode:'enhanced'},{verify:async()=>[],json:async(system:string)=>system.includes('PATCH_SCHEMA')?{}:({facts:[{content:'I like swimming.',subject:'user',predicate:'hobby',value:'swimming',sources:[{index:0,quote:'swimming'}]}],operations:[]})} as any);

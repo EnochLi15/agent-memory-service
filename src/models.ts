@@ -1,6 +1,6 @@
 import {continuationCall} from './write-continuation.js';
 import {setTimeout as retryWait} from 'node:timers/promises';
-import {modelRetryDelay} from './model-retry.js';
+import {modelRetryDelay,classifyStreamError} from './model-retry.js';
 import {sourceCoverageWork,SOURCE_COVERAGE_PROMPT} from './source-coverage.js';
 // Adapted from mem0 TS llms/openai.ts and embeddings/ollama.ts at dae67f7.
 // Changes: bounded cancellation, explicit model, no automatic downloads, true batch embed,
@@ -92,7 +92,7 @@ export class Models {
         const parsed=JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
         saveTrace({attempt,outcome:'ok',output:parsed});
         audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage,output_chars:content.length});return parsed;
-      }catch(error){const failure=modelFailure(error,signal,streamStarted,finish,refusalDetected);saveTrace({attempt,outcome:'error',output_text:content,...failure});audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,...failure});last=error;if(attempt+1===this.config.modelTransportAttempts)throw error;const delay=modelRetryDelay(error,signal,Date.now(),attempt);if(delay===null)throw error;audit({kind:'generation_retry',purpose,model,after_attempt:attempt,delay_ms:delay,reason:failure.error_category});await retryWait(delay,undefined,{signal});}
+      }catch(caught){const error=classifyStreamError(caught,streamStarted,finish,refusalDetected);const failure=modelFailure(error,signal,streamStarted,finish,refusalDetected);saveTrace({attempt,outcome:'error',output_text:content,...failure});audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,...failure});last=error;if(attempt+1===this.config.modelTransportAttempts)throw error;const delay=modelRetryDelay(error,signal,Date.now(),attempt);if(delay===null)throw error;audit({kind:'generation_retry',purpose,model,after_attempt:attempt,delay_ms:delay,reason:failure.error_category});await retryWait(delay,undefined,{signal});}
     }
     throw last;
   }

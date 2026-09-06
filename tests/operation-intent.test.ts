@@ -8,7 +8,34 @@ import {TenantStore} from '../dist/storage.js';
 import {configFromEnv} from '../dist/config.js';
 import {retrieve} from '../dist/retrieval.js';
 import {buildServer} from '../dist/server.js';
-import {realControl} from '../dist/operation-intent.js';
+import {realControl,forgetObligations} from '../dist/operation-intent.js';
+import {participantIndices} from '../dist/verification.js';
+
+test('assistant document headings never grant participant or deletion authority',()=>{
+ for(const heading of ['Ingredients','Instructions','Steps','Directions','Recipe','Requirements','Example','Output']){
+  const req=request('My manager is Alice.');
+  req.messages.push({role:'assistant',content:`${heading}:\n- Heat the pan.\n- Remove from heat, and fluff with a fork.`,timestamp:date} as any);
+  assert.deepEqual(participantIndices(req),[0],heading);
+  assert.deepEqual(forgetObligations(req),[],heading);
+ }
+ const req=request('Morgan: Forget my access code.');req.messages[0]!.role='assistant' as any;
+ assert.deepEqual(participantIndices(req),[0]);assert.equal(forgetObligations(req).length,1);
+});
+
+test('a direct refusal to track is an erasure instruction, including conversational No prefixes',()=>{
+ for(const text of ["No, don't track Morgan's details—that's their business.","Don't track my access code.",'Please do not log my access code.',"No, don't keep my access code."])
+  assert.equal(realControl(text),true,text);
+ for(const text of ["No, don't stop tracking my access code.","No, don't forget my access code.","No, don't keep deleting my access code.","Don't keep forgetting my address.","If I leave, don't track my access code.","Morgan said: don't track my access code.",'"No, don\'t track my access code."'])
+  assert.equal(realControl(text),false,text);
+});
+
+test('a direct no-tracking instruction passes authorization and erases only its bound property',()=>fixture(async({store,snapshot,fact}:any)=>{
+ const content="No, don't track my access code.";
+ const p=await new Extractor(config,{json:async()=>proposal(content,[fact.id]),verify:async()=>[],embedBatch:async(xs:string[])=>xs.map(()=>[1,0])} as any).prepare(request(content),snapshot,AbortSignal.timeout(1000));
+ store.commit(request(content),hash(JSON.stringify(request(content))),p,store.revision());
+ assert.equal(store.facts().find((f:any)=>f.id===fact.id).state,'erased');
+ assert.equal(store.facts().find((f:any)=>f.predicate==='manager').state,'active');
+}));
 
 const date='2026-01-01T00:00:00Z';
 const config=configFromEnv({MEMORY_MODE:'enhanced'});
@@ -38,6 +65,11 @@ test('retirement paraphrase is handled even when the model emits empty arrays',(
 }));
 test('stop-tracking directives retain negation, quotation and conditional boundaries',()=>{
  assert.equal(realControl('No need to track anything about the tablet.'),true);
+ assert.equal(realControl('That process is resolved, so no need to track it anymore.'),true);
+ assert.equal(realControl('That process is resolved, no need to track it anymore.'),true);
+ assert.equal(realControl('If that process is resolved, no need to track it anymore.'),false);
+ assert.equal(realControl('Morgan said it is resolved, so no need to track it anymore.'),false);
+ assert.equal(realControl('"That process is resolved, so no need to track it anymore."'),false);
  for(const text of ['Do not stop tracking my tablet.','If I sell it, no need to track the tablet.', 'Alice said: no need to track the tablet.', '"No need to track the tablet."'])assert.equal(realControl(text),false,text);
 });
 test('unresolved real commands cannot degrade to a successful empty operation list',()=>fixture(async({prepare}:any)=>{

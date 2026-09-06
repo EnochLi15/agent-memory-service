@@ -2,13 +2,13 @@ import {test} from 'node:test';import assert from 'node:assert/strict';import {c
 import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {buildServer} from '../dist/server.js';import {configFromEnv} from '../dist/config.js';
 
-test('HTTP retries resume after actual SDK connection failures without regenerating the rejected prefix',async()=>{
+for(const failure of ['connection','provider_stream'])test(`HTTP retries resume after actual SDK ${failure} failures without regenerating the rejected prefix`,async()=>{
  let extraction=0,verification=0,repair=0;const dir=mkdtempSync(join(tmpdir(),'http-continuation-'));
  const provider=createServer(async(request,response)=>{
   const chunks:Buffer[]=[];for await(const chunk of request)chunks.push(chunk);const body=JSON.parse(Buffer.concat(chunks).toString());
   if(request.url==='/api/embed'){response.setHeader('content-type','application/json');response.end(JSON.stringify({embeddings:body.input.map(()=>[1,0])}));return;}
   const system=body.messages[0].content,input=JSON.parse(body.messages[1].content);let value:unknown;
-  if(system.includes('PATCH_SCHEMA')){repair++;if(repair<=3){request.socket.destroy();return;}value={fact_edits:[{index:0,changes:{value:'Firefox',content:'My browser is Firefox.'}}]};}
+  if(system.includes('PATCH_SCHEMA')){repair++;if(repair<=3){if(failure==='connection')request.socket.destroy();else{response.writeHead(200,{'content-type':'text/event-stream','retry-after-ms':'1'});response.end('data: '+JSON.stringify({error:{message:'Upstream request failed',type:'server_error'}})+'\n\n');}return;}value={fact_edits:[{index:0,changes:{value:'Firefox',content:'My browser is Firefox.'}}]};}
   else if(system.startsWith('Validate memory evidence')){verification++;const supported=input.PROPOSAL.facts[0].value==='Firefox';value={fact_checks:[{index:0,supported,modality_supported:true,source_index:0,quote:'My browser is Firefox.',...(!supported?{reason:'Source says Firefox, not Safari.'}:{})}],operation_checks:[],replacement_checks:[],message_checks:[{index:0,disposition:'represented',fact_indices:[0]}]};}
   else{extraction++;value={facts:[{subject:'user',predicate:'default_browser',value:'Safari',content:'My browser is Safari.',sources:[{index:0,quote:'My browser is Firefox.'}]}],operations:[]};}
   response.setHeader('content-type','text/event-stream');response.write('data: '+JSON.stringify({choices:[{delta:{content:JSON.stringify(value)},finish_reason:null}]})+'\n\n');response.end('data: '+JSON.stringify({choices:[{delta:{},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');
