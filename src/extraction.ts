@@ -19,6 +19,7 @@ import {VerificationSession} from './verification-session.js';
 import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,replacementBindingProblems,type RepairScope} from './repair.js';
 import {sourceErasureWork} from './source-erasure.js';
 import {executeSourceErasure} from './source-erasure-execution.js';
+import {executeGroupedSourceErasure} from './source-erasure-grouped.js';
 import {erasureWork,decodeErasure,ERASURE_PROMPT} from './erasure.js';
 import {transitionWork,transitionInput,decodeTransitions,TRANSITION_PROMPT} from './transitions.js';
 
@@ -382,7 +383,7 @@ export class Extractor {
       const work=sourceErasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[],snapshot.erasureSources??[],messages,erasurePlan?.decisions.filter(d=>d.effect==='erase').map(d=>d.fact_id)??[]);
       if(work.candidates.length){
         if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Source erasure requires semantic verification');
-        sourceErasurePlan=await executeSourceErasure(work,this.config.sourceErasureWorkers,modelSignal,(system,input,s,purpose,source_erasure_batch)=>this.models.json(system,input,s,{purpose,trace:traceIdentity,...(source_erasure_batch?{source_erasure_batch}:{})}));
+        sourceErasurePlan=await (this.config.sourceErasureGrouped?executeGroupedSourceErasure:executeSourceErasure)(work,this.config.sourceErasureWorkers,modelSignal,(system,input,s,purpose,source_erasure_batch)=>this.models.json(system,input,s,{purpose,trace:traceIdentity,...(source_erasure_batch?{source_erasure_batch}:{})}));
       }else sourceErasurePlan={fingerprint:work.fingerprint,decisions:[]};
     }
     let transitionPlan:Prepared['transitionPlan'];

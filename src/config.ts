@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 export interface Config {
   port: number; host: string; dataDir: string; mode: 'enhanced' | 'offline'; llmBase: string; llmKey: string; llmModel: string; llmReasoningEffort?:'low'|'medium'|'high';
   llmStageModels:Partial<Record<'extraction'|'verification'|'repair',string>>;
-  maxRepairRounds:1|2;extractionWorkers:number;sourceErasureWorkers:number;
+  maxRepairRounds:1|2;extractionWorkers:number;sourceErasureWorkers:number;sourceErasureGrouped:boolean;
   extractionFormat:'flat'|'message_groups'|'source_refs';
   verificationFormat:'verbose'|'compact';
   verificationResponseFormat:'json_object'|'json_schema';
@@ -33,6 +33,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   if(env.MEMORY_SOURCE_OPERATION_ROUTING==='true'&&env.MEMORY_SOURCE_OPERATION_BATCHES!=='true')throw new Error('Source routing requires batched source history');
   if(env.MEMORY_SOURCE_FIRST==='true'&&(env.MEMORY_SOURCE_OPERATION_ROUTING!=='true'||env.MEMORY_SOURCE_INDEX==='false'||env.MEMORY_RAW_FALLBACK==='false'||env.MEMORY_EXTRACTION_FORMAT!=='source_refs'||env.MEMORY_VERIFICATION_FORMAT!=='compact'||['lexical','mem0'].includes(env.MEMORY_RETRIEVAL??'')))throw new Error('Source-first requires v9 routing, source references, compact verification and hybrid raw retrieval');
   const stageModels:Config['llmStageModels']={};
+  if(env.MEMORY_SOURCE_ERASURE_GROUPED==='true'&&(env.MEMORY_SOURCE_ERASURE!=='true'||env.MEMORY_MODE!=='enhanced'))throw new Error('Grouped source erasure requires enhanced source erasure');
   const sourceErasureWorkers=num('MEMORY_SOURCE_ERASURE_WORKERS',1);
   if(!Number.isInteger(sourceErasureWorkers)||sourceErasureWorkers<1||sourceErasureWorkers>3)throw new Error('Invalid MEMORY_SOURCE_ERASURE_WORKERS');
   if(sourceErasureWorkers>1&&(env.MEMORY_SOURCE_ERASURE!=='true'||env.MEMORY_MODE!=='enhanced'))throw new Error('Parallel source erasure requires enhanced source erasure');
@@ -59,7 +60,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     ...(effort?{llmReasoningEffort:effort as 'low'|'medium'|'high'}:{}),
     llmStageModels:stageModels,
     relationMode:relationMode as Config['relationMode'],rerankPolicy:rerankPolicy as Config['rerankPolicy'],rerankFormat:rerankFormat as Config['rerankFormat'],
-    maxRepairRounds,extractionWorkers,sourceErasureWorkers,
+    maxRepairRounds,extractionWorkers,sourceErasureWorkers,sourceErasureGrouped:env.MEMORY_SOURCE_ERASURE_GROUPED==='true',
     extractionFormat:extractionFormat as Config['extractionFormat'],
     verificationFormat,
     verificationResponseFormat:verificationResponseFormat as Config['verificationResponseFormat'],

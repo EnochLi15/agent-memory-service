@@ -2,15 +2,15 @@ import {sourceErasureBatches,sourceErasureInput,sourceQuoteProblems,applySourceQ
 import {ServiceError,type SourceErasurePlan} from './types.js';
 type Work=ReturnType<typeof sourceErasureWork>;
 export type SourceErasureBatchContext={index:number;count:number;offset:number;candidates:number};
-type Call=(system:string,input:string,signal:AbortSignal,purpose:'source_erasure'|'source_erasure_repair',batch?:SourceErasureBatchContext)=>Promise<unknown>;
+export type SourceErasureCall=(system:string,input:string,signal:AbortSignal,purpose:'source_erasure'|'source_erasure_repair',batch?:SourceErasureBatchContext)=>Promise<unknown>;
 /** Complete semantic classifications precede the one global literal-quote repair.
  * A worker failure cancels and drains siblings before any plan can be returned. */
-export async function executeSourceErasure(work:Work,workers:number,signal:AbortSignal,call:Call):Promise<SourceErasurePlan>{
+export async function executeSourceErasure(work:Work,workers:number,signal:AbortSignal,call:SourceErasureCall,protocol:{prompt:string;input:(work:Pick<Work,'candidates'>)=>unknown}={prompt:SOURCE_ERASURE_PROMPT,input:sourceErasureInput}):Promise<SourceErasurePlan>{
  if(!Number.isInteger(workers)||workers<1||workers>3)throw new ServiceError('EVIDENCE_VALIDATION','Invalid source erasure concurrency');
- signal.throwIfAborted();const batches=sourceErasureBatches(work),raws:unknown[]=new Array(batches.length),problems:ReturnType<typeof sourceQuoteProblems>[]=[];
+ signal.throwIfAborted();const batches=sourceErasureBatches(work,protocol.input),raws:unknown[]=new Array(batches.length),problems:ReturnType<typeof sourceQuoteProblems>[]=[];
  const controller=new AbortController(),shared=AbortSignal.any([signal,controller.signal]);let next=0,failed=false,failure:unknown;
  const run=async()=>{try{while(next<batches.length){shared.throwIfAborted();const index=next++,batch=batches[index]!;
-  const raw=await call(SOURCE_ERASURE_PROMPT,JSON.stringify(sourceErasureInput(batch)),shared,'source_erasure',{index,count:batches.length,offset:batch.offset,candidates:batch.candidates.length});shared.throwIfAborted();
+  const raw=await call(protocol.prompt,JSON.stringify(protocol.input(batch)),shared,'source_erasure',{index,count:batches.length,offset:batch.offset,candidates:batch.candidates.length});shared.throwIfAborted();
   const defects=sourceQuoteProblems(raw,batch);if(!defects.length)decodeSourceErasureResponse(raw,batch);raws[index]=raw;problems[index]=defects;
  }}catch(error){if(!failed){failed=true;failure=error;}controller.abort();throw error;}};
  await Promise.allSettled(Array.from({length:Math.min(workers,batches.length)},run));

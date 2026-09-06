@@ -68,19 +68,19 @@ export function sourceErasureInput(work:Pick<ReturnType<typeof sourceErasureWork
 /** Partition complete source work without weakening the global commit plan.
  * Each model sees local indexes; the caller maps validated rows back to the
  * original indexes. All calls share the existing request deadline. */
-export function sourceErasureBatches(work:ReturnType<typeof sourceErasureWork>){
+export function sourceErasureBatches(work:ReturnType<typeof sourceErasureWork>,input:(work:Pick<ReturnType<typeof sourceErasureWork>,'candidates'>)=>unknown=sourceErasureInput){
  if(work.candidates.length>256)throw new ServiceError('EVIDENCE_VALIDATION',`Source erasure exceeds bounded candidate capacity (${work.candidates.length} candidates)`);
  const batches:{offset:number;fingerprint:string;candidates:typeof work.candidates}[]=[];
  let offset=0,candidates:typeof work.candidates=[];
  for(const candidate of work.candidates){
   const next=[...candidates,candidate];
-  const size=JSON.stringify(sourceErasureInput({candidates:next})).length;
+  const size=JSON.stringify(input({candidates:next})).length;
   if(candidates.length&&(next.length>64||size>64000)){batches.push({offset,fingerprint:work.fingerprint,candidates});offset+=candidates.length;candidates=[];}
-  if(JSON.stringify(sourceErasureInput({candidates:[candidate]})).length>64000)throw new ServiceError('EVIDENCE_VALIDATION','One source erasure candidate exceeds bounded batch capacity');
+  if(JSON.stringify(input({candidates:[candidate]})).length>64000)throw new ServiceError('EVIDENCE_VALIDATION','One source erasure candidate exceeds bounded batch capacity');
   candidates.push(candidate);
  }
  if(candidates.length)batches.push({offset,fingerprint:work.fingerprint,candidates});
- const transmitted=batches.reduce((sum,batch)=>sum+JSON.stringify(sourceErasureInput(batch)).length,0);
+ const transmitted=batches.reduce((sum,batch)=>sum+JSON.stringify(input(batch)).length,0);
  if(transmitted>256000)throw new ServiceError('EVIDENCE_VALIDATION',`Source erasure exceeds bounded transmitted capacity (${transmitted} characters)`);
  return batches;
 }
