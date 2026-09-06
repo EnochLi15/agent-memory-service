@@ -63,10 +63,24 @@ export function authorizesForget(o:Operation,req:AddRequest):boolean{
  // A command elsewhere in the message does not authorize a quoted/negated span.
  return instructionSpans(text).some(s=>s.intent==='forget'&&s.start<start+o.source.quote.length&&s.end>start);
 }
+// Only an explicit removal FROM a current relationship list permits retaining
+// history. Merely mentioning a current colleague inside an erasure is not enough.
+export function currentRelationRemoval(span:InstructionSpan):boolean{
+ return /\bremove\s+.{1,120}\s+from\s+(?:(?:my|our|the)\s+)?current\s+(?:colleagues?|contacts?|work contacts?)\b|从(?:我的|我们的)?当前(?:同事|联系人)(?:列表|名单)?中?(?:删除|移除)/iu.test(span.quote);
+}
+function effectMatches(o:Operation,span:InstructionSpan):boolean{
+ return o.type==='forget'||o.type==='retract'&&o.boundary==='current_relation'&&currentRelationRemoval(span);
+}
+export function retirementEffectMismatch(o:Operation,req:AddRequest):boolean{
+ if(o.type!=='retract')return false;
+ const text=req.messages[o.source.index]?.content;if(!text)return false;
+ const start=text.indexOf(o.source.quote);if(start<0)return false;
+ return forgetObligations(req).some(({index,span})=>index===o.source.index&&start<span.end&&start+o.source.quote.length>span.start&&!effectMatches(o,span));
+}
 export function missingForgetObligations(req:AddRequest,parsed:Extraction):{index:number;span:InstructionSpan}[]{
  const obligations=forgetObligations(req);
  return obligations.filter(({index,span})=>!parsed.operations.some(o=>{
-  if(o.source.index!==index||!['forget','retract'].includes(o.type))return false;
+  if(o.source.index!==index||!effectMatches(o,span))return false;
   const start=req.messages[index]!.content.indexOf(o.source.quote);
   const covered=obligations.filter(item=>item.index===index&&start<item.span.end&&start+o.source.quote.length>item.span.start);
   return start>=0&&covered.length===1&&start<span.end&&start+o.source.quote.length>span.start;

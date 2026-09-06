@@ -12,7 +12,7 @@ import {VerificationSession} from './verification-session.js';
 import {PATCH_PROMPT,applyRepair,scopeForFindings,type RepairScope} from './repair.js';
 
 export function hash(s: string): string { return createHash('sha256').update(s).digest('hex'); }
-import {realControl,instructionSpans,authorizesForget,missingForgetObligations,missingPersonalSources} from './operation-intent.js';
+import {retirementEffectMismatch,currentRelationRemoval,realControl,instructionSpans,authorizesForget,missingForgetObligations,missingPersonalSources} from './operation-intent.js';
 
 export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction {
   const result: Extraction = { facts: [], operations: [] };
@@ -58,8 +58,8 @@ export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction 
         // Generic experience is a catch-all bucket, not a user property. Its
         // deletion marker would affect unrelated experiences and raw evidence.
         if(!valueExact.length&&typed.some(f=>f.predicate==='experience'))throw new ServiceError('AMBIGUOUS_OPERATION','Offline mode cannot bind an untyped experience property');
-        const first = typed[0]!;
-        result.operations.push({ type: /current colleague|current contact|当前同事|当前联系人/i.test(quote) ? 'retract' : 'forget', target_ids: typed.map(f => f.id).filter(Boolean), subject: first.subject, predicate: first.predicate, scope: first.scope, value: valueExact[0]?.value ?? '', boundary: valueExact.length ? 'value' : 'property', source: { index, quote }, reason: propertyWords });
+        const first = typed[0]!,currentRelation=currentRelationRemoval(span);
+        result.operations.push({ type: currentRelation ? 'retract' : 'forget', target_ids: typed.map(f => f.id).filter(Boolean), subject: first.subject, predicate: first.predicate, scope: first.scope, value: valueExact[0]?.value ?? '', boundary: currentRelation ? 'current_relation' : valueExact.length ? 'value' : 'property', source: { index, quote }, reason: propertyWords });
         continue;
       }
       if (span.intent==='blocked') continue;
@@ -205,6 +205,10 @@ export class Extractor {
           for(const f of valid.data.facts)for(const source of f.sources)resolveSource(source,req);
           for(const o of valid.data.operations){resolveSource(o.source,req);const statement=req.messages[o.source.index]?.content??'';if(o.type==='retract'&&realControl(statement)&&/\b(?:forget|erase|delete)\b|remove .{0,100} entirely|彻底删除|完全移除/i.test(o.source.quote)&&!/current (?:colleague|contact)|当前同事|当前联系人/i.test(statement))o.type='forget';}
           failedProposal=structuredClone(valid.data);
+          if(valid.data.operations.some(o=>retirementEffectMismatch(o,req))){
+            issue='Operation effect mismatch: a request to stop retaining information requires forget, not retract. Bind ALL affected properties within the requested entity boundary, including same-chunk transient facts, so their sources are erased. A status-only retraction cannot satisfy an erasure request. Preserve unrelated entities and facts. Only explicit removal from a current relationship list permits retract with current_relation.';
+            continue;
+          }
           for(const f of valid.data.facts){f.supersedes=f.supersedes.map(id=>aliases.get(id)??id);f.depends_on=f.depends_on.map(id=>aliases.get(id)??id);}
           for(const o of valid.data.operations)o.target_ids=o.target_ids.map(id=>aliases.get(id)??id);
           let localIds:Set<string>;
@@ -258,6 +262,7 @@ export class Extractor {
         if(!accepted&&issue.startsWith('Unknown target'))throw new ServiceError('OPERATION_TARGET','Unknown memory operation target after repair');
         if(!accepted&&issue.startsWith('Operation target binding'))throw new ServiceError('OPERATION_TARGET','Unresolved operation subject, property or scope after repair');
         if(!accepted&&issue.startsWith('Semantic verification'))throw new ServiceError('EVIDENCE_VALIDATION','Evidence still fails semantic verification after repair');
+        if(!accepted&&issue.startsWith('Operation effect mismatch'))throw new ServiceError('OPERATION_INTENT','Retirement still has the wrong operation effect after repair');
         if(!accepted)throw new ServiceError('EXTRACTION_SCHEMA','Could not validate structured evidence and exact sources');
         parsed=accepted;
       } catch (error) {

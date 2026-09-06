@@ -9,6 +9,7 @@ import { tokens } from './text.js';
 import {redactPassage} from './passages.js';
 import {eventCategory} from './events.js';
 import {resolveOperationTargets} from './binding.js';
+import {retirementEffectMismatch} from './operation-intent.js';
 
 const valueWords = (s:string):string[] => canonical(s).match(/[\p{L}\p{N}]+/gu) ?? [];
 const valueDigest = (s:string):string => digest(valueWords(s).join(' '));
@@ -79,6 +80,7 @@ export class TenantStore {
     return this.db.transaction(()=>{
       const already=this.receipt(req.request_id,payloadHash); if(already)return already;
       if(this.revision()!==expectedRevision)throw new ServiceError('REVISION_CONFLICT','Concurrent mutation; retry request');
+      if(prepared.operations.some(o=>retirementEffectMismatch(o,req)))throw new ServiceError('OPERATION_INTENT','Retraction cannot satisfy an erasure request');
       const revision=expectedRevision+1;
       if(prepared.sourceFormat){
         const format=this.meta('source_format');
