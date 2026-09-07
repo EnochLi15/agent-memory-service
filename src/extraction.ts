@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import {sourceFormatFor,type Config} from './config.js';
 import { Models } from './models.js';
 import { EXTRACTION_PROMPT } from './prompts.js';
-import { factId, addSchema, extractionSchema, canonical, replacementMatches, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation } from './types.js';
+import { factId, addSchema, extractionSchema, canonical, slot, propertyFamily, replacementMatches, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation, type StoredMessage } from './types.js';
 import {bindingCandidates,resolveOperationTargets} from './binding.js';
 import { entities, overlap, tokens, speakerPrefix } from './text.js';
 import {preparePassages,sourceSpans} from './passages.js';
@@ -437,6 +437,13 @@ export class Extractor {
       if(!this.config.experimental?.rawOnly&&src.every(m=>m.role!=='user'&&!speakerPrefix(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim())))f.modality='quoted';
       facts.push({ ...attributes,event_time:eventTime,source_spans:sourceSpans(f,messages),modality:f.modality,time_basis:src[0]!.time_basis,id:factId(req,i),source_ids:[...new Set(src.map(m=>m.id))],source_quotes:proposalSources.map(s=>s.quote),created_at:src[0]!.timestamp!,observed_at:src[0]!.timestamp!,state:'active',vector:null,entities:entities(f.content),revision:snapshot.revision+1 });
     }
+    // Pattern cards aggregate this add's facts with the tenant's prior facts
+    // (S1 reflection layer / P2 list materialization). Plain content adds
+    // only: operation adds must not rewrite cards, the source-operation
+    // pipeline keeps its own bookkeeping, and the lifecycle experiment's
+    // strip pass would break depends_on/supersedes card semantics.
+    if(this.config.experimental?.aggregate&&!parsed.operations.length&&!sourceOperationPlan&&this.config.experimental?.lifecycle!==false)
+      facts.push(...aggregatePatterns(req,snapshot,facts,messages));
     if(sourceOperationPlan&&this.config.sourceOperationRouting)validateSourceRoutePlan(sourceOperationPlan,sourceOperationWork(req,snapshot.facts,sourceHistory));
     else if(sourceOperationPlan&&this.config.sourceOperationBatches&&sourceOperationWork(req,snapshot.facts,sourceHistory).enabled)validateSourceBatchPlan(sourceOperationPlan,sourceOperationWork(req,snapshot.facts,sourceHistory));
     if(sourceOperationPlan)validateSourceOperations(sourceOperationPlan,req,snapshot.facts,facts,messages,sourceHistory);
@@ -516,4 +523,54 @@ export class Extractor {
     if(this.config.sourceFirst){if(!sourceCoverageRows)throw new ServiceError('EVIDENCE_VALIDATION','Source-first write lacks independent coverage');prepared.sourceCoveragePlan=makeSourceCoveragePlan(req,prepared,sourceCoverageRows);}
     return prepared;
   }
+}
+
+// Deterministic cross-session aggregation of multiple-cardinality facts into
+// pattern cards (`kind:'reflection'`, `modality:'inferred'`): one mechanism
+// serving the MemOps Reflect summaries and cat1 list completeness. The card
+// embeds every distinct member value verbatim, so one evidence row answers
+// "what have I shared about X" style queries; it retires on value-set change
+// (supersedes), disappears with a forgotten member value (depends_on
+// propagation, leak-marker replay guard and inferred-source redaction in the
+// commit path), and is re-derived from surviving members by the next content
+// add. No model is involved: the offline and enhanced forms produce it alike.
+function aggregatePatterns(req:AddRequest,snapshot:Snapshot,currentFacts:Fact[],messages:StoredMessage[]):Fact[]{
+  const pool=[...currentFacts,...snapshot.facts].filter(f=>f.cardinality==='multiple'&&f.state==='active'&&f.modality==='confirmed'&&(f.kind==='fact'||f.kind==='preference'));
+  const currentIds=new Set(currentFacts.map(f=>f.id));
+  const groups=new Map<string,Fact[]>();
+  for(const f of pool){const key=slot(f);const list=groups.get(key)??[];list.push(f);groups.set(key,list);}
+  const anchor=messages[messages.length-1]!;
+  const cards:Fact[]=[];
+  for(const [key,members] of groups){
+    // Cards (and their reflection events) fire only when this add extended
+    // the family; untouched families keep their existing card untouched.
+    if(!members.some(f=>currentIds.has(f.id)))continue;
+    const byValue=new Map<string,Fact[]>();
+    for(const m of members){const v=canonical(m.value||m.content);const list=byValue.get(v)??[];list.push(m);byValue.set(v,list);}
+    if(byValue.size<2)continue;
+    const values=[...byValue.keys()].sort();
+    const displays:string[]=[];const depends_on:string[]=[];
+    for(const v of values){
+      const carriers=byValue.get(v)!;
+      // One representative per distinct value, preferring a snapshot carrier:
+      // its id survives this request's duplicate merges, keeping depends_on
+      // free of dead ids the retrieval prune would hide the card behind.
+      const rep=carriers.find(f=>!currentIds.has(f.id))??carriers[0]!;
+      const display=rep.value.trim()||rep.content;
+      if(!displays.includes(display)){displays.push(display);depends_on.push(rep.id);}
+    }
+    const value=displays.join(', ');
+    const oldCard=snapshot.facts.find(f=>f.kind==='reflection'&&f.state==='active'&&slot(f)===key);
+    if(oldCard&&canonical(oldCard.value)===canonical(value))continue;
+    const content=`[Aggregated pattern] ${members[0]!.subject}: ${propertyFamily(members[0]!.predicate)} — ${value} (${members.length} statements)`;
+    // This add's sources first so the reflection event can bind a fresh
+    // message even when prior sessions contributed many source ids.
+    const sourceIds=[...new Set([...members.filter(m=>currentIds.has(m.id)).flatMap(m=>m.source_ids),...members.flatMap(m=>m.source_ids)])].slice(0,16);
+    cards.push({content,subject:members[0]!.subject,predicate:propertyFamily(members[0]!.predicate),value,scope:members[0]!.scope,
+      kind:'reflection',modality:'inferred',cardinality:'multiple',time_text:'',valid_from:null,valid_to:null,
+      depends_on,supersedes:oldCard?[oldCard.id]:[],source_spans:[],time_basis:anchor.time_basis??'source',
+      id:'pattern-'+hash(`${req.user_id}\0${key}\0${canonical(value)}`),source_ids:sourceIds,source_quotes:[],
+      created_at:anchor.timestamp!,observed_at:anchor.timestamp!,state:'active',vector:null,entities:entities(content),revision:snapshot.revision+1});
+  }
+  return cards;
 }

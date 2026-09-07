@@ -33,7 +33,10 @@ export function intent(query: string): QueryIntent {
   // longitudinal question sets (1,544 questions, zero false positives):
   // co-occurrence constrained; bare before/in 20xx/last year removed because
   // they mis-route current-state and multi-hop questions to chain arbitration.
-  const trajectory=/how (?:did|has|does) [^.?!]{0,80} (?:chang|evolv|becam|becom|switch|turn|progress|grow|develop|end(?:ed)? up)|walk me through|full sequence|sequence of changes|over (?:the|our) (?:time|conversations)|over the course of (?:our|the) conversations?|summariz\w* [^.?!]{0,60} (?:i(?:'ve| have)? (?:shared|told|mentioned)|we(?:'ve| have)? (?:discussed|talked)|key (?:details|things))|what [^.?!]{0,40} (?:have|did) i [^.?!]{0,40} (?:shar\w+|describ\w+|mention\w+|tell|told|talked about)|history of\b|evolved|progression|all the (?:changes|steps)|which specific messages|变化|变迁|历程|先后|怎么演变|如何演变/.test(q);
+  // Re-validated 2026-09-07 (validation-data/intent-check.mjs): becam/becom
+  // stems dropped ("journey to becoming" mis-routed a single-hop question);
+  // the what-have-i gap is optional so "what have I shared" matches directly.
+  const trajectory=/how (?:did|has|does) [^.?!]{0,80} (?:chang|evolv|switch|turn|progress|grow|develop|end(?:ed)? up)|walk me through|full sequence|sequence of changes|over (?:the|our) (?:time|conversations)|over the course of (?:our|the) conversations?|summariz\w* [^.?!]{0,60} (?:i(?:'ve| have)? (?:shared|told|mentioned)|we(?:'ve| have)? (?:discussed|talked)|key (?:details|things))|what [^.?!]{0,40} (?:have|did) i (?:[^.?!]{0,40} )?(?:shar\w+|describ\w+|mention\w+|tell|told|talked about)|history of\b|evolved|progression|all the (?:changes|steps)|which specific messages|变化|变迁|历程|先后|怎么演变|如何演变/.test(q);
   const history=/\b(?:used to|previous(?:ly)?|back then|at the time|earlier version|originally)\b|when (?:i|he|she|we|they) first|what was [^.?!]{0,60}\bbefore|以前|之前|曾经|当时|最初/.test(q);
   const operation=/\b(?:ask(?:ed)? (?:you )?to|operation|affected|removed?|forgot|forget|forgotten|correct(?:ed|ion)?|retract(?:ed)?|restor(?:e|ed)|tak(?:e|ing) .{0,60} off|took .{0,60} off)\b|删除|忘记|移除|纠正|撤回|恢复/.test(q);
   const list=/\b(?:all|list|summarize)\b|\b(?:which|what)\s+(?:(?:my|your|our|the|his|her|their)\s+)?(?!is\b|was\b|has\b|does\b|this\b|its\b)[a-z]{2,}s\b|哪些|列出|所有|总结/.test(q);

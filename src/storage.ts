@@ -250,7 +250,11 @@ export class TenantStore {
             else {f.state='superseded';f.valid_to=oldDate;}
           }
         }
-        for(const id of f.supersedes){const old=all.find(x=>x.id===id);if(old&&old.state==='active'&&f.modality==='confirmed'){old.state='superseded';old.valid_to=f.valid_from??f.observed_at;old.revision=revision;this.put(old);for(const source of old.source_ids)suppressedSources.add(source);}}
+        // A reflection card also retires its predecessor on value-set change:
+        // without this extension every re-derived pattern card would leave
+        // the stale card active (cards are inferred, never confirmed) and pile
+        // one obsolete aggregation per value change into current retrieval.
+        for(const id of f.supersedes){const old=all.find(x=>x.id===id);if(old&&old.state==='active'&&(f.modality==='confirmed'||f.kind==='reflection')){old.state='superseded';old.valid_to=f.valid_from??f.observed_at;old.revision=revision;this.put(old);for(const source of old.source_ids)suppressedSources.add(source);}}
         this.put(f);all.push(f);for(const id of f.source_ids)suppressedSources.add(id);
       }
       // Invalidate derived facts transitively; do not retain deleted values in another predicate.

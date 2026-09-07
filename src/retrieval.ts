@@ -120,7 +120,7 @@ function slotChains(allFacts:Fact[]):Map<string,Fact[]>{
 /** Intent-aware multipliers that separate current winners from history noise.
  * Base hybrid scores sit within ~3% of each other, which carries no ranking
  * information for the downstream answer model. */
-function arbitrationPlan(chains:Map<string,Fact[]>,allFacts:Fact[],qi:QueryIntent):Map<string,number>{
+function arbitrationPlan(chains:Map<string,Fact[]>,allFacts:Fact[],qi:QueryIntent,config:Config):Map<string,number>{
   const plan=new Map<string,number>();
   const current=!(qi.historical||qi.trajectory||qi.operation||qi.list||qi.asOf);
   for(const fs of chains.values()){
@@ -134,7 +134,14 @@ function arbitrationPlan(chains:Map<string,Fact[]>,allFacts:Fact[],qi:QueryInten
       if(active&&hasHistory)plan.set(active.id,3);
       if(active)for(const f of fs){
         if(f.state==='active'&&f.modality==='tentative')plan.set(f.id,Math.min(plan.get(f.id)??1,.4));
-        else if(f.state==='conflicted')plan.set(f.id,Math.min(plan.get(f.id)??1,.6));
+        else if(f.state==='conflicted'){
+          // Corroboration is a ranking signal only: a value restated by ≥2
+          // independent statements outranks its single-source rival while
+          // staying conflicted — counts never auto-resolve a chain, because
+          // two echoes of a stale value must not outvote one correction.
+          const independent=new Set(f.source_ids).size;
+          plan.set(f.id,Math.min(plan.get(f.id)??1,config.experimental?.corroboration&&independent>=2?.6*1.5:.6));
+        }
       }
     }else if(qi.historical||qi.trajectory||qi.operation){
       // History/trajectory: chain order wins, latest value stays reachable.
@@ -219,7 +226,7 @@ export function packEvidence(store:TenantStore,req:SearchRequest,config:Config,f
   const scoreMap=scores?new Map(scores.map(x=>[x.id,x.score])):null;
   const ranked=frame.ranked.map(c=>({...c,score:scoreMap?(scoreMap.get(c.fact.id)??0):c.score})).filter(c=>c.score>0).sort((a,b)=>b.score-a.score||a.fact.id.localeCompare(b.fact.id));
   const chains=slotChains(allFacts);
-  const multiplier=arbitrationPlan(chains,allFacts,qi);
+  const multiplier=arbitrationPlan(chains,allFacts,qi,config);
   for(const c of ranked){
     c.score*=multiplier.get(c.fact.id)??1;
     // The raw layer is a fallback: when a fact and its raw twin compete, the
@@ -253,7 +260,7 @@ export function packEvidence(store:TenantStore,req:SearchRequest,config:Config,f
     const currentFact=qi.asOf?undefined:chain?.find(x=>x.state==='active'&&(x.modality==='confirmed'||x.modality==='tentative'));
     let bodyText=f.content;
     if(f.state==='superseded'||f.state==='retracted')bodyText=`Former ${f.predicate}${f.value?`: "${f.value}"`:''} (${f.state==='retracted'?'removed at user request':'superseded'}${f.valid_to&&f.time_basis!=='ordering'?` on ${String(f.valid_to).slice(0,10)}`:''}${currentFact?`; current ${f.predicate}: "${currentFact.value}"`:''}). Original statement: ${f.content}`;
-    else if(f.state==='conflicted')bodyText=`[Conflicting statements recorded; no single current value] ${f.content}`;
+    else if(f.state==='conflicted'){const independent=new Set(f.source_ids).size;bodyText=`[Conflicting statements recorded; no single current value] ${f.content}${config.experimental?.corroboration&&independent>=2?` (this value is corroborated by ${independent} independent statements)`:''}`;}
     const body=bodyText+(timeText?`\n${timeText}`:'');
     const transition=f.transition_time?` transition window: ${f.transition_time.start} to ${f.transition_time.end_exclusive} (${f.transition_time.precision} precision; exact boundary unknown);`:'';
     const suffix=`${external.length?`\n[Original source ids: ${external.join(',')}]`:''}\n[status: ${state}; subject/speaker: ${f.subject}; scope: ${f.scope||'unspecified'};${transition} ${f.time_basis==='ordering'?'synthetic order marker, not an event date':'observed'}: ${f.observed_at};${f.time_text?` original time: ${f.time_text};`:''}${f.valid_from?` valid from: ${f.valid_from};`:''}${f.valid_to?` valid until: ${f.valid_to};`:''} source: ${f.source_ids.map(id=>id.slice(0,12)).join(',')}]`;
