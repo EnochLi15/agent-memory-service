@@ -115,7 +115,7 @@ export class VerificationSession {
      catch(partial){if(partial instanceof VerificationProtocolError)for(const finding of partial.findings)failures.add(finding);}
     }
     const findings=[...failures];this.rememberFailures(plan,findings);
-    throw new VerificationProtocolError(error.message,findings);
+    throw new VerificationProtocolError([...new Set([...protocolErrors,error.message])].slice(0,8).join('; '),findings);
    }
    // No positive certificate is created from a malformed protocol response.
    throw error;

@@ -262,8 +262,9 @@ export class Extractor {
             try{raw=references?decodeSourceReferences(output,req):decodeGroupedExtraction(output,req);}
             catch(error){
               failedProposal=output;
-              if(attempt===this.config.maxRepairRounds)throw new ServiceError('EVIDENCE_VALIDATION','Grouped extraction could not cover every participant within bounded repair rounds');
-              issue=(error instanceof Error?error.message:'Invalid grouped extraction')+'. Return the complete message_groups schema and preserve every participant index.';continue;
+              const detail=error instanceof Error?error.message:'Invalid grouped extraction';
+              if(attempt===this.config.maxRepairRounds)throw new ServiceError('EVIDENCE_VALIDATION','Grouped extraction failed after bounded repair rounds: '+detail);
+              issue=detail+'. Return the complete message_groups schema and preserve every participant index. Every group requires message_index, facts and operations, including explicit empty arrays; omit default-valued fact metadata only. Future plans use kind="event" and modality="tentative". Preserve all supported facts and actual operations.';continue;
             }
           }
           if(patchMode){

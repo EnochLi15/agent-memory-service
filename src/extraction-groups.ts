@@ -10,16 +10,27 @@ export const GROUPED_EXTRACTION_PROMPT=EXTRACTION_PROMPT
  .replace('where N is its zero-based index in facts','where the first index is the original message index and the second is the zero-based local facts index in that message group')+`
 
 Output protocol message-groups-v1: {message_groups:[{message_index:number,facts:[fact,...],operations:[operation,...]},...]}. Include exactly one group for EVERY index in PARTICIPANT_INDEX, in chronological order, even when facts and operations are both empty. Do not include unlabelled assistant groups. Process one whole participant message at a time: preserve its distinct personal setup, concrete plans, preferences, reasons and meaningful concerns before moving to the next. A question about the user's own app or child may contain personal context, but generic knowledge questions alone establish no durable trait. Do not invent a memory just to fill an empty group. Listing a group is not proof of semantic coverage: the independent checker still checks all meaningful content.
+The instruction to omit default-valued fact metadata NEVER applies to message groups: message_index, facts and operations are all REQUIRED in every group. Always write operations:[] when there is no authorized operation; never omit the key or invent an operation. Use kind="event", modality="tentative" for future plans, not kind="plan".
 Each fact must cite its group's message at least once; additional earlier human sources can support the same fact. Each operation must cite its group's message. Reuse existing short memory IDs unchanged. For a fact from this same response, use new:<message_index>:<local_fact_index>, never a flat new:N counter. The server deterministically orders groups and resolves these references into its existing fact IDs. A same-chunk operation still needs earlier target evidence; group placement does not authorize deletion. No top-level facts/operations, summaries or coverage verdicts. The fact and operation field semantics above remain unchanged.`;
 const groupSchema=z.object({message_index:z.number().int().nonnegative(),facts:extractionSchema.shape.facts,operations:extractionSchema.shape.operations.removeDefault()}).strict();
 const groupedSchema=z.object({message_groups:z.array(groupSchema)}).strict();
+
+/** Match the existing flat-extraction spelling normalization before strict
+ * grouped parsing. This is not a coverage verdict and never changes the input. */
+export function normalizeGroupedPlans(raw:unknown):unknown{
+ if(!raw||typeof raw!=='object'||!Array.isArray((raw as any).message_groups))return raw;
+ return {...raw,message_groups:(raw as any).message_groups.map((g:any)=>g&&typeof g==='object'&&Array.isArray(g.facts)?{...g,facts:g.facts.map((f:any)=>f&&typeof f==='object'&&f.kind==='plan'?{...f,kind:'event',modality:'tentative'}:f)}:g)};
+}
+export function groupedSchemaDetails(error:z.ZodError):string{
+ return error.issues.slice(0,8).map(i=>`${i.path.join('.').slice(0,140)}: ${i.message.slice(0,180)}`).join('; ')+(error.issues.length>8?`; and ${error.issues.length-8} more schema issues`:'');
+}
 
 /** Enforce traversal and provenance, not semantic completeness. Empty groups
  * still pass through the independent coverage verifier. Stable local handles
  * make chronological flattening independent of returned group order. */
 export function decodeGroupedExtraction(raw:unknown,req:AddRequest):Extraction{
- const result=groupedSchema.safeParse(raw);
- if(!result.success)throw new ServiceError('EXTRACTION_SCHEMA','Invalid message-group extraction schema');
+ const result=groupedSchema.safeParse(normalizeGroupedPlans(raw));
+ if(!result.success)throw new ServiceError('EXTRACTION_SCHEMA','Invalid message-group extraction schema: '+groupedSchemaDetails(result.error));
  const expected=participantIndices(req),groups=result.data.message_groups,byIndex=new Map(groups.map(g=>[g.message_index,g]));
  if(groups.length!==expected.length||byIndex.size!==groups.length||groups.some(g=>!expected.includes(g.message_index)))throw new ServiceError('EXTRACTION_SCHEMA','Grouped extraction must cover every participant exactly once');
  const facts:Extraction['facts']=[],operations:Extraction['operations']=[],handles=new Map<string,string>();

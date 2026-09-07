@@ -40,5 +40,5 @@ test('an empty generic knowledge group can remain empty without manufacturing a 
 });
 test('repeated grouped protocol omissions reject instead of becoming an offline success',async()=>{
  const config=configFromEnv({MEMORY_MODE:'enhanced',MEMORY_EXTRACTION_FORMAT:'message_groups',MEMORY_MAX_REPAIR_ROUNDS:'2'});let calls=0;
- await assert.rejects(()=>new Extractor(config,{json:async()=>{calls++;return {message_groups:[]};},verify:async()=>{throw Error('Invalid traversal must not reach verifier');}} as any).prepare(req,{facts:[],tail:[],anchor:null,revision:0},AbortSignal.timeout(1000)),/Grouped extraction could not cover/);assert.equal(calls,3);
+ await assert.rejects(()=>new Extractor(config,{json:async()=>{calls++;return {message_groups:[]};},verify:async()=>{throw Error('Invalid traversal must not reach verifier');}} as any).prepare(req,{facts:[],tail:[],anchor:null,revision:0},AbortSignal.timeout(1000)),/Grouped extraction must cover every participant exactly once/);assert.equal(calls,3);
 });

@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {z} from 'zod';
 import {factSchema,ServiceError,type AddRequest,type Extraction} from './types.js';
-import {decodeGroupedExtraction,GROUPED_EXTRACTION_PROMPT} from './extraction-groups.js';
+import {decodeGroupedExtraction,GROUPED_EXTRACTION_PROMPT,normalizeGroupedPlans,groupedSchemaDetails} from './extraction-groups.js';
 import {participantIndices} from './verification.js';
 
 export const SOURCE_REFERENCE_PROTOCOL='message-groups-source-refs-v1';
@@ -32,7 +32,7 @@ const envelope=z.object({message_groups:z.array(z.object({message_index:z.number
  * model. The existing grouped decoder then checks speaker/group provenance and
  * stable handles; the ordinary verifier still judges every expanded claim. */
 export function decodeSourceReferences(raw:unknown,req:AddRequest):Extraction{
- const checked=envelope.safeParse(raw);if(!checked.success)throw new ServiceError('EXTRACTION_SCHEMA','Invalid referenced extraction schema');
+ const checked=envelope.safeParse(normalizeGroupedPlans(raw));if(!checked.success)throw new ServiceError('EXTRACTION_SCHEMA','Invalid referenced extraction schema: '+groupedSchemaDetails(checked.error));
  const work=sourceReferenceWork(req),participants=new Set(participantIndices(req));
  const groups=checked.data.message_groups.map(group=>({...group,facts:group.facts.map((f,local)=>{
   if(!!f.source_refs===!!f.sources)throw new ServiceError('EXTRACTION_SCHEMA','Choose exactly one source encoding per referenced fact');

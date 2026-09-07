@@ -2,6 +2,19 @@ import {test} from 'node:test';import assert from 'node:assert/strict';import {c
 import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {buildServer} from '../dist/server.js';import {configFromEnv} from '../dist/config.js';
 
+test('invalid JSON is terminal on the first HTTP response and never retried through a closed ledger',async()=>{
+ let calls=0;const dir=mkdtempSync(join(tmpdir(),'http-invalid-json-'));
+ const provider=createServer(async(req,res)=>{for await(const _ of req){}calls++;res.writeHead(200,{'content-type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{delta:{content:'{"message_groups":[}'},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');});
+ await new Promise<void>(r=>provider.listen(0,'127.0.0.1',r));
+ const app=await buildServer(configFromEnv({MEMORY_MODE:'enhanced',MEMORY_WRITE_CONTINUATION:'true',MEMORY_MODEL_TRANSPORT_ATTEMPTS:'3',MEMORY_DATA_DIR:dir,MEMORY_LLM_BASE_URL:`http://127.0.0.1:${(provider.address() as any).port}/v1`,MEMORY_LLM_API_KEY:'fixture'}));
+ const payload={user_id:'u',request_id:'invalid-json',session_id:'s',messages:[{role:'user',content:'My browser is Firefox.',timestamp:'2026-01-01T00:00:00Z'}]};
+ try{
+  const response=await app.inject({method:'POST',url:'/add',payload});assert.equal(response.statusCode,503);assert.equal(response.json().error.code,'EVIDENCE_VALIDATION');assert.match(response.json().error.message,/invalid JSON/);
+  const retry=await app.inject({method:'POST',url:'/add',payload});assert.equal(retry.json().error.code,'EVIDENCE_VALIDATION');assert.equal(calls,1);
+  const search=await app.inject({method:'POST',url:'/search',payload:{user_id:'u',query:'browser',top_k:10}});assert.deepEqual(search.json().data,[]);
+ }finally{await app.close();provider.closeAllConnections();await new Promise<void>(r=>provider.close(()=>r()));rmSync(dir,{recursive:true,force:true});}
+});
+
 for(const failure of ['connection','provider_stream'])test(`HTTP retries resume after actual SDK ${failure} failures without regenerating the rejected prefix`,async()=>{
  let extraction=0,verification=0,repair=0;const dir=mkdtempSync(join(tmpdir(),'http-continuation-'));
  const provider=createServer(async(request,response)=>{

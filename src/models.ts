@@ -51,7 +51,7 @@ export class Models {
     for(let attempt=0;attempt<2;attempt++){
       let raw:unknown;
       try{raw=await this.json(prompt,input+repair,signal,{purpose:'verification',verification_format:coverage?'source-first-coverage-tuples-v1':compact?COMPACT_VERIFICATION_PROTOCOL:'verbose',verification_scope:counts,trace:{user_id:req.user_id,request_id:req.request_id}});}
-      catch{throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not complete evidence verification within the request budget');}
+      catch(error){if(error instanceof ServiceError&&error.code==='EVIDENCE_VALIDATION')throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not complete evidence verification within the request budget');}
       try{const decoded=compact?decodeCompactVerification(raw,proposal,scope,coverage):undefined;return session.evaluate(plan,decoded?.canonical??raw,decoded?.protocolErrors);}
       catch(error){
         // A malformed later check cannot erase an already validated rejection.
@@ -67,7 +67,14 @@ export class Models {
   }
 
   async json(system: string, user: string, signal: AbortSignal,context?:GenerationContext): Promise<unknown> {
-    return continuationCall({system,user,context,base:this.config.llmBase,models:this.config.llmStageModels,model:this.config.llmModel,effort:this.config.llmReasoningEffort,responseFormat:this.config.verificationResponseFormat},signal,()=>this.gate.run(signal,()=>this.generateJson(system,user,signal,context)));
+    try{return await continuationCall({system,user,context,base:this.config.llmBase,models:this.config.llmStageModels,model:this.config.llmModel,effort:this.config.llmReasoningEffort,responseFormat:this.config.verificationResponseFormat},signal,()=>this.gate.run(signal,()=>this.generateJson(system,user,signal,context)));}
+    catch(error){
+      // Syntax failure is a terminal protocol result, not a provider outage.
+      // Keep the private audit's invalid_json classification and never expose
+      // raw output or invite an HTTP retry against an already closed ledger.
+      if(error instanceof SyntaxError)throw new ServiceError('EVIDENCE_VALIDATION','Model returned invalid JSON; this preparation cannot be resumed');
+      throw error;
+    }
   }
   private async generateJson(system:string,user:string,signal:AbortSignal,context?:GenerationContext):Promise<unknown>{
     // Streaming prevents idle gateway disconnects during long structured generations.

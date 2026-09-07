@@ -1,6 +1,7 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {Models} from '../dist/models.js';import {configFromEnv} from '../dist/config.js';import {extractionSchema} from '../dist/types.js';
 import {VerificationSession} from '../dist/verification-session.js';import {decodeCompactVerification,COMPACT_VERIFICATION_PROTOCOL} from '../dist/verification-compact.js';import {verificationInput,verificationIssues} from '../dist/verification.js';
+import {sourceCoverageWork} from '../dist/source-coverage.js';
 const req={request_id:'compact',user_id:'u',session_id:'s',messages:[{role:'user',content:'My browser is Firefox.',timestamp:'2026-01-01T00:00:00Z'},{role:'user',content:'Correct my city from Boston to Paris.',timestamp:'2026-01-02T00:00:00Z'}]};
 const proposal=()=>extractionSchema.parse({facts:[{content:req.messages[0]!.content,subject:'user',predicate:'browser',value:'Firefox',sources:[{index:0,quote:req.messages[0]!.content}]},{content:'User lives in Paris.',subject:'user',predicate:'city',value:'Paris',sources:[{index:1,quote:req.messages[1]!.content}],supersedes:['old']}],operations:[{type:'correct',subject:'user',predicate:'city',target_ids:['old'],source:{index:1,quote:req.messages[1]!.content}}]});
 const old={...proposal().facts[1]!,supersedes:[],depends_on:[],id:'old',content:'User lives in Boston.',value:'Boston',state:'active',vector:null};
@@ -8,6 +9,20 @@ const scope=()=>verificationInput(req,proposal(),[],[]).CHECK_SCOPE;
 const raw=()=>({fact_checks:[[0,true,true,0],[1,true,true,0]],operation_checks:[[0,true,true]],replacement_checks:[[0,true]],message_checks:[[0,'represented',[0],[]],[1,'represented',[1],[0]]]});
 const m=()=>new Models(configFromEnv({MEMORY_VERIFICATION_FORMAT:'compact'}));
 const run=(model:Models,p=proposal(),state=new VerificationSession(),r=req)=>model.verify(p,r,[old] as any,[],AbortSignal.timeout(1000),state);
+
+test('source-backed mixed coverage permits an explanation without dropping checks or weakening references',()=>{
+ const p=proposal(),work=sourceCoverageWork(req,p),out:any=raw();
+ out.message_checks[0]=[0,'represented',[0],[],[],'All claims represented.'];
+ const decoded=decodeCompactVerification(out,p,scope(),work);assert.deepEqual(decoded.protocolErrors,[]);assert.deepEqual(verificationIssues(decoded.canonical,req,p,work),[]);
+ out.message_checks[0][2]=[1];assert.throws(()=>verificationIssues(decodeCompactVerification(out,p,scope(),work).canonical,req,p,work),/coverage references/);
+ out.message_checks[0][2]=[0];out.message_checks[0][5]=true;assert.ok(decodeCompactVerification(out,p,scope(),work).protocolErrors.length);
+});
+test('malformed compact row feedback names the tuple rather than hiding it behind missing coverage',async()=>{
+ const model=m();let calls=0;
+ model.json=async(_system:string,input:string)=>{calls++;if(calls===1){const out:any=raw();out.message_checks[0]=[0,'represented',[0],[],'unexpected'];return out;}
+  assert.match(input,/Invalid compact message tuple.*message_checks\[0\]/);return raw();};
+ assert.deepEqual(await run(model),[]);assert.equal(calls,2);
+});
 
 test('a false decision remains rejected even when its explanation claims the evidence is supported',async()=>{
  const model=m(),state=new VerificationSession();let calls=0;
