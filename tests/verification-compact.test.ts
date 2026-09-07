@@ -34,7 +34,7 @@ test('source-backed mixed coverage permits an explanation without dropping check
 test('malformed compact row feedback names the tuple rather than hiding it behind missing coverage',async()=>{
  const model=m();let calls=0;
  model.json=async(_system:string,input:string)=>{calls++;if(calls===1){const out:any=raw();out.message_checks[0]=[0,'represented',[0],[],'unexpected'];return out;}
-  assert.match(input,/Invalid compact message tuple.*message_checks\[0\]/);return raw();};
+  assert.match(input,/Invalid compact message tuple.*message_checks\[0\]/);assert.deepEqual(JSON.parse(input.split('\nPROTOCOL_REPAIR:')[0]!).CHECK_SCOPE.message_indices,[0]);return {fact_checks:[],operation_checks:[],replacement_checks:[],message_checks:[raw().message_checks[0]]};};
  assert.deepEqual(await run(model),[]);assert.equal(calls,2);
 });
 
@@ -103,7 +103,7 @@ test('format changes invalidate certificates and terse format cannot impersonate
 test('an invalid coverage reference is a protocol error when grounded source-linked items exist',async()=>{
  const model=m();let calls=0;model.json=async(_s,input)=>{calls++;const d=JSON.parse(input.split('\nPROTOCOL_REPAIR:')[0]!);assert.deepEqual(d.MESSAGE_SOURCE_LINKS,[{index:0,fact_indices:[0],operation_indices:[]},{index:1,fact_indices:[1],operation_indices:[0]}]);
   if(calls===1)return {...raw(),message_checks:[[0,'represented',[0,1],[]],[1,'represented',[1],[0]]]};
-  assert.match(input,/PROTOCOL_REPAIR/);return raw();
+  assert.match(input,/PROTOCOL_REPAIR/);assert.deepEqual(d.CHECK_SCOPE.fact_indices,[]);return {fact_checks:[],operation_checks:[],replacement_checks:[],message_checks:[raw().message_checks[0]]};
  };assert.deepEqual(await run(model),[]);assert.equal(calls,2);
 });
 test('true missing content survives a sibling coverage-reference protocol failure without resampling',async()=>{

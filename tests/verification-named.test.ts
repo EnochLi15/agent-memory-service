@@ -46,7 +46,7 @@ test('named missing evidence remains a semantic failure beside malformed structu
 });
 test('named protocol repairs stay bounded and include precise feedback',async()=>{
  const m=model();let calls=0;m.json=async(system,input)=>{calls++;assert.ok(!system.includes('source-reference-tuples-v1'));assert.ok(!system.includes('source-first-coverage-tuples-v1'));
-  if(calls===1){const r=raw();r.message_checks[0].fact_ids=['msg:0'];return r;}assert.match(input,/PROTOCOL_REPAIR/);assert.match(input,/message_checks\[0\]/);return raw();};
+  if(calls===1){const r=raw();r.message_checks[0].fact_ids=['msg:0'];return r;}assert.match(input,/PROTOCOL_REPAIR/);assert.match(input,/message_checks\[0\]/);return {fact_checks:[],operation_checks:[],replacement_checks:[],message_checks:[raw().message_checks[0]]};};
  assert.deepEqual(await run(m),[]);assert.equal(calls,2);
 });
 test('named source-only coverage still requires real same-message passage references',()=>{

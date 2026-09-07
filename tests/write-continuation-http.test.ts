@@ -2,7 +2,7 @@ import {test} from 'node:test';import assert from 'node:assert/strict';import {c
 import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {buildServer} from '../dist/server.js';import {configFromEnv} from '../dist/config.js';
 
-test('invalid JSON is terminal on the first HTTP response and never retried through a closed ledger',async()=>{
+test('extraction invalid JSON is terminal on the first HTTP response and never retried through a closed ledger',async()=>{
  let calls=0;const dir=mkdtempSync(join(tmpdir(),'http-invalid-json-'));
  const provider=createServer(async(req,res)=>{for await(const _ of req){}calls++;res.writeHead(200,{'content-type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{delta:{content:'{"message_groups":[}'},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');});
  await new Promise<void>(r=>provider.listen(0,'127.0.0.1',r));
@@ -12,6 +12,48 @@ test('invalid JSON is terminal on the first HTTP response and never retried thro
   const response=await app.inject({method:'POST',url:'/add',payload});assert.equal(response.statusCode,503);assert.equal(response.json().error.code,'EVIDENCE_VALIDATION');assert.match(response.json().error.message,/invalid JSON/);
   const retry=await app.inject({method:'POST',url:'/add',payload});assert.equal(retry.json().error.code,'EVIDENCE_VALIDATION');assert.equal(calls,1);
   const search=await app.inject({method:'POST',url:'/search',payload:{user_id:'u',query:'browser',top_k:10}});assert.deepEqual(search.json().data,[]);
+ }finally{await app.close();provider.closeAllConnections();await new Promise<void>(r=>provider.close(()=>r()));rmSync(dir,{recursive:true,force:true});}
+});
+
+for(const mode of ['recover','exhaust','transport_resume'])test(`verification JSON repair ${mode} preserves atomic HTTP writes and bounded continuation`,async()=>{
+ let extraction=0,verification=0;const dir=mkdtempSync(join(tmpdir(),'http-verification-json-'));
+ const provider=createServer(async(request,response)=>{
+  const chunks:Buffer[]=[];for await(const chunk of request)chunks.push(chunk);const body=JSON.parse(Buffer.concat(chunks).toString());
+  if(request.url==='/api/embed'){response.setHeader('content-type','application/json');response.end(JSON.stringify({embeddings:body.input.map(()=>[1,0])}));return;}
+  const system=body.messages[0].content;let text:string;
+  if(system.startsWith('Validate memory evidence')){
+   verification++;
+   if(mode==='transport_resume'&&verification>=2&&verification<=4){request.socket.destroy();return;}
+   if(verification===1||mode==='exhaust')text='{"fact_checks":[}';
+   else{
+    assert.match(body.messages[1].content,/PROTOCOL_REPAIR/);
+    text=JSON.stringify({fact_checks:[[0,true,true,0]],operation_checks:[],replacement_checks:[],message_checks:[[0,'represented',[0],[]]]});
+   }
+  }else{
+   extraction++;text=JSON.stringify({facts:[{subject:'user',predicate:'browser',value:'Firefox',content:'My browser is Firefox.',sources:[{index:0,quote:'My browser is Firefox.'}]}],operations:[]});
+  }
+  response.setHeader('content-type','text/event-stream');response.end('data: '+JSON.stringify({choices:[{delta:{content:text},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');
+ });
+ await new Promise<void>(r=>provider.listen(0,'127.0.0.1',r));const port=(provider.address() as any).port;
+ const app=await buildServer(configFromEnv({MEMORY_MODE:'enhanced',MEMORY_VERIFICATION_FORMAT:'compact',MEMORY_WRITE_CONTINUATION:'true',MEMORY_MODEL_TRANSPORT_ATTEMPTS:'3',MEMORY_SOURCE_INDEX:'false',MEMORY_DATA_DIR:dir,MEMORY_EMBEDDING_DIMENSIONS:'2',MEMORY_EMBEDDING_BASE_URL:`http://127.0.0.1:${port}`,MEMORY_LLM_BASE_URL:`http://127.0.0.1:${port}/v1`,MEMORY_LLM_API_KEY:'fixture'}));
+ const payload={user_id:'u',request_id:mode,session_id:'s',messages:[{role:'user',content:'My browser is Firefox.',timestamp:'2026-01-01T00:00:00Z'}]};
+ const send=()=>app.inject({method:'POST',url:'/add',payload});
+ try{
+  let response=await send();
+  if(mode==='transport_resume'){
+   assert.equal(response.json().error.code,'WRITE_CONTINUATION_PENDING');assert.deepEqual([extraction,verification],[1,4]);
+   assert.deepEqual((await app.inject({method:'POST',url:'/search',payload:{user_id:'u',query:'browser',top_k:10}})).json().data,[]);
+   response=await send();assert.deepEqual([extraction,verification],[1,5],'The original invalid JSON is replayed, not generated again');
+  }
+  if(mode==='exhaust'){
+   assert.equal(response.statusCode,503);assert.equal(response.json().error.code,'EVIDENCE_VALIDATION');assert.equal(verification,2);
+   assert.deepEqual((await app.inject({method:'POST',url:'/search',payload:{user_id:'u',query:'browser',top_k:10}})).json().data,[]);
+   assert.equal((await send()).json().error.code,'EVIDENCE_VALIDATION');assert.equal(verification,2);
+  }else{
+   assert.equal(response.statusCode,200);assert.equal(response.json().success,true);const before=verification;
+   assert.equal((await send()).statusCode,200);assert.equal(verification,before);assert.equal(extraction,1);
+   const found=await app.inject({method:'POST',url:'/search',payload:{user_id:'u',query:'browser Firefox',top_k:10}});assert.ok(JSON.stringify(found.json().data).includes('Firefox'));
+  }
  }finally{await app.close();provider.closeAllConnections();await new Promise<void>(r=>provider.close(()=>r()));rmSync(dir,{recursive:true,force:true});}
 });
 

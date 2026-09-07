@@ -69,7 +69,7 @@ test('adding a fact invalidates its message coverage even when old facts remain 
 
 test('malformed checks create no positive certificate; omitted scoped checks cannot be filled by stale results',async()=>{
  const state=session(),m=new Models(configFromEnv({})),p=proposal();let calls=0;
- m.json=async()=>{calls++;const out=verdict(true);out.fact_checks.pop();return out;};
+ m.json=async(_s,input)=>{calls++;const out=success(JSON.parse(input.split('\nPROTOCOL_REPAIR:')[0]!));out.fact_checks.pop();return out;};
  await assert.rejects(verify(m,p,state),/coverage/);assert.equal(calls,2);
  m.json=async(_s,input)=>{calls++;const d=JSON.parse(input);assert.deepEqual(d.CHECK_SCOPE.fact_indices,[0,1]);return success(d);};
  assert.deepEqual(await verify(m,p,state),[]);p.facts[0]!.content='My salary is 85000.';

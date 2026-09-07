@@ -21,6 +21,7 @@ import {ERASURE_RESPONSE_FORMAT} from './erasure.js';
 import {parseModelJson} from './model-json.js';
 import {NAMED_VERIFICATION_PROTOCOL,NAMED_VERIFICATION_PROMPT,NAMED_SOURCE_COVERAGE_PROMPT,NAMED_VERIFICATION_RESPONSE_FORMAT,namedVerificationInput,decodeNamedVerification} from './verification-named.js';
 import {TRANSITION_RESPONSE_FORMAT} from './transitions.js';
+class VerificationJsonError extends ServiceError {constructor(){super('EVIDENCE_VALIDATION','Model returned invalid JSON during verification; bounded repair could not complete');}}
 function audit(record:Record<string,unknown>):void {
   if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
 }
@@ -43,35 +44,59 @@ export class Models {
     const retentionContext=resolvedSourceActions.length?facts.filter(f=>f.state==='active'&&!changedTargets.has(f.id)&&!f.source_ids.some(id=>currentSources.has(id))).map(f=>({id:f.id,subject:f.subject,predicate:f.predicate,scope:f.scope,content:f.content,value:f.value,state:f.state,modality:f.modality})):[];
     const coverage=this.config.sourceFirst?sourceCoverageWork(req,proposal):undefined;
     const named=this.config.verificationFormat==='named',compact=this.config.verificationFormat==='compact',verificationSchema=named?NAMED_VERIFICATION_RESPONSE_FORMAT:COMPACT_VERIFICATION_RESPONSE_FORMAT,prompt=(named?NAMED_VERIFICATION_PROMPT:compact?COMPACT_VERIFICATION_PROMPT:VERIFICATION_PROMPT)+(coverage?(named?NAMED_SOURCE_COVERAGE_PROMPT:SOURCE_COVERAGE_PROMPT):'')+(resolvedSourceActions.length?'\nRESOLVED_SOURCE_ACTIONS were independently authorized against exact source targets before this proposal. They are pending atomic source removals, separate from fact operations. Do not demand duplicate fact-ID operations for these exact instructions. Still check every remaining personal assertion and instruction in those messages. A message with only resolved source instructions and no other memorable information may be not_memorable. Never use this context to authorize changing an unrelated fact. A proposed negative fact that restates a rejected assistant value still retains that detail: mark it unsupported. Removing rejected-claim summaries is not a coverage failure. Preserve independent user facts, including real preferences or routines. When a resolved source rejection is accompanied only by a request to KEEP specific already-active existing facts unchanged, those retention clauses require no additional fact or operation: use not_memorable if nothing else requires new storage or mutation. Check EXISTING_ACTIVE_FACTS for the exact owner/property/value and active state first; an absent record cannot use this exception. This exception does not cover a new personal assertion, a missing/erased record, a changed value, a future plan or another unresolved memory instruction. Do not demand restore for retaining an active record; restore needs explicit new authorization to remember again.':'');
-    const plan=session.plan(req,proposal,facts,{base:this.config.llmBase,model:this.stageModel('verification'),effort:this.config.llmReasoningEffort,prompt,resolvedSourceActions,retentionContext,responseFormat:this.config.verificationResponseFormat,...(this.config.verificationResponseFormat==='json_schema'?{schema:verificationSchema.json_schema}:{})},coverage);
+    let plan=session.plan(req,proposal,facts,{base:this.config.llmBase,model:this.stageModel('verification'),effort:this.config.llmReasoningEffort,prompt,resolvedSourceActions,retentionContext,responseFormat:this.config.verificationResponseFormat,...(this.config.verificationResponseFormat==='json_schema'?{schema:verificationSchema.json_schema}:{})},coverage);
     if(plan.blockedFindings.length)return plan.blockedFindings;
-    const scope=plan.scope;
-    const counts={facts:scope.fact_indices.length,operations:scope.operation_indices.length,replacements:scope.replacements.length,messages:scope.message_indices.length,reused:plan.reused};
-    if(!counts.facts&&!counts.operations&&!counts.replacements&&!counts.messages)return session.evaluate(plan,{fact_checks:[],operation_checks:[],replacement_checks:[],message_checks:[]});
-    const data={...verificationInput(req,proposal,facts,omitted,scope),...(coverage?{SOURCE_COVERAGE_CANDIDATES:coverage.candidates.map(({slot,message,quote})=>({slot,message,quote}))}:{}),...(resolvedSourceActions.length?{RESOLVED_SOURCE_ACTIONS:resolvedSourceActions,EXISTING_ACTIVE_FACTS:retentionContext}:{})};
-    const input=JSON.stringify(named?namedVerificationInput(data):compact?{...data,VERIFICATION_PROTOCOL:coverage?'source-first-coverage-tuples-v1':COMPACT_VERIFICATION_PROTOCOL,PROPOSAL:{...data.PROPOSAL,facts:data.PROPOSAL.facts.map(f=>({...f,sources:f.sources.map((s,source_slot)=>({...s,source_slot}))}))},REPLACEMENT_TARGETS:scope.replacements.map((r,check_index)=>({...r,check_index}))}:data);let repair='';
+    let repair='';
     for(let attempt=0;attempt<2;attempt++){
+      signal.throwIfAborted();
+      const scope=plan.scope;
+      const counts={facts:scope.fact_indices.length,operations:scope.operation_indices.length,replacements:scope.replacements.length,messages:scope.message_indices.length,reused:plan.reused};
+      if(!counts.facts&&!counts.operations&&!counts.replacements&&!counts.messages)return session.evaluate(plan,{fact_checks:[],operation_checks:[],replacement_checks:[],message_checks:[]});
+      const data={...verificationInput(req,proposal,facts,omitted,scope),...(coverage?{SOURCE_COVERAGE_CANDIDATES:coverage.candidates.map(({slot,message,quote})=>({slot,message,quote}))}:{}),...(resolvedSourceActions.length?{RESOLVED_SOURCE_ACTIONS:resolvedSourceActions,EXISTING_ACTIVE_FACTS:retentionContext}:{})};
+      const input=JSON.stringify(named?namedVerificationInput(data):compact?{...data,VERIFICATION_PROTOCOL:coverage?'source-first-coverage-tuples-v1':COMPACT_VERIFICATION_PROTOCOL,PROPOSAL:{...data.PROPOSAL,facts:data.PROPOSAL.facts.map(f=>({...f,sources:f.sources.map((s,source_slot)=>({...s,source_slot}))}))},REPLACEMENT_TARGETS:scope.replacements.map((r,check_index)=>({...r,check_index}))}:data);
       let raw:unknown;
       try{raw=await this.json(prompt,input+repair,signal,{purpose:'verification',verification_format:named?NAMED_VERIFICATION_PROTOCOL:coverage?'source-first-coverage-tuples-v1':compact?COMPACT_VERIFICATION_PROTOCOL:'verbose',verification_scope:counts,trace:{user_id:req.user_id,request_id:req.request_id}});}
-      catch(error){if(error instanceof ServiceError&&error.code==='EVIDENCE_VALIDATION')throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not complete evidence verification within the request budget');}
+      catch(error){
+        if(error instanceof VerificationJsonError&&attempt===0&&!signal.aborted){
+          repair='\nPROTOCOL_REPAIR: '+JSON.stringify({error:'Previous verification was invalid JSON; no checks could be decoded.'})+'. Return valid JSON containing every check in CHECK_SCOPE. Do not change the proposal or guess a passing verdict.';
+          continue;
+        }
+        if(error instanceof ServiceError&&error.code==='EVIDENCE_VALIDATION')throw error;
+        throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not complete evidence verification within the request budget');
+      }
       try{const decoded=named?decodeNamedVerification(raw,proposal,scope,coverage):compact?decodeCompactVerification(raw,proposal,scope,coverage):undefined;return session.evaluate(plan,decoded?.canonical??raw,decoded?.protocolErrors);}
       catch(error){
-        // A malformed later check cannot erase an already validated rejection.
-        // Repair that proposal; merged checks must still cover the full proposal.
         if(error instanceof VerificationProtocolError&&error.findings.length)return error.findings;
-        // Retry protocol errors only. Semantic rejection returns findings directly
-        // and cannot be discarded by sampling a second checker verdict.
         if(!(error instanceof VerificationProtocolError)||attempt===1||signal.aborted)throw error;
-        repair='\nPROTOCOL_REPAIR: '+JSON.stringify({error:error.message,previous:raw})+'. Return exactly all checks requested by CHECK_SCOPE using the required dispositions and actual proposal/source references. Preserve semantic failures; do not change the proposal.';
+        plan=session.repairPlan(plan,raw,this.config.verificationFormat);
+        repair='\nPROTOCOL_REPAIR: '+JSON.stringify({error:error.message})+'. Return exactly the remaining checks in CHECK_SCOPE. Independently validated unchanged checks are retained by the server; do not return or replace them. Preserve semantic failures; do not change the proposal.';
       }
     }
     throw new ServiceError('EVIDENCE_VALIDATION','Incomplete evidence verification');
   }
 
   async json(system: string, user: string, signal: AbortSignal,context?:GenerationContext): Promise<unknown> {
-    try{return await continuationCall({system,user,context,base:this.config.llmBase,models:this.config.llmStageModels,model:this.config.llmModel,effort:this.config.llmReasoningEffort,responseFormat:this.config.verificationResponseFormat},signal,()=>this.gate.run(signal,()=>this.generateJson(system,user,signal,context)));}
+    try{
+      const verification=context?.purpose==='verification';
+      const result=await continuationCall({system,user,context,base:this.config.llmBase,models:this.config.llmStageModels,model:this.config.llmModel,effort:this.config.llmReasoningEffort,responseFormat:this.config.verificationResponseFormat,...(verification?{protocol:'verification-json-result-v1'}:{})},signal,async()=>{
+        try{
+          const value=await this.gate.run(signal,()=>this.generateJson(system,user,signal,context));
+          return verification?{status:'parsed',value}:value;
+        }catch(error){
+          // Cache a typed format failure as a replayable result, not a provider
+          // outage. Successful model output is wrapped too, so it cannot forge
+          // this envelope. Only verify() may consume its one protocol repair.
+          if(verification&&error instanceof SyntaxError)return {status:'invalid_json'};
+          throw error;
+        }
+      });
+      if(!verification)return result;
+      const packet=result as {status:'parsed'|'invalid_json';value?:unknown};
+      if(packet.status==='invalid_json')throw new VerificationJsonError();
+      return packet.value;
+    }
     catch(error){
-      // Syntax failure is a terminal protocol result, not a provider outage.
+      // Outside the typed verification envelope, syntax remains terminal.
       // Keep the private audit's invalid_json classification and never expose
       // raw output or invite an HTTP retry against an already closed ledger.
       if(error instanceof SyntaxError)throw new ServiceError('EVIDENCE_VALIDATION','Model returned invalid JSON; this preparation cannot be resumed');

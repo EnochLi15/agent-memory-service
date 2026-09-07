@@ -60,7 +60,8 @@ export function namedVerificationInput(data:any):any{
 export function decodeNamedVerification(raw:unknown,proposal:Extraction,scope:VerificationScope,coverage?:SourceCoverageWork){
  const errors:string[]=[],tuples:Record<string,unknown>={};
  const object=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Record<string,unknown>:{};
- if(Object.keys(object).some(k=>!(arrays as readonly string[]).includes(k)))errors.push('Unknown named verification field');
+ const unknown=Object.keys(object).filter(k=>!(arrays as readonly string[]).includes(k));
+ if(unknown.length)errors.push('Unknown named verification field: '+unknown.slice(0,8).map(k=>k.slice(0,64)).join(', '));
  const parseId=(value:unknown,kind:string,path:string)=>{
   if(typeof value==='string'&&new RegExp(`^${kind}:(0|[1-9][0-9]*)$`).test(value)){
    const n=Number(value.slice(kind.length+1));if(Number.isSafeInteger(n))return n;

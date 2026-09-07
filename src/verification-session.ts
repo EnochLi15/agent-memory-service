@@ -2,6 +2,8 @@ import {createHash} from 'node:crypto';
 import {ServiceError,type AddRequest,type Extraction,type Fact} from './types.js';
 import {forgetScopeContext,participantIndices,verificationIssues,VerificationProtocolError,type VerificationScope} from './verification.js';
 import type {SourceCoverageWork,SourceCoverageRow} from './source-coverage.js';
+import {recoverVerificationChecks} from './verification-recovery.js';
+import type {Config} from './config.js';
 
 const arrays=['fact_checks','operation_checks','replacement_checks','message_checks'] as const;
 type CheckArray=typeof arrays[number];
@@ -93,14 +95,29 @@ export class VerificationSession {
   this.#active=plan;return plan;
  }
 
+ repairPlan(plan:Plan,raw:unknown,format:Config['verificationFormat']):Plan{
+  if(this.#active!==plan)throw new ServiceError('EVIDENCE_VALIDATION','Verification session changed before protocol repair');
+  const partial=recoverVerificationChecks(raw,format,plan.req,plan.proposal,plan.scope,plan.sourceCoverage);
+  const cached=empty();for(const type of arrays)cached[type]=[...plan.cached[type],...partial[type]];
+  const keys=new Set(arrays.flatMap(type=>partial[type].map(c=>checkKey(type,c))));
+  const scope:VerificationScope={fact_indices:plan.scope.fact_indices.filter(i=>!keys.has(`fact_checks:${i}`)),operation_indices:plan.scope.operation_indices.filter(i=>!keys.has(`operation_checks:${i}`)),replacements:plan.scope.replacements.filter(c=>!keys.has(`replacement_checks:${c.fact_index}:${c.target_id}`)),message_indices:plan.scope.message_indices.filter(i=>!keys.has(`message_checks:${i}`))};
+  // Unknown envelope errors cannot disappear merely because all rows look valid.
+  if(!scope.fact_indices.length&&!scope.operation_indices.length&&!scope.replacements.length&&!scope.message_indices.length)return plan;
+  const next={...plan,scope,cached,reused:arrays.reduce((n,k)=>n+cached[k].length,0)};
+  // These passes are local to this retry. They enter no persistent certificate
+  // cache unless the final, complete merged response is validated successfully.
+  this.#active=next;return next;
+ }
+
  evaluate(plan:Plan,raw:unknown,protocolErrors:string[]=[]):string[]{
   if(this.#active!==plan)throw new ServiceError('EVIDENCE_VALIDATION','Verification session changed during an in-flight check');
   const merged=empty();
   if(!raw||typeof raw!=='object')throw new VerificationProtocolError('Missing structured verification arrays');
+  protocolErrors=[...protocolErrors];
   for(const type of arrays){
    const values=(raw as Record<string,unknown>)[type];
-   if(!Array.isArray(values))throw new VerificationProtocolError('Missing structured verification arrays');
-   merged[type]=[...values,...plan.cached[type]];
+   if(!Array.isArray(values))protocolErrors.push(`Missing structured ${type} array`);
+   merged[type]=[...(Array.isArray(values)?values:[]),...plan.cached[type]];
   }
   let findings:string[];
   try{findings=verificationIssues(merged,plan.req,plan.proposal,plan.sourceCoverage);if(protocolErrors.length)throw new VerificationProtocolError(protocolErrors[0]!,findings);}

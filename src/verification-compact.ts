@@ -29,7 +29,8 @@ export function decodeCompactVerification(raw:unknown,proposal:Extraction,scope:
  const canonical:Record<Name,Record<string,unknown>[]>=Object.fromEntries(arrayNames.map(k=>[k,[]])) as any;
  const protocolErrors:string[]=[];const invalid=(message:string)=>protocolErrors.push(message);
  const object=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Record<string,unknown>:{};
- if(Object.keys(object).some(k=>!arrayNames.includes(k as Name)))invalid('Unknown compact verification field');
+ const unknown=Object.keys(object).filter(k=>!arrayNames.includes(k as Name));
+ if(unknown.length)invalid('Unknown compact verification field: '+unknown.slice(0,8).map(k=>k.slice(0,64)).join(', '));
  for(const name of arrayNames){
   const values=object[name];if(!Array.isArray(values)){invalid(`Missing compact ${name}`);continue;}
   for(const [position,row] of values.entries()){

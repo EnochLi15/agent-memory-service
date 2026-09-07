@@ -45,6 +45,14 @@ export function messageSourceLinks(req:AddRequest,proposal:Extraction){
  }));
 }
 export function verificationIssues(raw:unknown,req:AddRequest,proposal:Extraction,sourceCoverage?:SourceCoverageWork):string[]{
+ return validateVerification(raw,req,proposal,sourceCoverage,true);
+}
+/** Validate supplied items in isolation for an ephemeral protocol repair only.
+ * This never certifies completeness; final commit still uses verificationIssues. */
+export function verificationItemIssues(raw:unknown,req:AddRequest,proposal:Extraction,sourceCoverage?:SourceCoverageWork):string[]{
+ return validateVerification(raw,req,proposal,sourceCoverage,false);
+}
+function validateVerification(raw:unknown,req:AddRequest,proposal:Extraction,sourceCoverage:SourceCoverageWork|undefined,complete:boolean):string[]{
  const out=raw as Record<string,unknown>;if(!out||!Array.isArray(out.fact_checks)||!Array.isArray(out.operation_checks)||!Array.isArray(out.replacement_checks)||!Array.isArray(out.message_checks))throw new VerificationProtocolError('Missing structured verification arrays');
  const issues:string[]=[],facts=new Set<number>(),operations=new Set<number>(),messages=new Set<number>(),replacements=new Set<string>();
  const invalid=(message:string):never=>{throw new VerificationProtocolError(message,[...issues]);};
@@ -95,7 +103,7 @@ export function verificationIssues(raw:unknown,req:AddRequest,proposal:Extractio
    }
   }
  }
- if(facts.size!==proposal.facts.length||operations.size!==proposal.operations.length||replacements.size!==expectedReplacements.size||messages.size!==expectedMessages.size)invalid('Incomplete verification coverage');
+ if(complete&&(facts.size!==proposal.facts.length||operations.size!==proposal.operations.length||replacements.size!==expectedReplacements.size||messages.size!==expectedMessages.size))invalid('Incomplete verification coverage');
  return issues;
 }
 /** Evidence nomination only: the independent message check decides the scope.
