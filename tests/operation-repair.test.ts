@@ -75,10 +75,21 @@ test('a complete personal-state message cannot disappear behind a later unrelate
  const p=await x.prepare(req,store.snapshot('s'),AbortSignal.timeout(1000));assert.equal(calls,2);assert.ok(p.facts.some((f:any)=>f.value==='$250 every two weeks'));
 }));
 
-test('offline retirement cannot turn an untyped experience bucket into a property-wide deletion',async()=>{
+test('offline retirement binds an untyped experience bucket by distinctive content word, never property-wide',async()=>{
  const x=new Extractor(configFromEnv({MEMORY_MODE:'offline'}),{} as any);
  const req={request_id:'offline-generic',user_id:'u',session_id:'s',messages:[{role:'user',content:'My default browser on my work laptop is Firefox. I had a bookmark sync issue with my old tablet. No need to track anything about the tablet.',timestamp:'2026-01-01T00:00:00Z'}]};
- await assert.rejects(x.prepare(req,{facts:[],tail:[],anchor:null,revision:0},AbortSignal.timeout(1000)),/untyped|bind/i);
+ const prepared=await x.prepare(req,{facts:[],tail:[],anchor:null,revision:0},AbortSignal.timeout(1000));
+ // Degraded no-track commits: the tablet experience is bound by its distinctive
+ // word and erased by value, the browser fact survives, nothing else is touched.
+ assert.equal(prepared.operations.length,1);
+ assert.equal(prepared.operations[0].boundary,'value');
+ assert.ok(prepared.facts.some((f:any)=>f.predicate==='experience'&&f.content.includes('tablet')));
+ const dir=mkdtempSync(join(tmpdir(),'offline-generic-'));const store=new TenantStore(dir,'u');
+ try{
+  store.commit(req,hash(JSON.stringify(req)),prepared,0);
+  assert.ok(store.facts().some((f:any)=>f.predicate==='experience'&&f.state==='erased'));
+  assert.ok(store.facts().some((f:any)=>f.state==='active'&&f.content.includes('Firefox')));
+ }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
 
 test('source recovery cannot redirect a same-chunk salary deletion to the following manager fact',async()=>{

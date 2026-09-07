@@ -56,8 +56,12 @@ export class TenantStore {
       CREATE TABLE IF NOT EXISTS markers (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS passages (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, body TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS passages_source ON passages(source_id);
-      CREATE VIRTUAL TABLE IF NOT EXISTS evidence_fts USING fts5(id UNINDEXED,text,tokenize='unicode61');
-      CREATE VIRTUAL TABLE IF NOT EXISTS passage_fts USING fts5(id UNINDEXED,text,tokenize='unicode61');
+      -- porter wraps unicode61: English terms fold to stems on BOTH sides of
+      -- MATCH (hobbies <-> hobby, painting <-> paintings), digits and CJK pass
+      -- through untouched. Existing unicode61 tables keep their tokenizer
+      -- (IF NOT EXISTS), so only fresh data directories gain the folding.
+      CREATE VIRTUAL TABLE IF NOT EXISTS evidence_fts USING fts5(id UNINDEXED,text,tokenize='porter unicode61');
+      CREATE VIRTUAL TABLE IF NOT EXISTS passage_fts USING fts5(id UNINDEXED,text,tokenize='porter unicode61');
     `);
     this.preparation=new PreparationLedger(this.db);
     const existing = this.meta('user_id');
@@ -201,7 +205,7 @@ export class TenantStore {
             rememberErasedQuotes(f);
             f.state='erased'; f.content='';f.value='';f.vector=null;f.source_quotes=[];f.entities=[];
           }else{
-            f.state=operation.type==='correct'?'retracted':'superseded';f.valid_to=source.timestamp;
+            f.state=operation.type==='correct'?'retracted':'superseded';f.valid_to=source.timestamp??null;
           }
           f.revision=revision;this.put(f);
         }
@@ -359,7 +363,7 @@ export class TenantStore {
       const current=new Map(this.facts().map(f=>[f.id,f]));
       const event=(type:MemoryEvent['type'],f:Pick<Fact,'subject'|'predicate'|'scope'|'content'>,sourceIds:string[],beforeIds:string[],afterIds:string[],position=0,actor:MemoryEvent['actor']='observation'):void=>{
         const source=inserted.filter(m=>sourceIds.includes(m.id)).sort((a,b)=>a.ordinal-b.ordinal)[0];if(!source)return;
-        events.push({id:'event-'+digest(`${req.user_id}\0${req.request_id}\0${events.length}`),type,actor,category:eventCategory(f),slot_hash:digest(slot(f)),source_ids:sourceIds,before_ids:beforeIds,after_ids:afterIds,ordinal:source.ordinal*10000000+position,observed_at:source.timestamp,time_basis:source.time_basis??'source',revision});
+        events.push({id:'event-'+digest(`${req.user_id}\0${req.request_id}\0${events.length}`),type,actor,category:eventCategory(f),slot_hash:digest(slot(f)),source_ids:sourceIds,before_ids:beforeIds,after_ids:afterIds,ordinal:source.ordinal*10000000+position,observed_at:source.timestamp!,time_basis:source.time_basis??'source',revision});
       };
       for(const f of prepared.facts){
         const id=mergedIds.get(f.id)??f.id;if(!current.has(id))continue;

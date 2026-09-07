@@ -1,4 +1,16 @@
-import type {AddRequest,ExtractedFact,TemporalEvidence} from './types.js';
+import type {AddRequest,ExtractedFact,Snapshot,TemporalEvidence} from './types.js';
+
+/** Fill absent per-message timestamps with deterministic synthetic ISO stamps,
+ * strictly increasing from the latest stored observation so ordering, date-based
+ * lifecycle arbitration and zod ingestion keep working. Synthetic stamps are
+ * ordering markers only: the caller flags those messages time_basis='ordering'. */
+export function normalizeMissingTimestamps(req:AddRequest,snapshot:Snapshot):void{
+ if(!req.messages.some(m=>m.timestamp===undefined))return;
+ const observed=[...snapshot.facts.map(f=>f.observed_at),...snapshot.tail.map(m=>m.timestamp),...req.messages.map(m=>m.timestamp)]
+  .filter((s):s is string=>!!s).map(Date.parse).filter(Number.isFinite);
+ const base=Math.max(Date.UTC(2000,0,1),...(observed.length?observed:[0]))+60_000;
+ for(const [i,m] of req.messages.entries())m.timestamp??=new Date(base+i*60_000).toISOString();
+}
 
 /** Present event time separately from observation time without inventing precision. */
 export function temporalEvidenceText(time:TemporalEvidence|undefined):string{
@@ -77,10 +89,13 @@ export function temporalExpression(text:string):string{
  const unique=found.filter((f,i)=>!found.some((other,j)=>j!==i&&other.start<=f.start&&other.end>=f.end&&(other.end-other.start>f.end-f.start||j<i)));
  return unique.length===1?unique[0]!.text:'';
 }
-export function messageAnchors(req:AddRequest,previous:string|null):{anchors:(string|null)[];last:string|null}{
+export function messageAnchors(req:AddRequest,previous:string|null,sourceTimestamped?:boolean[]):{anchors:(string|null)[];last:string|null}{
  let explicit=previous&&!/^\d{4}-\d\d-\d\dT/.test(previous)?previous:null;const anchors:(string|null)[]=[];
- for(const m of req.messages){explicit=m.content.match(/\[Session time:\s*([^\]]+)\]/i)?.[1]??explicit;anchors.push(explicit??m.timestamp);}
- return {anchors,last:explicit??req.messages.at(-1)?.timestamp??previous};
+ // A synthesized stamp orders messages; it must never pose as a real date that
+ // relative event expressions ("last year") could resolve against.
+ const stamp=(i:number):string|null=>sourceTimestamped?.[i]===false?'synthetic ordering':req.messages[i]?.timestamp??null;
+ for(const [i,m] of req.messages.entries()){explicit=m.content.match(/\[Session time:\s*([^\]]+)\]/i)?.[1]??explicit;anchors.push(explicit??stamp(i));}
+ return {anchors,last:explicit??stamp(req.messages.length-1)??previous};
 }
 export function normalizeFactTime(f:ExtractedFact,req:AddRequest,anchors:(string|null)[]):TemporalEvidence{
  const strip=(s:string):string=>s.replace(/\[Session time:[^\]]*\]/gi,'');

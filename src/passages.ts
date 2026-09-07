@@ -33,7 +33,7 @@ export function preparePassages(messages:StoredMessage[],facts:Fact[],operations
     // An operation is represented by a safe event, never a raw command echo.
     if([...controls,...operationSpans].some(s=>s.start<end&&s.end>start))continue;
     const linked=facts.filter(f=>f.source_spans?.some(s=>s.source_id===m.id&&s.start<end&&s.end>start));
-    result.push({id:'source-'+digest(`${m.id}\0${start}\0${end}`),source_id:m.id,speaker:named??m.role,external_id:m.external_id,fragments:[{start,end,text}],content:text,fact_ids:linked.map(f=>f.id),vector:null,observed_at:m.timestamp,time_basis:m.time_basis??'source',revision,state:'active'});
+    result.push({id:'source-'+digest(`${m.id}\0${start}\0${end}`),source_id:m.id,speaker:named??m.role,external_id:m.external_id,fragments:[{start,end,text}],content:text,fact_ids:linked.map(f=>f.id),vector:null,observed_at:m.timestamp!,time_basis:m.time_basis??'source',revision,state:'active'});
    }
   }
  }
