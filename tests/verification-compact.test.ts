@@ -10,6 +10,20 @@ const raw=()=>({fact_checks:[[0,true,true,0],[1,true,true,0]],operation_checks:[
 const m=()=>new Models(configFromEnv({MEMORY_VERIFICATION_FORMAT:'compact'}));
 const run=(model:Models,p=proposal(),state=new VerificationSession(),r=req)=>model.verify(p,r,[old] as any,[],AbortSignal.timeout(1000),state);
 
+test('null optional reasons pass positive checks without permitting null decisions or sources',async()=>{
+ const out:any=raw();out.fact_checks.forEach((r:any[])=>r.push(null));out.operation_checks[0].push(null);out.replacement_checks[0].push(null);
+ const model=m();model.json=async()=>out;assert.deepEqual(await run(model),[]);
+ out.fact_checks[0][3]=null;assert.ok(decodeCompactVerification(out,proposal(),scope()).protocolErrors.length);
+ out.fact_checks[0][3]=0;out.fact_checks[0][1]=null;assert.ok(decodeCompactVerification(out,proposal(),scope()).protocolErrors.length);
+});
+test('a rejection with null reason remains rejected and cannot be favorably resampled',async()=>{
+ for(const type of ['fact_checks','operation_checks','replacement_checks']){
+  const out:any=raw();out[type][0][1]=false;out[type][0].push(null);
+  const model=m(),session=new VerificationSession();let calls=0;model.json=async()=>{calls++;return out;};
+  const findings=await run(model,proposal(),session);assert.ok(findings.length);model.json=async()=>{calls++;return raw();};assert.deepEqual(await run(model,proposal(),session),findings);assert.equal(calls,1);
+ }
+});
+
 test('source-backed mixed coverage permits an explanation without dropping checks or weakening references',()=>{
  const p=proposal(),work=sourceCoverageWork(req,p),out:any=raw();
  out.message_checks[0]=[0,'represented',[0],[],[],'All claims represented.'];

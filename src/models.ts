@@ -18,6 +18,7 @@ import {VerificationSession} from './verification-session.js';
 import {COMPACT_VERIFICATION_PROMPT,COMPACT_VERIFICATION_PROTOCOL,COMPACT_VERIFICATION_RESPONSE_FORMAT,decodeCompactVerification} from './verification-compact.js';
 import {SOURCE_ERASURE_RESPONSE_FORMAT,SOURCE_QUOTE_REPAIR_RESPONSE_FORMAT} from './source-erasure.js';
 import {ERASURE_RESPONSE_FORMAT} from './erasure.js';
+import {parseModelJson} from './model-json.js';
 import {TRANSITION_RESPONSE_FORMAT} from './transitions.js';
 function audit(record:Record<string,unknown>):void {
   if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
@@ -100,9 +101,10 @@ export class Models {
         streamStarted=true;
         for await(const chunk of stream){refusalDetected ||= !!chunk.choices[0]?.delta?.refusal;content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
         if(!content||finish!=='stop'){signal.throwIfAborted();throw new ServiceError('MODEL_OUTPUT','Incomplete model output');}
-        const parsed=JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
-        saveTrace({attempt,outcome:'ok',output:parsed});
-        audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage,output_chars:content.length});return parsed;
+        const {value:parsed,trailingCommas}=parseModelJson(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));
+        const syntax=trailingCommas?{syntax_normalization:'trailing_commas_only',removed_commas:trailingCommas}:{};
+        saveTrace({attempt,outcome:'ok',output:parsed,...syntax,...(trailingCommas?{output_text:content}:{})});
+        audit({kind:'generation',...auditContext,...formatAudit,...syntax,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage,output_chars:content.length});return parsed;
       }catch(caught){const error=classifyStreamError(caught,streamStarted,finish,refusalDetected);const failure=modelFailure(error,signal,streamStarted,finish,refusalDetected);const cooldown=modelRateLimitDelay(error,Date.now(),attempt);if(cooldown!==null){this.gate.defer(cooldown);audit({kind:"generation_cooldown",purpose,model,delay_ms:cooldown,scope:"provider_credential_process",reason:"http_429"});}saveTrace({attempt,outcome:'error',output_text:content,...failure});audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,...failure});last=error;if(attempt+1===this.config.modelTransportAttempts)throw error;const delay=modelRetryDelay(error,signal,Date.now(),attempt);if(delay===null)throw error;audit({kind:'generation_retry',purpose,model,after_attempt:attempt,delay_ms:delay,reason:failure.error_category});await retryWait(delay,undefined,{signal});}
     }
     throw last;

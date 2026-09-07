@@ -4,6 +4,12 @@ import {extractionSchema} from '../dist/types.js';
 const fact=(value:string,index:number)=>({content:value,subject:'user',predicate:value,value,sources:[{index,quote:value}]});
 const base=()=>extractionSchema.parse({facts:[fact('unrelated',0),fact('retired',1),{...fact('derived',2),depends_on:['new:1']}],operations:[{type:'forget',subject:'user',predicate:'retired',target_ids:['new:1'],source:{index:3,quote:'forget retired'}}]});
 const all={fact_indices:[0,1,2],operation_indices:[0],source_indices:[0,1,2,3,4]};
+test('a sole answer object uses the same strict patch and scope validation',()=>{
+ const patch={fact_edits:[{index:0,changes:{value:'updated'}}]};
+ assert.deepEqual(applyRepair(base(),{answer:patch},all),applyRepair(base(),patch,all));
+ for(const raw of [{answer:patch,score:1},{answer:{answer:patch}},{answer:JSON.stringify(patch)},{answer:[]},{answer:{unrecognized:[]}}])assert.throws(()=>applyRepair(base(),raw,all));
+ assert.throws(()=>applyRepair(base(),{answer:patch},{...all,fact_indices:[]}),/unflagged/);
+});
 test('replacement groups distinguish a commitment from a backup name, other owners and scopes',()=>{
  const proposal=extractionSchema.parse({facts:[{...fact('Elara',0),predicate:'name_commitment',scope:'daughter name'}]});
  const existing=[
