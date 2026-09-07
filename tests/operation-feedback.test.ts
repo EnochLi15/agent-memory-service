@@ -44,3 +44,15 @@ test('protected scopes remain separate and source edits cannot resolve coordinat
  const problems=operationBindingProblems(p,pool);assert.deepEqual(problems[0].codes,['AMBIGUOUS_OPERATION']);assert.equal(problems[0].selected_target_groups.length,2);assert.deepEqual(problems[0].selected_target_groups.map(g=>g.scopeHash),['one','two']);assert.deepEqual(pool,before);
  p.operations[0].source.quote='A different source quote';assert.deepEqual(operationBindingProblems(p,pool),problems);
 });
+test('extraction and repair receive the same independent-user-event boundary as verification',async()=>{
+ const own=target('own-visit','user','visit','cafe','User visited the cafe with Rowan.'),pool=[...targets,own];let repairs=0,verified=0;
+ const rule='The user\'s own event of talking to or visiting with another person is not automatically that person\'s private property';
+ const models={json:async(system:string,input:string,_s:any,ctx:any)=>{
+  const x=JSON.parse(input);
+  if(ctx.purpose==='extraction'){assert.ok(system.includes(rule));return {facts:[],operations:[{...operation,target_ids:x.EXISTING_FACTS.filter((f:any)=>f.subject==='Rowan'||f.predicate==='visit').map((f:any)=>f.id)}]};}
+  repairs++;assert.ok(x.FACT_RULES.includes(rule));const problem=JSON.parse(x.REPAIR_FEEDBACK.slice(x.REPAIR_FEEDBACK.indexOf('{'),x.REPAIR_FEEDBACK.indexOf('. Reuse matching'))).operations[0];
+  return {operation_edits:[{index:0,remove:true}],append_operations:problem.selected_target_groups.filter((g:any)=>g.subject==='Rowan').map((g:any)=>({type:'forget',subject:g.subject,predicate:g.predicate,scope:g.scope,target_ids:g.target_ids,source:operation.source}))};
+ },verify:async(p:any)=>{verified++;assert.ok(p.operations.every((o:any)=>!o.target_ids.includes(own.id)));return [];},embedBatch:async()=>[]};
+ const p=await new Extractor(configFromEnv({MEMORY_MODE:'enhanced'}),models as any).prepare(req,{revision:1,facts:pool,tail:[],anchor:null} as any,AbortSignal.timeout(3000));assert.equal(repairs,1);assert.equal(verified,1);assert.ok(p.operations.every(o=>o.subject==='Rowan'));
+ const {VERIFICATION_SEMANTICS}=await import('../dist/verification.js');assert.ok(VERIFICATION_SEMANTICS.includes(rule));
+});
