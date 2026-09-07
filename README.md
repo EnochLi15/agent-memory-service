@@ -23,6 +23,8 @@ node --env-file=.env dist/server.js
 
 ## 稳定边界
 
+核验支持 `MEMORY_VERIFICATION_FORMAT=named`：模型输入输出使用具名对象及 `fact:…`、`msg:…`、`op:…` 等明确引用，服务端适配回原有证据、覆盖度与授权校验。`compact` 保留用于同预算对照，默认配置暂未切换。该开关不更改数据库格式、HTTP 接口、模型路由或修复预算；仍拒绝未知引用、不完整判定和不确定删除，明确否定不会被重新采样覆盖。
+
 ```mermaid
 flowchart LR
   Add[POST /add] --> Prepare[来源路由、抽取、核验、操作准备]

@@ -6,7 +6,7 @@ export interface Config {
   modelMinIntervalMs:number;
   writeContinuation:boolean;modelTransportAttempts:1|2|3;maxRepairRounds:1|2;extractionWorkers:number;sourceErasureWorkers:number;sourceErasureGrouped:boolean;
   extractionFormat:'flat'|'message_groups'|'source_refs';
-  verificationFormat:'verbose'|'compact';
+  verificationFormat:'verbose'|'compact'|'named';
   verificationResponseFormat:'json_object'|'json_schema';
   erasureBinding:boolean;sourceErasure:boolean;semanticTransitions:boolean;sourceOperations:boolean;sourceOperationHistory:boolean;sourceOperationBatches:boolean;sourceOperationRouting:boolean;sourceFirst:boolean;
   embeddingBase: string; embeddingModel: string; embeddingDigest: string | null; embeddingDimensions: number; embeddingSpace: string;
@@ -34,7 +34,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   if(env.MEMORY_SOURCE_OPERATION_HISTORY==='true'&&env.MEMORY_SOURCE_OPERATIONS!=='true')throw new Error('Historical source operations require source operations');
   if(env.MEMORY_SOURCE_OPERATION_BATCHES==='true'&&env.MEMORY_SOURCE_OPERATION_HISTORY!=='true')throw new Error('Batched source operations require source history');
   if(env.MEMORY_SOURCE_OPERATION_ROUTING==='true'&&env.MEMORY_SOURCE_OPERATION_BATCHES!=='true')throw new Error('Source routing requires batched source history');
-  if(env.MEMORY_SOURCE_FIRST==='true'&&(env.MEMORY_SOURCE_OPERATION_ROUTING!=='true'||env.MEMORY_SOURCE_INDEX==='false'||env.MEMORY_RAW_FALLBACK==='false'||env.MEMORY_EXTRACTION_FORMAT!=='source_refs'||env.MEMORY_VERIFICATION_FORMAT!=='compact'||['lexical','mem0'].includes(env.MEMORY_RETRIEVAL??'')))throw new Error('Source-first requires v9 routing, source references, compact verification and hybrid raw retrieval');
+  if(env.MEMORY_SOURCE_FIRST==='true'&&(env.MEMORY_SOURCE_OPERATION_ROUTING!=='true'||env.MEMORY_SOURCE_INDEX==='false'||env.MEMORY_RAW_FALLBACK==='false'||env.MEMORY_EXTRACTION_FORMAT!=='source_refs'||!['compact','named'].includes(env.MEMORY_VERIFICATION_FORMAT??'')||['lexical','mem0'].includes(env.MEMORY_RETRIEVAL??'')))throw new Error('Source-first requires v9 routing, source references, compact verification and hybrid raw retrieval');
   const stageModels:Config['llmStageModels']={};
   if(env.MEMORY_SOURCE_ERASURE_GROUPED==='true'&&(env.MEMORY_SOURCE_ERASURE!=='true'||env.MEMORY_MODE!=='enhanced'))throw new Error('Grouped source erasure requires enhanced source erasure');
   const sourceErasureWorkers=num('MEMORY_SOURCE_ERASURE_WORKERS',1);
@@ -53,10 +53,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   const extractionFormat=env.MEMORY_EXTRACTION_FORMAT??'flat';
   if(!['flat','message_groups','source_refs'].includes(extractionFormat))throw new Error('Invalid MEMORY_EXTRACTION_FORMAT');
   const verificationFormat=env.MEMORY_VERIFICATION_FORMAT??'verbose';
-  if(verificationFormat!=='verbose'&&verificationFormat!=='compact')throw new Error('Invalid MEMORY_VERIFICATION_FORMAT');
+  if(!['verbose','compact','named'].includes(verificationFormat))throw new Error('Invalid MEMORY_VERIFICATION_FORMAT');
   const verificationResponseFormat=env.MEMORY_VERIFICATION_RESPONSE_FORMAT??'json_object';
   if(!['json_object','json_schema'].includes(verificationResponseFormat))throw new Error('Invalid MEMORY_VERIFICATION_RESPONSE_FORMAT');
-  if(verificationResponseFormat==='json_schema'&&verificationFormat!=='compact')throw new Error('Strict verification schema requires compact format');
+  if(verificationResponseFormat==='json_schema'&&!['compact','named'].includes(verificationFormat))throw new Error('Strict verification schema requires compact or named format');
   for(const stage of ['extraction','verification','repair'] as const){
     const key=`MEMORY_${stage.toUpperCase()}_MODEL`,value=env[key];
     if(value!==undefined){if(!value.trim())throw new Error(`Invalid ${key}`);stageModels[stage]=value.trim();}
@@ -70,7 +70,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     relationMode:relationMode as Config['relationMode'],rerankPolicy:rerankPolicy as Config['rerankPolicy'],rerankFormat:rerankFormat as Config['rerankFormat'],
     writeContinuation:env.MEMORY_WRITE_CONTINUATION==='true',modelTransportAttempts,maxRepairRounds,extractionWorkers,sourceErasureWorkers,sourceErasureGrouped:env.MEMORY_SOURCE_ERASURE_GROUPED==='true',
     extractionFormat:extractionFormat as Config['extractionFormat'],
-    verificationFormat,
+    verificationFormat:verificationFormat as Config['verificationFormat'],
     verificationResponseFormat:verificationResponseFormat as Config['verificationResponseFormat'],
     sourceFirst:env.MEMORY_SOURCE_FIRST==='true',sourceOperationRouting:env.MEMORY_SOURCE_OPERATION_ROUTING==='true',sourceOperations:env.MEMORY_SOURCE_OPERATIONS==='true',sourceOperationHistory:env.MEMORY_SOURCE_OPERATION_HISTORY==='true',sourceOperationBatches:env.MEMORY_SOURCE_OPERATION_BATCHES==='true',
     erasureBinding:env.MEMORY_ERASURE_BINDING==='true',sourceErasure:env.MEMORY_SOURCE_ERASURE==='true',semanticTransitions:env.MEMORY_SEMANTIC_TRANSITIONS==='true',

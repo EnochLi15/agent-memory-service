@@ -51,3 +51,17 @@ test('erasure scope uses the verifier model and its own strict decision schema',
   assert.deepEqual(http.bodies[0].response_format.json_schema.schema.required,['decisions']);
  }finally{await http.close();}
 });
+
+test('named verification uses named schema on the real streaming model path',async()=>{
+ const reply={fact_checks:[{fact_id:'fact:0',supported:true,modality_supported:true,source_id:'fact:0/source:0',reason:null}],operation_checks:[],replacement_checks:[],message_checks:[{message_id:'msg:0',verdict:'represented',fact_ids:['fact:0'],operation_ids:[],passage_ids:[],quote:null,reason:null}]};
+ const http=await endpoint(()=>({output:reply}));
+ try{
+  const c=configFromEnv({MEMORY_VERIFICATION_FORMAT:'named',MEMORY_VERIFICATION_RESPONSE_FORMAT:'json_schema'});c.llmBase=http.base;
+  assert.deepEqual(await verify(new Models(c)),[]);
+  assert.equal(http.bodies[0].response_format.json_schema.name,'memory_verification_named_v1');
+  const input=JSON.parse(http.bodies[0].messages[1].content);
+  assert.deepEqual(input.CHECK_SCOPE.fact_ids,['fact:0']);assert.equal(input.PROPOSAL.facts[0].sources[0].source_id,'fact:0/source:0');
+  c.verificationResponseFormat='json_object';assert.deepEqual(await verify(new Models(c)),[]);
+  assert.deepEqual(http.bodies[1].response_format,{type:'json_object'});
+ }finally{await http.close();}
+});
