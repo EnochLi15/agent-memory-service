@@ -3,6 +3,7 @@ import type {Prepared} from './types.js';
 export interface Config {
   port: number; host: string; dataDir: string; mode: 'enhanced' | 'offline'; llmBase: string; llmKey: string; llmModel: string; llmReasoningEffort?:'low'|'medium'|'high';
   llmStageModels:Partial<Record<'extraction'|'verification'|'repair',string>>;
+  modelMinIntervalMs:number;
   writeContinuation:boolean;modelTransportAttempts:1|2|3;maxRepairRounds:1|2;extractionWorkers:number;sourceErasureWorkers:number;sourceErasureGrouped:boolean;
   extractionFormat:'flat'|'message_groups'|'source_refs';
   verificationFormat:'verbose'|'compact';
@@ -44,6 +45,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   if(extractionWorkers>1&&(env.MEMORY_MODE!=='enhanced'||!['message_groups','source_refs'].includes(env.MEMORY_EXTRACTION_FORMAT??'')))throw new Error('Parallel extraction requires enhanced grouped extraction');
   if(env.MEMORY_WRITE_CONTINUATION==='true'&&(env.MEMORY_MODE!=='enhanced'||env.MEMORY_EXPERIMENT_RAW_ONLY==='true'))throw new Error('Write continuation requires enhanced structured extraction');
   const modelTransportAttempts=num('MEMORY_MODEL_TRANSPORT_ATTEMPTS',2);
+  const modelMinIntervalMs=num('MEMORY_MODEL_MIN_INTERVAL_MS',0);
+  if(!Number.isInteger(modelMinIntervalMs)||modelMinIntervalMs>60000)throw new Error('Invalid MEMORY_MODEL_MIN_INTERVAL_MS');
   if(modelTransportAttempts!==1&&modelTransportAttempts!==2&&modelTransportAttempts!==3)throw new Error('Invalid MEMORY_MODEL_TRANSPORT_ATTEMPTS');
   const maxRepairRounds=num('MEMORY_MAX_REPAIR_ROUNDS',1);
   if(maxRepairRounds!==1&&maxRepairRounds!==2)throw new Error('Invalid MEMORY_MAX_REPAIR_ROUNDS');
@@ -63,7 +66,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     mode: env.MEMORY_MODE === 'enhanced' ? 'enhanced' : 'offline',
     llmBase: (env.MEMORY_LLM_BASE_URL ?? 'http://127.0.0.1:11434/v1').replace(/\/$/, ''), llmKey: env.MEMORY_LLM_API_KEY ?? '', llmModel: env.MEMORY_LLM_MODEL ?? 'gpt-5.4-mini',
     ...(effort?{llmReasoningEffort:effort as 'low'|'medium'|'high'}:{}),
-    llmStageModels:stageModels,
+    llmStageModels:stageModels,modelMinIntervalMs,
     relationMode:relationMode as Config['relationMode'],rerankPolicy:rerankPolicy as Config['rerankPolicy'],rerankFormat:rerankFormat as Config['rerankFormat'],
     writeContinuation:env.MEMORY_WRITE_CONTINUATION==='true',modelTransportAttempts,maxRepairRounds,extractionWorkers,sourceErasureWorkers,sourceErasureGrouped:env.MEMORY_SOURCE_ERASURE_GROUPED==='true',
     extractionFormat:extractionFormat as Config['extractionFormat'],

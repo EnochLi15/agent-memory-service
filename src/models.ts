@@ -1,6 +1,7 @@
 import {continuationCall} from './write-continuation.js';
 import {setTimeout as retryWait} from 'node:timers/promises';
-import {modelRetryDelay,classifyStreamError} from './model-retry.js';
+import {modelRetryDelay,modelRateLimitDelay,classifyStreamError} from './model-retry.js';
+import {sharedModelGate,ModelGate} from './model-gate.js';
 import {sourceCoverageWork,SOURCE_COVERAGE_PROMPT} from './source-coverage.js';
 // Adapted from mem0 TS llms/openai.ts and embeddings/ollama.ts at dae67f7.
 // Changes: bounded cancellation, explicit model, no automatic downloads, true batch embed,
@@ -26,7 +27,9 @@ type GenerationContext={source_erasure_batch?:import('./source-erasure-execution
 
 export class Models {
   private client: OpenAI;
+  private gate:ModelGate;
   constructor(private config: Config) {
+    this.gate=sharedModelGate(config.llmBase,config.llmKey,config.modelMinIntervalMs);
     this.client = new OpenAI({ apiKey: config.llmKey || 'local', baseURL: config.llmBase, maxRetries: 0, timeout: config.addTimeout });
   }
   private stageModel(purpose:GenerationPurpose):string{return purpose==='rerank'?this.config.llmModel:this.config.llmStageModels[purpose==='erasure_binding'||purpose==='source_erasure'||purpose==='source_erasure_repair'||purpose==='state_transition'||purpose==='source_operation'||purpose==='source_operation_screen'||purpose==='source_operation_closure'||purpose==='source_operation_route'?'verification':purpose]??this.config.llmModel;}
@@ -64,7 +67,7 @@ export class Models {
   }
 
   async json(system: string, user: string, signal: AbortSignal,context?:GenerationContext): Promise<unknown> {
-    return continuationCall({system,user,context,base:this.config.llmBase,models:this.config.llmStageModels,model:this.config.llmModel,effort:this.config.llmReasoningEffort,responseFormat:this.config.verificationResponseFormat},signal,()=>this.generateJson(system,user,signal,context));
+    return continuationCall({system,user,context,base:this.config.llmBase,models:this.config.llmStageModels,model:this.config.llmModel,effort:this.config.llmReasoningEffort,responseFormat:this.config.verificationResponseFormat},signal,()=>this.gate.run(signal,()=>this.generateJson(system,user,signal,context)));
   }
   private async generateJson(system:string,user:string,signal:AbortSignal,context?:GenerationContext):Promise<unknown>{
     // Streaming prevents idle gateway disconnects during long structured generations.
@@ -80,6 +83,7 @@ export class Models {
     const model=this.stageModel(purpose),structured=['verification','erasure_binding','source_erasure','source_erasure_repair','state_transition'].includes(purpose)&&this.config.verificationResponseFormat==='json_schema';
     const formatAudit=['verification','erasure_binding','source_erasure','source_erasure_repair','state_transition'].includes(purpose)?{verification_response_format:structured?'json_schema':'json_object'}:{};let last:unknown;
     for(let attempt=0;attempt<this.config.modelTransportAttempts;attempt++){
+      await this.gate.startAttempt(signal);
       const started=performance.now();let usage:unknown=null,content='',finish:string|null=null,streamStarted=false,refusalDetected=false;
       try{
         const stream=await this.client.chat.completions.create({
@@ -92,7 +96,7 @@ export class Models {
         const parsed=JSON.parse(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')) as unknown;
         saveTrace({attempt,outcome:'ok',output:parsed});
         audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage,output_chars:content.length});return parsed;
-      }catch(caught){const error=classifyStreamError(caught,streamStarted,finish,refusalDetected);const failure=modelFailure(error,signal,streamStarted,finish,refusalDetected);saveTrace({attempt,outcome:'error',output_text:content,...failure});audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,...failure});last=error;if(attempt+1===this.config.modelTransportAttempts)throw error;const delay=modelRetryDelay(error,signal,Date.now(),attempt);if(delay===null)throw error;audit({kind:'generation_retry',purpose,model,after_attempt:attempt,delay_ms:delay,reason:failure.error_category});await retryWait(delay,undefined,{signal});}
+      }catch(caught){const error=classifyStreamError(caught,streamStarted,finish,refusalDetected);const failure=modelFailure(error,signal,streamStarted,finish,refusalDetected);const cooldown=modelRateLimitDelay(error,Date.now(),attempt);if(cooldown!==null){this.gate.defer(cooldown);audit({kind:"generation_cooldown",purpose,model,delay_ms:cooldown,scope:"provider_credential_process",reason:"http_429"});}saveTrace({attempt,outcome:'error',output_text:content,...failure});audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,...failure});last=error;if(attempt+1===this.config.modelTransportAttempts)throw error;const delay=modelRetryDelay(error,signal,Date.now(),attempt);if(delay===null)throw error;audit({kind:'generation_retry',purpose,model,after_attempt:attempt,delay_ms:delay,reason:failure.error_category});await retryWait(delay,undefined,{signal});}
     }
     throw last;
   }

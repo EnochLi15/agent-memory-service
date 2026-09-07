@@ -20,6 +20,21 @@ export function classifyStreamError(error:unknown,started:boolean,finish:string|
 export function transientModelError(error:unknown):boolean{
  return error instanceof InterruptedProviderStream||error instanceof OpenAI.APIConnectionError||error instanceof OpenAI.APIError&&error.status!==undefined&&([408,409,429].includes(error.status)||error.status>=500&&error.status<=599);
 }
+/** Share a rate-limit cooldown even when this request has exhausted retries.
+ * A long provider hint is retained for other callers; their own deadlines can
+ * cancel waiting. It never permits this request extra attempts. */
+export function modelRateLimitDelay(error:unknown,now=Date.now(),attempt=0):number|null{
+ if(!(error instanceof OpenAI.APIError)||error.status!==429)return null;
+ const headers=error.headers;
+ const ms=headers?.get('retry-after-ms'),seconds=headers?.get('retry-after');
+ if(ms&&/^\d+(?:\.\d+)?$/.test(ms.trim())&&Number.isFinite(Number(ms)))return Number(ms);
+ if(seconds){
+  if(/^\d+(?:\.\d+)?$/.test(seconds.trim())&&Number.isFinite(Number(seconds)*1000))return Number(seconds)*1000;
+  const date=/GMT$/i.test(seconds.trim())?Date.parse(seconds):NaN;
+  if(Number.isFinite(date))return Math.max(0,date-now);
+ }
+ return Math.min(5000,2000*2**attempt);
+}
 /** Transport retries remain under the original caller signal and configured limit.
  * Refuse long provider waits rather than retrying earlier than requested. */
 export function modelRetryDelay(error:unknown,signal:AbortSignal,now=Date.now(),attempt=0):number|null{

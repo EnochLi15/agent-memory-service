@@ -7,7 +7,9 @@ test('failure audit distinguishes HTTP rejection, truncated output and filtered 
  const previous={trace:process.env.MEMORY_MODEL_TRACE,audit:process.env.MEMORY_MODEL_AUDIT};let mode='http';
  const server=createServer(async(req,res)=>{
   for await(const _ of req){}
-  if(mode==='http'){res.writeHead(429,{'content-type':'application/json','x-request-id':key});res.end(JSON.stringify({error:{message:key,type:'rate_limit_error',code:'rate_limit_exceeded'}}));return;}
+  // Keep this audit fixture within its 1s deadline; cooldown/deadline behavior
+  // is covered independently by model-gate.test.ts.
+  if(mode==='http'){res.writeHead(429,{'content-type':'application/json','x-request-id':key,'retry-after-ms':'20'});res.end(JSON.stringify({error:{message:key,type:'rate_limit_error',code:'rate_limit_exceeded'}}));return;}
   res.writeHead(200,{'content-type':'text/event-stream'});
   const finish=mode==='filtered'?'content_filter':mode==='length'?'length':null;
   res.end('data: '+JSON.stringify({choices:[{index:0,delta:{content:'{"facts":'},finish_reason:finish}]})+'\n\ndata: [DONE]\n\n');
