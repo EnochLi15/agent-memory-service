@@ -17,6 +17,8 @@ cp -n .env.example .env
 node --env-file=.env dist/server.js
 ```
 
+也可使用 `npm start`（已编译运行）、`npm run dev`（源码变化自动编译重启）、`npm run debug`（自动重启并开放本机9229调试端口）。三个命令自动读取本仓库 `.env`，不需要 Docker 或 eval。调试支持 TypeScript source map；编译包含 SQLite Worker，失败时不会继续运行旧服务。Ctrl+C 停止并保留数据。
+
 `.env.example` 与工作区 `configs/release-enhanced.env` 保持一致。增强写入使用gpt-5.5，默认辅助模型gpt-5.4-mini；本地Ollama的nomic-embed-text为768维，digest固定在配置中。服务不自动下载模型。离线部署使用工作区独立的 `configs/release-offline.env`，能力与增强模式不同，数据卷也分开。
 
 ## 稳定边界

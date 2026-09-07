@@ -10,7 +10,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import tsx --test tests/*.test.ts",
-    "start": "node dist/server.js"
+    "start": "node --env-file-if-exists=.env --enable-source-maps dist/server.js",
+    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
+    "debug": "node --env-file-if-exists=.env scripts/dev.mjs --debug"
   },
   "dependencies": {
     "fastify": "5.12.3",
