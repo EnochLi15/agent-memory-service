@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import {sourceFormatFor,type Config} from './config.js';
 import { Models } from './models.js';
 import { EXTRACTION_PROMPT } from './prompts.js';
-import { factId, addSchema, extractionSchema, canonical, slot, propertyFamily, replacementMatches, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation, type StoredMessage } from './types.js';
+import { factId, addSchema, extractionSchema, canonical, slot, propertyFamily, replacementMatches, sameSlot, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation, type StoredMessage } from './types.js';
 import {bindingCandidates,resolveOperationTargets} from './binding.js';
 import { entities, overlap, tokens, speakerPrefix } from './text.js';
 import {preparePassages,sourceSpans} from './passages.js';
@@ -21,7 +21,7 @@ import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,replac
 import {sourceErasureWork} from './source-erasure.js';
 import {executeSourceErasure} from './source-erasure-execution.js';
 import {executeGroupedSourceErasure} from './source-erasure-grouped.js';
-import {erasureWork,erasureInput,decodeErasure,ERASURE_PROMPT} from './erasure.js';
+import {erasureWork,erasureInput,decodeErasure,ERASURE_PROMPT,containsValue,factContainsValue,valueWords,mentionsTokens} from './erasure.js';
 import {transitionWork,transitionInput,decodeTransitions,TRANSITION_PROMPT} from './transitions.js';
 
 export function hash(s: string): string { return createHash('sha256').update(s).digest('hex'); }
@@ -50,9 +50,42 @@ export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction 
         continue;
       }
       if (span.intent==='forget' && (message.role === 'user'||named)) {
+        const mirror=anaphoricMirror(span,body,index,result.operations,snapshot.facts);
+        if(mirror){
+          // "Just remove all of that." restates the command the same message
+          // already made; it cannot bind alone, so it mirrors that operation's
+          // target and keeps its own obligation covered.
+          result.operations.push({type:'forget',target_ids:[...mirror.target_ids],subject:mirror.subject,predicate:mirror.predicate,scope:mirror.scope,value:mirror.value,boundary:mirror.boundary,source:{index,quote},reason:mirror.reason});
+          continue;
+        }
+        const coveredIds=new Set(result.operations.filter(o=>o.type==='forget').flatMap(o=>o.target_ids));
+        const narrative=narrativeForget(quote,snapshot.facts,req,index,coveredIds);
+        if(narrative){
+          const first=narrative.targets[0]!;
+          result.operations.push({type:'forget',target_ids:narrative.targets.map(f=>f.id).filter(Boolean),subject:first.subject,predicate:first.predicate,scope:first.scope,value:narrative.value,boundary:'value',source:{index,quote},reason:narrative.descriptor||first.predicate});
+          // News told alongside the command ("his doctor switched him to a new
+          // medication, so you can discard…") precedes the imperative and stays
+          // memorable; only the command itself is consumed by the forget span.
+          const at=quote.search(IMPERATIVE);
+          if(at>0){
+            const prefix=quote.slice(0,at).replace(/[\s,;:—–]+$/,'').trim();
+            if(prefix.split(/\s+/).length>=4&&/\b(?:he|she|they|his|her|him|them)\b/iu.test(prefix)&&!/[?？]$/.test(prefix))
+              result.facts.push({content:`${subject}: ${prefix}`,subject,predicate:'experience',value:prefix,scope:'',kind:'event',modality:'confirmed',cardinality:'multiple',time_text:'',valid_from:null,valid_to:null,sources:[{index,quote:prefix}],supersedes:[],depends_on:[]});
+          }
+          continue;
+        }
         const available=[...snapshot.facts.filter(f=>f.predicate!=='memory_operation'),...result.facts.map((f,i)=>({...f,id:`new:${i}`,state:'active' as const}))];
         const relevant = available.filter(f => f.state !== 'erased' && overlap(quote, `${f.subject} ${f.predicate} ${f.value} ${f.content}`) > .12);
-        const valueExact = relevant.filter(f => f.value && canonical(quote).includes(canonical(f.value)));
+        let valueExact = relevant.filter(f => f.value && canonical(quote).includes(canonical(f.value)));
+        // A same-literal collision across different properties must not all die
+        // with one named property: when the instruction names a property ("my
+        // manager"), a value match alone cannot pull an independent slot into
+        // the deletion. Bare-entity deletions keep their whole-record scope.
+        if(new Set(valueExact.map(f=>`${f.subject}|${f.predicate}`)).size>1){
+          const valueTokens=new Set(valueExact.flatMap(f=>tokens(f.value??'')));
+          const named=valueExact.filter(f=>tokens(quote).some(t=>t.length>=2&&!valueTokens.has(t)&&tokens(`${f.subject} ${f.predicate}`).includes(t)));
+          if(named.length&&named.length<valueExact.length)valueExact=named;
+        }
         const target = valueExact.length ? valueExact : relevant;
         const propertyWords = quote.match(/(?:my|我的)\s*([\p{L}\s]{1,35})/u)?.[1] ?? '';
         const propertyMatches=target.filter(f=>/code|pin|密码|编号/i.test(quote)?/code|pin|密码|编号/i.test(f.predicate):false);
@@ -68,9 +101,26 @@ export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction 
             }
           }
           // Degraded ingest: unbindable offline operations are skipped, never 5xx.
+          // Before skipping, a definite noun-phrase unit may still name the
+          // target the property paths could not type.
+          const definite=theNounForget(quote,snapshot.facts);
+          if(definite){
+            const first=definite.targets[0]!;
+            result.operations.push({type:'forget',target_ids:definite.targets.map(f=>f.id).filter(Boolean),subject:first.subject,predicate:first.predicate,scope:first.scope,value:definite.value,boundary:'value',source:{index,quote},reason:'Definite phrase binding'});
+            continue;
+          }
           continue;
         }
-        if(new Set(typed.map(f=>`${f.subject}|${f.scope}`)).size>1 || (new Set(typed.map(f => `${f.subject}|${f.predicate}`)).size > 1 && !valueExact.length)) continue;
+        if(new Set(typed.map(f=>`${f.subject}|${f.scope}`)).size>1 || (new Set(typed.map(f => `${f.subject}|${f.predicate}`)).size > 1 && !valueExact.length)){
+          // The untyped mix may still share one definite phrase unit.
+          const definite=theNounForget(quote,snapshot.facts);
+          if(definite){
+            const first=definite.targets[0]!;
+            result.operations.push({type:'forget',target_ids:definite.targets.map(f=>f.id).filter(Boolean),subject:first.subject,predicate:first.predicate,scope:first.scope,value:definite.value,boundary:'value',source:{index,quote},reason:'Definite phrase binding'});
+            continue;
+          }
+          continue;
+        }
         // Generic experience is a catch-all bucket, not a user property. A
         // property-wide deletion marker would erase unrelated experiences, so a
         // degraded no-track instruction binds by distinctive content word
@@ -112,7 +162,9 @@ export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction 
       }
       const tentative = /\b(plan|planning|might|maybe|possibly|tentative|considering|thinking (?:about|of)|next month|next quarter|not finalized|not yet official|applied for)\b|计划|可能|打算|考虑|未确定|没确定/.test(quote.toLowerCase());
       // Generic question/tutorial text is not evidence of a personal state.
-      if (predicate === 'experience' && !/\b(I|my|we|our)\b|我|我们/iu.test(quote)) continue;
+      // Third-person statements about named participants still are: "He moved
+      // to a firm in Vancouver" is an update the user just authorized.
+      if (predicate === 'experience' && !/\b(I|my|we|our)\b|我|我们/iu.test(quote) && !/\b(?:he|she|they|his|her|him|them)\b/iu.test(quote) && !/\b[A-Z][a-z]+\s+[A-Z][a-z]+\b/.test(quote)) continue;
       if (predicate === 'experience' && /^(?:Can |Could |How |What |Why |Please explain)|[?？]$/i.test(quote)) continue;
       result.facts.push({ content: `${subject}: ${quote}`, subject, predicate, value, scope: '', kind: predicate === 'experience' ? 'event' : predicate === 'hobby' ? 'preference' : 'fact', modality: tentative ? 'tentative' : 'confirmed', cardinality, depends_on: [], time_text: quote.match(/yesterday|last \w+|next \w+|昨天|下个月|去年/i)?.[0] ?? '', valid_from: null, valid_to: null, sources: [{ index, quote }], supersedes: [] });
     }
@@ -121,6 +173,123 @@ export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction 
 }
 
 const operationStop=new Set('i my me we our you your user assistant the a an is are was were be been it that this those these to of for from with on in at and or but not no do does did have has had please remember forget delete remove store memory information fact previous current actual old new value need want told say said again really completely'.split(' '));
+// ---------- Narrative forget binding ----------
+// A deletion instruction usually names a semantic unit, not a stored
+// sentence: "please forget the Tucson detail", "you can discard the
+// cetirizine detail", "remove him from my work contacts". Binding by that
+// unit lets every echo — the instruction message, an assistant confirmation,
+// a differently-worded replay — be suppressed at token granularity, while a
+// retention clause ("Everything else about Portland should stay") fences its
+// tokens off the deletion.
+const IMPERATIVE=/(?:^|[,;:—–]\s*|\b(?:so|well|actually|now)\s+,?\s*)(?:you\s+(?:can|could|should|may|might)\s+(?:go\s+ahead\s+and\s+|just\s+|simply\s+)?|please\s+|kindly\s+)?(?:forget|remove|delete|discard|erase)\b/iu;
+function forgetPhrase(quote:string):string{
+  const m=quote.match(/\b(?:forget|remove|delete|discard|erase)\s+(?:the\s+|any\s+|that\s+|those\s+)?(?:(?:detail|part|info(?:rmation)?|record|entry|mention|note|idea|timeline|quote|figure)s?\s+(?:about|of|on|regarding)\s+)?([\p{L}\p{N}][^,;.!?—–]{1,80})/iu);
+  // Only a named-information shape ("the Tucson detail", "the detail about
+  // how many…") binds by phrase. Plain property deletions ("remove my
+  // access code", "forget my manager Iris") keep their existing paths.
+  if(!m||!/\b(?:detail|part|info(?:rmation)?|record|entry|mention|note|idea|timeline|quote|figure)s?\b/iu.test(m[0]))return '';
+  let core=m[1]!.trim();
+  core=core.replace(/^(?:my|our|their|his|her|the)\s+/iu,'').trim();
+  core=core.replace(/\s+(?:entirely|completely|anymore|now|instead|please)$/iu,'').trim();
+  core=core.replace(/\s+(?:detail|part|info(?:rmation)?|record|entry|mention|note|idea|timeline|quote|figure)s?$/iu,'').trim();
+  // "the cetirizine from your records" names the value before a trailing
+  // prepositional tail; the unit itself ends at "from".
+  core=core.split(/\s+from\s+/iu)[0]!.trim();
+  core=core.replace(/^(?:how\s+many|how\s+much)\s+/iu,'').trim();
+  return core;
+}
+function narrativeForget(quote:string,facts:Fact[],req:AddRequest,index:number,coveredIds:Set<string>):{targets:Fact[];value:string;descriptor:string}|null{
+  const phrase=forgetPhrase(quote);
+  const pronoun=quote.match(/\b(?:remove|delete|erase)\s+(him|her|them)\b/iu)?.[1];
+  if(!phrase&&!pronoun){
+    // A verb-less retirement sentence ("I don't need that $240 figure stored
+    // anymore") names its target by number when no imperative carries it.
+    // Facts an earlier command in the same message already bound stay out:
+    // a second operation on them would carry a different deletion boundary.
+    const numeral=valueWords(quote).find(t=>/^\d{2,}$/.test(t));
+    if(!numeral)return null;
+    const matched=facts.filter(f=>f.state!=='erased'&&!coveredIds.has(f.id)&&mentionsTokens(`${f.content} ${f.value}`,[numeral]));
+    if(!matched.length)return null;
+    const first=matched[0]!;
+    const targets=matched.filter(f=>f.subject===first.subject&&f.scope===first.scope);
+    return targets.length?{targets,value:numeral,descriptor:''}:null;
+  }
+  const descriptor=quote.match(/\b(?:my|our)\s+([\p{L}\p{N} ]{1,40}?)(?=\s+(?:is\s+|are\s+)?(?:not\s+)?(?:stored|remembered|kept|on\s+file)\b|\s+anymore\b)/iu)?.[1]?.trim()??'';
+  if(pronoun){
+    // The pronoun resolves to the nearest named person in the chunk. Only
+    // records that already existed carry the stale relation; news told in
+    // this same message ("He moved to a firm in Vancouver") is an update,
+    // not the removed membership, so the boundary stays on the old record.
+    const context=req.messages.slice(Math.max(0,index-3),index+1).map(m=>m.content).join(' ');
+    const name=[...context.matchAll(/\b([A-Z][a-z]{1,15}(?:\s+[A-Z][a-z]{1,15})+)\b/g)].map(m=>m[1]!).pop();
+    if(!name)return null;
+    const matched=facts.filter(f=>f.state!=='erased'&&mentionsTokens(`${f.content} ${f.value}`,valueWords(name)));
+    if(!matched.length)return null;
+    // One operation must carry one subject/scope coordinate set.
+    const first=matched[0]!;
+    const targets=matched.filter(f=>f.subject===first.subject&&f.scope===first.scope);
+    return targets.length?{targets,value:'',descriptor:''}:null;
+  }
+  if(phrase.split(/\s+/).length>8)return null;
+  const protect=new Set<string>();
+  for(const m of quote.matchAll(/\b(?:everything|all)(?:\s+else)?\s+about\s+([\p{L}\p{N} ]{1,30}?)(?=\s+(?:should\s+)?(?:stay|remain|be\s+kept|be\s+intact))/giu))for(const t of valueWords(m[1]!))protect.add(t);
+  const matched=facts.filter(f=>f.state!=='erased'&&mentionsTokens(`${f.content} ${f.value}`,valueWords(phrase))&&!(protect.size&&valueWords(f.value).length>0&&valueWords(f.value).every(w=>protect.has(w))));
+  if(!matched.length)return null;
+  // One operation must carry one subject/scope coordinate set.
+  const first=matched[0]!;
+  const targets=matched.filter(f=>f.subject===first.subject&&f.scope===first.scope);
+  if(!targets.length)return null;
+  const valueFree=descriptor&&!mentionsTokens(descriptor,valueWords(phrase));
+  return {targets,value:phrase,descriptor:valueFree?descriptor:''};
+}
+// A command sentence is often followed by an emphatic restatement whose only
+// object is anaphoric ("The $58,500 figure, just remove it entirely.",
+// "Just remove all of that."). Such a tail cannot name its own target; when
+// the same message already bound one, the tail restates that exact command.
+const ANAPHORIC_TAIL=/^(?:[\p{L}\p{N}$,.'’%()\s-]{1,40}?[,，]\s*)?(?:just\s+|simply\s+|please\s+|kindly\s+|now\s+|go\s+ahead\s+and\s+)*(?:remove|delete|erase|discard|forget)\s+(?:it|that|those|them|all\s+of\s+(?:that|it)|everything)\b(?:\s+(?:entirely|completely|anymore|now|too|as\s+well))*(?:\s+from\s+[^.!?。！]{1,60})?[.!?。！]?$/iu;
+function anaphoricMirror(span:{start:number;quote:string},body:string,index:number,ops:Operation[],facts:Fact[]):Operation|null{
+  if(!ops.length)return null;
+  const spanNumbers=[...new Set(span.quote.match(/\d{2,}/g)??[])];
+  const pure=ANAPHORIC_TAIL.test(span.quote.replace(/\s+/g,' ').trim());
+  if(!pure&&!spanNumbers.length)return null;
+  // A pure anaphoric tail restates the nearest earlier command; a numbered
+  // sentence mirrors only an operation whose erased target or value echoes
+  // that number, so a distinct named command never inherits a different
+  // target.
+  let best:Operation|null=null;let bestKey='';
+  for(const o of ops){
+    if(o.type!=='forget'||o.source.index!==index||!(o.value||o.boundary==='property'))continue;
+    const pos=body.indexOf(o.source.quote);
+    if(pos<0||pos+o.source.quote.length>span.start)continue;
+    const targetText=o.target_ids.map(id=>facts.find(f=>f.id===id)).map(f=>f?`${f.content} ${f.value}`:'').join(' ');
+    // Token-exact only: "240" must never echo a "1240" target — a substring
+    // of one number is not the same number as the command named.
+    const echoed=spanNumbers.some(n=>valueWords(`${o.value??''} ${o.source.quote} ${targetText}`).includes(n));
+    if(!pure&&!echoed)continue;
+    const key=`${echoed?1:0}${String(pos).padStart(6,'0')}`;
+    if(key>bestKey){best=o;bestKey=key;}
+  }
+  return best;
+}
+// Last-chance binding for a definite noun-phrase unit the wrapper gate does
+// not name ("forget the L6 comp band floor I mentioned"). It runs only after
+// the ordinary property paths found nothing, so the alternative was a
+// rejected write anyway; possessive property deletions never reach it.
+function theNounForget(quote:string,facts:Fact[]):{targets:Fact[];value:string}|null{
+  const m=quote.match(/\b(?:forget|remove|delete|discard|erase)\s+the\s+([\p{L}\p{N}][^,;.!?—–]{1,60})/iu);
+  if(!m)return null;
+  let core=m[1]!.trim();
+  if(/\b(?:my|our|his|her|their|your)\b/iu.test(core))return null;
+  core=core.replace(/\s+\bI\s+(?:mentioned|said|told you|shared|noted|added)\b.*$/iu,'').trim();
+  core=core.split(/\s+(?:that|which)\s+(?:I|we|you)\b/iu)[0]!.trim();
+  const words=core.split(/\s+/);
+  if(words.length<2||words.length>8)return null;
+  const matched=facts.filter(f=>f.state!=='erased'&&mentionsTokens(`${f.content} ${f.value}`,valueWords(core)));
+  if(!matched.length)return null;
+  const first=matched[0]!;
+  const targets=matched.filter(f=>f.subject===first.subject&&f.scope===first.scope);
+  return targets.length?{targets,value:core}:null;
+}
 function groundedOperation(o:Operation,req:AddRequest,facts:Fact[]):boolean {
   if(!o.target_ids.length)return true;
   const context=req.messages.slice(Math.max(0,o.source.index-3),o.source.index+1).map(m=>m.content).join(' ');
@@ -452,14 +621,22 @@ export class Extractor {
     if(useErasure){
       const work=erasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[],this.config.sourceErasure?[...(snapshot.erasureSources??[]),...messages]:[]);
       if(work.candidates.length){
-        // Write success over write perfection: without semantic binding every
-        // candidate still repeats a deleted value, so erase all of them rather
-        // than fail the request. Leakage is the judged failure; the degraded
-        // marker keeps the choice auditable.
+        // Write success over write perfection, but never a silent independent
+        // deletion: without semantic binding only same-slot echoes and records
+        // sharing the erased target's sources die with it. A cross-slot record
+        // survives the outage as a retained (unverified) neighbor; the degraded
+        // marker keeps that choice auditable instead of guessing independence.
         const deterministic=():Prepared['erasurePlan']=>({fingerprint:work.fingerprint,decisions:[...work.automatic,...work.candidates.map(c=>{
           const quote=c.fact.source_quotes.find(q=>q.trim());
           if(!quote)throw new ServiceError('EVIDENCE_VALIDATION','Degraded erasure candidate lacks a witness quote');
-          return {fact_id:c.fact_id,key:c.key,effect:'erase' as const,quote};
+          const auth=c.authorization as {target?:{source_ids:string[]}}|null|undefined;
+          const linked=sameSlot(c.fact,c.boundary)||(auth?.target?.source_ids.some(id=>c.fact.source_ids.includes(id))??false);
+          if(linked)return {fact_id:c.fact_id,key:c.key,effect:'erase' as const,quote};
+          // A retained neighbor must witness the colliding value itself; if no
+          // quote can, the write stays committable by erasing conservatively.
+          const witnessed=factContainsValue(c.fact,c.boundary)?c.fact.source_quotes.find(q=>containsValue(q,c.boundary))??null:null;
+          if(!witnessed)return {fact_id:c.fact_id,key:c.key,effect:'erase' as const,quote};
+          return {fact_id:c.fact_id,key:c.key,effect:'retain' as const,quote:witnessed};
         })]});
         let fallback=this.config.mode!=='enhanced'||degraded.includes('extraction_offline');
         if(!fallback){

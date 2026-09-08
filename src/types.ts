@@ -36,7 +36,7 @@ export type ExtractedFact = z.infer<typeof factSchema>;
 export type Operation = z.infer<typeof operationSchema>;
 export type Extraction = z.infer<typeof extractionSchema>;
 export type TemporalEvidence={expression:string;anchor:string|null;start:string|null;end_exclusive:string|null;precision:'day'|'month'|'year'|'week'|'unknown';resolution:'resolved'|'unresolved'|'ordering';reason?:string};
-export type MemoryEvent={id:string;type:'remember'|'update'|'correct'|'retract'|'forget'|'restore'|'reflection';category:string;slot_hash:string;source_ids:string[];before_ids:string[];after_ids:string[];ordinal:number;observed_at:string;time_basis:'source'|'ordering';revision:number;actor?:'user'|'participant'|'observation'};
+export type MemoryEvent={id:string;type:'remember'|'update'|'correct'|'retract'|'forget'|'restore'|'reflection';category:string;slot_hash:string;source_ids:string[];before_ids:string[];after_ids:string[];ordinal:number;observed_at:string;time_basis:'source'|'ordering';revision:number;actor?:'user'|'participant'|'observation';descriptor?:string};
 export type Fact = Omit<ExtractedFact, 'sources'> & {
   scopeHash?:string;
   erasure_exemptions?: {key:string;quote:string}[];
@@ -48,7 +48,11 @@ export type Fact = Omit<ExtractedFact, 'sources'> & {
 };
 export type StoredMessage = Message & { id: string; session_id: string; ordinal: number; searchable: boolean; partial?: boolean; time_basis?: 'source' | 'ordering'; redacted?: boolean; external_id?:string };
 export type Passage = {id:string;source_id:string;speaker:string;external_id?:string;fragments:{start:number;end:number;text:string}[];fact_ids:string[];content:string;vector:number[]|null;observed_at:string;time_basis:'source'|'ordering';revision:number;state:'active'|'erased'};
-export type ErasureBoundary={scopeHash?:string;keyHash?:string;subject:string;predicate:string;scope:string;boundary:string;valueHash:string;tokenCount?:number;anchorHashes?:string[];allowedValueHashes?:string[];revision:number};
+/** Hashed echo index for a retired phrase: per-token digests, adjacent-pair
+ * digests, title flags and token lengths. Marker rows never persist the
+ * plaintext value; matching hashes candidate tokens and pairs instead. */
+export type PhraseEchoIndex={t:string[];p:string[];titles:boolean[];lengths:number[]};
+export type ErasureBoundary={scopeHash?:string;keyHash?:string;subject:string;predicate:string;scope:string;boundary:string;valueHash:string;tokenCount?:number;anchorHashes?:string[];allowedValueHashes?:string[];revision:number;phraseEcho?:PhraseEchoIndex};
 export type ErasurePlan={fingerprint:string;decisions:{fact_id:string;key:string;effect:'erase'|'retain';quote:string;value_context?:{source_id:string;quote:string;start:number;claim_start:number}}[]};
 export type SourceErasurePlan={fingerprint:string;decisions:{index:number;parts:{text:string;effect:'erase'|'retain'}[];reason:string}[]};
 export type TransitionPlan={fingerprint:string;decisions:{index:number;relation:'compatible'|'exclusive'|'uncertain';old_source_slot:number;new_source_slot:number;reason:string}[]};

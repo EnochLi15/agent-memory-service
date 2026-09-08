@@ -90,9 +90,10 @@ export function temporalExpression(text:string):string{
  return unique.length===1?unique[0]!.text:'';
 }
 export function messageAnchors(req:AddRequest,previous:string|null,sourceTimestamped?:boolean[]):{anchors:(string|null)[];last:string|null}{
- let explicit=previous&&!/^\d{4}-\d\d-\d\dT/.test(previous)?previous:null;const anchors:(string|null)[]=[];
  // A synthesized stamp orders messages; it must never pose as a real date that
- // relative event expressions ("last year") could resolve against.
+ // relative event expressions ("last year") could resolve against, and it must
+ // never inherit as a session anchor over later real timestamps.
+ let explicit=previous&&!previous.includes('synthetic ordering')&&!/^\d{4}-\d\d-\d\dT/.test(previous)?previous:null;const anchors:(string|null)[]=[];
  const stamp=(i:number):string|null=>sourceTimestamped?.[i]===false?'synthetic ordering':req.messages[i]?.timestamp??null;
  for(const [i,m] of req.messages.entries()){explicit=m.content.match(/\[Session time:\s*([^\]]+)\]/i)?.[1]??explicit;anchors.push(explicit??stamp(i));}
  return {anchors,last:explicit??stamp(req.messages.length-1)??previous};

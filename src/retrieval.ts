@@ -48,7 +48,13 @@ export function collectCandidates(store:TenantStore,req:SearchRequest,vector:num
     const projected=projectEvents(events,allFacts,new Set(history.map(f=>f.id)));
     for(const f of projected){
       const relevance=overlap(req.query,f.content.replace(/_/g,' '));
-      if(relevance>0)candidates.set(f.id,{fact:f,score:.04+relevance*.03,signals:['operation-event']});
+      // A mutation event ("asked the memory service to forget…") IS the
+      // answer to an operation query, but its neutral subject loses the
+      // subject-demotion multiplier to plain lexical rows. Score authorized
+      // mutations high enough to stay on top after that demotion; ordinary
+      // remember traces keep their current rank.
+      const mutation=/explicitly asked|explicitly authorized/.test(f.content);
+      if(relevance>0)candidates.set(f.id,{fact:f,score:(mutation?.12:.04)+relevance*.03,signals:['operation-event']});
     }
   }
   // Bounded two-hop entity expansion, always from eligible facts and backed by sources.
