@@ -95,27 +95,29 @@ export function applyRepair(base:Extraction,raw:unknown,scope:RepairScope):Extra
  const parsed=patchSchema.safeParse(raw);if(!parsed.success)throw new ServiceError('EXTRACTION_SCHEMA','Invalid targeted repair patch');
  const patch=parsed.data,facts:(Extraction['facts'][number]|null)[]=structuredClone(base.facts),ops:(Extraction['operations'][number]|null)[]=structuredClone(base.operations);
  const seenFacts=new Set<number>(),seenOps=new Set<number>(),scopeProblems:string[]=[];
+ let omittedScopeProblems=0;
+ const scopeProblem=(message:string)=>{if(scopeProblems.length<8)scopeProblems.push(message);else omittedScopeProblems++;};
  // Validate the whole patch on private clones before classifying a scope-only
  // rejection. Malformed edits and dangling references must remain terminal even
  // when the same patch also touches an otherwise valid item outside its scope.
  for(const edit of patch.fact_edits){
   if(!facts[edit.index]||seenFacts.has(edit.index))throw new ServiceError('EVIDENCE_VALIDATION','Repair modified an unavailable or unflagged fact');
-  if(!scope.fact_indices.includes(edit.index))scopeProblems.push(`Repair modified unflagged fact index ${edit.index}`);
-  if('changes'in edit)for(const source of edit.changes.sources??[])if(!scope.source_indices.includes(source.index)&&!facts[edit.index]!.sources.some(old=>old.index===source.index))scopeProblems.push(`Edited repair fact is outside the affected sources: fact index ${edit.index}, source index ${source.index}`);
+  if(!scope.fact_indices.includes(edit.index))scopeProblem(`Repair modified unflagged fact index ${edit.index}`);
+  if('changes'in edit)for(const source of edit.changes.sources??[])if(!scope.source_indices.includes(source.index)&&!facts[edit.index]!.sources.some(old=>old.index===source.index))scopeProblem(`Edited repair fact is outside the affected sources: fact index ${edit.index}, source index ${source.index}`);
   seenFacts.add(edit.index);facts[edit.index]='remove'in edit?null:factSchema.parse({...facts[edit.index],...edit.changes});
  }
  for(const edit of patch.operation_edits){
   if(!ops[edit.index]||seenOps.has(edit.index))throw new ServiceError('EVIDENCE_VALIDATION','Repair modified an unavailable or unflagged operation');
-  if(!scope.operation_indices.includes(edit.index))scopeProblems.push(`Repair modified unflagged operation index ${edit.index}`);
-  if('changes'in edit&&edit.changes.source&&!scope.source_indices.includes(edit.changes.source.index)&&edit.changes.source.index!==ops[edit.index]!.source.index)scopeProblems.push(`Edited repair operation is outside the affected sources: operation index ${edit.index}, source index ${edit.changes.source.index}`);
+  if(!scope.operation_indices.includes(edit.index))scopeProblem(`Repair modified unflagged operation index ${edit.index}`);
+  if('changes'in edit&&edit.changes.source&&!scope.source_indices.includes(edit.changes.source.index)&&edit.changes.source.index!==ops[edit.index]!.source.index)scopeProblem(`Edited repair operation is outside the affected sources: operation index ${edit.index}, source index ${edit.changes.source.index}`);
   seenOps.add(edit.index);ops[edit.index]='remove'in edit?null:operationSchema.parse({...ops[edit.index],...edit.changes});
  }
- for(const f of patch.append_facts){for(const source of f.sources)if(!scope.source_indices.includes(source.index))scopeProblems.push(`Added repair fact is outside the affected sources: source index ${source.index}`);facts.push(f);}
- for(const o of patch.append_operations){if(!scope.source_indices.includes(o.source.index))scopeProblems.push(`Added repair operation is outside the affected sources: source index ${o.source.index}`);ops.push(o);}
+ for(const f of patch.append_facts){for(const source of f.sources)if(!scope.source_indices.includes(source.index))scopeProblem(`Added repair fact is outside the affected sources: source index ${source.index}`);facts.push(f);}
+ for(const o of patch.append_operations){if(!scope.source_indices.includes(o.source.index))scopeProblem(`Added repair operation is outside the affected sources: source index ${o.source.index}`);ops.push(o);}
  const remap=new Map<number,number>();let next=0;facts.forEach((f,index)=>{if(f)remap.set(index,next++);});
  const ref=(id:string)=>{const match=id.match(/^new:(\d+)$/);if(!match)return id;const mapped=remap.get(Number(match[1]));if(mapped===undefined)throw new ServiceError('OPERATION_TARGET','Repair leaves a deleted or nonexistent same-chunk target');return `new:${mapped}`;};
  const result:Extraction={facts:facts.filter((f):f is Extraction['facts'][number]=>f!==null).map(f=>({...f,depends_on:f.depends_on.map(ref),supersedes:f.supersedes.map(ref)})),operations:ops.filter((o):o is Extraction['operations'][number]=>o!==null).map(o=>({...o,target_ids:o.target_ids.map(ref)}))};
  const valid=extractionSchema.parse(result);
- if(scopeProblems.length)throw new RepairScopeError(scopeProblems.join('; '));
+ if(scopeProblems.length)throw new RepairScopeError(scopeProblems.join('; ')+(omittedScopeProblems?`; ${omittedScopeProblems} additional scope problems omitted`:''));
  return valid;
 }
