@@ -41,7 +41,8 @@ export function intent(query: string): QueryIntent {
   const operation=/\b(?:ask(?:ed)? (?:you )?to|operation|affected|removed?|forgot|forget|forgotten|correct(?:ed|ion)?|retract(?:ed)?|restor(?:e|ed)|tak(?:e|ing) .{0,60} off|took .{0,60} off)\b|删除|忘记|移除|纠正|撤回|恢复/.test(q);
   const list=/\b(?:all|list|summarize)\b|\b(?:which|what)\s+(?:(?:my|your|our|the|his|her|their)\s+)?(?!is\b|was\b|has\b|does\b|this\b|its\b)[a-z]{2,}s\b|哪些|列出|所有|总结/.test(q);
   const historical=trajectory||history;
-  return {mode:trajectory?'trajectory':operation?'operation':list?'list':historical?'historical':'current',operation,temporal:/\b(?:when|date|year|month|week|day|how long)\b|何时|什么时候|哪年|多久|哪天|去年|今年/.test(q),historical,trajectory,list,
+  const statementTrace=/\b(?:which|what)\b[^.?!]{0,60}\b(?:messages?|statements?)\b|\bwhat (?:did|have) (?:i|we)\b[^.?!]{0,40}\b(?:say|said|report|mention|tell|told)\b|(?:哪|哪些|什么).{0,20}(?:消息|原话|说法)|(?:最初|之前|曾经).{0,20}(?:说过|说了|告诉|提到)/.test(q);
+  return {mode:trajectory?'trajectory':operation?'operation':list?'list':historical?'historical':'current',operation,statementTrace,temporal:/\b(?:when|date|year|month|week|day|how long)\b|何时|什么时候|哪年|多久|哪天|去年|今年/.test(q),historical,trajectory,list,
     asOf: /\bas of\b|截至|截止/.test(q)?(query.match(/\b20\d\d-\d\d-\d\d\b/)?.[0]??null):null, entities: entities(query) };
 }
 export function overlap(a: string, b: string): number { const x = new Set(tokens(a)), y = new Set(tokens(b)); return [...x].filter(t => y.has(t)).length / Math.max(1, x.size); }

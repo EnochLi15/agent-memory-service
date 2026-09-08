@@ -17,7 +17,7 @@ import {forgetScopeContext,humanQuote,participantIndices} from './verification.j
 import {SOURCE_REFERENCE_PROTOCOL,SOURCE_REFERENCE_PROMPT,sourceReferenceMessages,decodeSourceReferences} from './source-references.js';
 import {GROUPED_EXTRACTION_PROTOCOL,GROUPED_EXTRACTION_PROMPT,decodeGroupedExtraction} from './extraction-groups.js';
 import {VerificationSession} from './verification-session.js';
-import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,replacementBindingProblems,operationBindingProblems,type RepairScope} from './repair.js';
+import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,replacementBindingProblems,operationBindingProblems,RepairScopeError,type RepairScope} from './repair.js';
 import {sourceErasureWork} from './source-erasure.js';
 import {executeSourceErasure} from './source-erasure-execution.js';
 import {executeGroupedSourceErasure} from './source-erasure-grouped.js';
@@ -471,7 +471,17 @@ export class Extractor {
           }
           if(patchMode){
             try{raw=applyRepair(prior.data!,output,scope);}
-            catch(error){if(issue.startsWith('Unknown target')||issue.startsWith('Operation target binding'))throw new ServiceError('OPERATION_TARGET','Invalid target/scope repair patch');throw error;}
+            catch(error){
+              if(issue.startsWith('Unknown target')||issue.startsWith('Operation target binding'))throw new ServiceError('OPERATION_TARGET','Invalid target/scope repair patch');
+              if(error instanceof RepairScopeError&&attempt<this.config.maxRepairRounds){
+                // Discard the invalid patch. Preserve the rejected proposal and
+                // its exact scope, then spend only an already-allowed attempt.
+                repairScope=scope;
+                issue+=' Patch rejected: '+error.message+'. Retry within the unchanged REPAIR_SCOPE; do not add sources outside that scope or the edited fact\'s original sources.';
+                continue;
+              }
+              throw error;
+            }
           }
           failedProposal=structuredClone(raw);
           // Normalize an unambiguous model spelling without weakening the runtime

@@ -15,5 +15,10 @@ export function modelFailure(error:unknown,signal:AbortSignal,streamStarted:bool
  const transportCodes=['ECONNRESET','ECONNREFUSED','ETIMEDOUT','EPIPE','ENOTFOUND','EAI_AGAIN','UND_ERR_SOCKET','UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_BODY_TIMEOUT','UND_ERR_ABORTED'];
  const cause=error as {code?:unknown;cause?:{code?:unknown;cause?:{code?:unknown}}}|null;
  const code=[cause?.code,cause?.cause?.code,cause?.cause?.cause?.code].find(x=>typeof x==='string'&&transportCodes.includes(x));
- return {error_type:errorType,error_category:categories,http_status:http,signal_aborted:signal.aborted,stream_started:streamStarted,finish_reason:finish,refusal_detected:refusalDetected,transport_code:code??null};
+ // Only known machine codes are exportable; never log arbitrary provider text
+ // or infer the cause of an HTTP 400 from its status alone.
+ const providerCodes=new Set(['invalid_request_error','invalid_json','context_length_exceeded','rate_limit_exceeded','insufficient_quota','invalid_api_key','model_not_found','unsupported_parameter','content_filter','content_policy_violation','1301']);
+ const api=error instanceof OpenAI.APIError?error as {code?:unknown;error?:{code?:unknown;error?:{code?:unknown}}}:null;
+ const providerCode=[api?.code,api?.error?.code,api?.error?.error?.code].map(x=>typeof x==='number'?String(x):x).find(x=>typeof x==='string'&&providerCodes.has(x));
+ return {error_type:errorType,error_category:categories,http_status:http,signal_aborted:signal.aborted,stream_started:streamStarted,finish_reason:finish,refusal_detected:refusalDetected,transport_code:code??null,provider_error_code:providerCode??null};
 }

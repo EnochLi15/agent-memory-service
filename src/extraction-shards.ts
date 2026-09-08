@@ -3,6 +3,9 @@ import {createHash} from 'node:crypto';
 import {participantIndices} from './verification.js';
 import {ServiceError,type AddRequest} from './types.js';
 export type ExtractionShard={index:number;participants:number[];source_chars:number};
+class MissingShardParticipant extends ServiceError {
+ constructor(){super('EXTRACTION_SCHEMA','Extraction shard omitted a participant');}
+}
 export function extractionShards(req:AddRequest,workers:number):ExtractionShard[]{
  if(!Number.isInteger(workers)||workers<1||workers>3)throw new ServiceError('EXTRACTION_SCHEMA','Extraction concurrency must be one to three');
  const participants=participantIndices(req),count=Math.min(workers,participants.length);
@@ -34,7 +37,7 @@ function checkedGroups(raw:unknown,shard:ExtractionShard):any[]{
    for(const ref of refs)if(typeof ref==='string'&&ref.startsWith('new:')){const match=ref.match(/^new:(\d+):(\d+)$/);if(!match||!owned.has(Number(match[1])))throw new ServiceError('EXTRACTION_SCHEMA','Extraction shard guessed a foreign or flat fact handle');}
   }
  }
- if(seen.size!==owned.size)throw new ServiceError('EXTRACTION_SCHEMA','Extraction shard omitted a participant');
+ if(seen.size!==owned.size)throw new MissingShardParticipant();
  return structuredClone(groups);
 }
 export async function prepareExtractionShards(req:AddRequest,system:string,user:string,workers:number,signal:AbortSignal,call:(system:string,input:string,signal:AbortSignal,shard:{index:number;count:number;participants:number[]})=>Promise<unknown>):Promise<unknown>{
@@ -48,6 +51,12 @@ export async function prepareExtractionShards(req:AddRequest,system:string,user:
   }catch(e){if(!failed){failed=true;failure=e;}controller.abort();throw e;}
  }));
  if(failed){
+  // Preserve the model-budget cancellation for the caller, which owns the
+  // separate request deadline and reserved offline/commit budget. Do not
+  // replace an explicit semantic rejection with a concurrent cancellation.
+  if(signal.aborted&&!(failure instanceof ServiceError&&failure.code==='EVIDENCE_VALIDATION'))signal.throwIfAborted();
+  if(failure instanceof MissingShardParticipant)
+   throw new ServiceError('EXTRACTION_UNAVAILABLE','Parallel extraction did not complete all participant groups: '+failure.message);
   // Classify the first failure with the caller's signal: our sibling-cancel
   // signal is already aborted and would hide the original transport cause.
   if(!signal.aborted&&transientModelError(failure))

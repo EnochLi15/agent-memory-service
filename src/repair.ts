@@ -11,6 +11,9 @@ const opEdit=z.union([z.object({index,changes:operationSchema.partial().strict()
 const appendedFactSchema=factSchema.extend({modality:factSchema.shape.modality.removeDefault()});
 const patchSchema=z.object({fact_edits:z.array(factEdit).max(512).default([]),operation_edits:z.array(opEdit).max(512).default([]),append_facts:z.array(appendedFactSchema).max(512).default([]),append_operations:z.array(operationSchema).max(512).default([])}).strict();
 export type RepairScope={fact_indices:number[];operation_indices:number[];source_indices:number[]};
+export class RepairScopeError extends ServiceError {
+ constructor(message:string){super('EVIDENCE_VALIDATION',message);}
+}
 /** Explain the existing guard, never infer a replacement or modify a proposal.
  * Labels are the model's existing aliases/stable new slots, not fresh IDs. */
 export function replacementBindingProblems(proposal:Extraction,targets:Pick<Fact,'id'|'content'|'subject'|'predicate'|'scope'>[],label:(id:string)=>string=id=>id){
@@ -76,7 +79,7 @@ export function applyRepair(base:Extraction,raw:unknown,scope:RepairScope):Extra
  const seenFacts=new Set<number>(),seenOps=new Set<number>();
  for(const edit of patch.fact_edits){
   if(!facts[edit.index]||seenFacts.has(edit.index)||!scope.fact_indices.includes(edit.index))throw new ServiceError('EVIDENCE_VALIDATION','Repair modified an unavailable or unflagged fact');
-  if('changes'in edit&&edit.changes.sources?.some(s=>!scope.source_indices.includes(s.index)&&!facts[edit.index]!.sources.some(old=>old.index===s.index)))throw new ServiceError('EVIDENCE_VALIDATION','Edited repair fact is outside the affected sources');
+  if('changes'in edit&&edit.changes.sources?.some(s=>!scope.source_indices.includes(s.index)&&!facts[edit.index]!.sources.some(old=>old.index===s.index)))throw new RepairScopeError('Edited repair fact is outside the affected sources');
   seenFacts.add(edit.index);facts[edit.index]='remove'in edit?null:factSchema.parse({...facts[edit.index],...edit.changes});
  }
  for(const edit of patch.operation_edits){

@@ -58,9 +58,9 @@ test('cross-shard selector targets the earlier fact globally, preserves another 
   store.commit(req,hash(JSON.stringify(req)),p,0);assert.equal(store.revision(),1);const facts=store.facts();assert.ok(facts.some(f=>f.subject==='user'&&f.predicate==='access_code'&&f.state==='erased'));assert.ok(facts.some(f=>f.subject==='brother'&&f.value==='9182'&&f.state==='active'));assert.ok(facts.some(f=>f.value==='Firefox'&&f.state==='active'));
  }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
-test('parallel extraction failures reject preparation rather than falling back to offline partial facts',async()=>{
+test('foreign shard ownership rejects preparation rather than publishing untrusted groups',async()=>{
  let verified=0,embedded=0;
- await assert.rejects(()=>new Extractor(configFromEnv(env),{json:async()=>({message_groups:[]}),verify:async()=>{verified++;return [];},embedBatch:async()=>{embedded++;return [];}} as any).prepare(req,{revision:0,facts:[],tail:[],anchor:null},AbortSignal.timeout(3000)),/Parallel extraction did not complete/);assert.equal(verified,0);assert.equal(embedded,0);
+ await assert.rejects(()=>new Extractor(configFromEnv(env),{json:async()=>({message_groups:[group(999)]}),verify:async()=>{verified++;return [];},embedBatch:async()=>{embedded++;return [];}} as any).prepare(req,{revision:0,facts:[],tail:[],anchor:null},AbortSignal.timeout(3000)),/Parallel extraction did not complete/);assert.equal(verified,0);assert.equal(embedded,0);
 });
 test('merged source references still reject future support and retain earlier cross-shard context',async()=>{
  const user=JSON.stringify({...JSON.parse(input(req)),NEW_MESSAGES:sourceReferenceMessages(req)});

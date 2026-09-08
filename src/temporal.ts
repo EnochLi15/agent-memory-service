@@ -16,6 +16,10 @@ export function normalizeMissingTimestamps(req:AddRequest,snapshot:Snapshot):voi
 export function temporalEvidenceText(time:TemporalEvidence|undefined):string{
  if(!time)return '';
  if(time.resolution!=='resolved'||!time.start)return time.expression?`Event date unresolved. Original expression: ${time.expression}.`:'';
+ if(time.precision==='week'&&time.anchor){
+  const relation=/^(?:last week|上周)$/i.test(time.expression.trim())?'the week before':/^(?:next week|下周)$/i.test(time.expression.trim())?'the week after':'the week containing';
+  return `Event time: ${relation} ${time.anchor}; original expression: "${time.expression}" (week precision; exact days unspecified).`;
+ }
  const label=time.precision==='day'?`Event date: ${time.start} (day precision).`
   :time.precision==='month'?`Event month: ${time.start.slice(0,7)}; exact day unknown.`
   :time.precision==='year'?`Event year: ${time.start.slice(0,4)}; exact month and day unknown.`

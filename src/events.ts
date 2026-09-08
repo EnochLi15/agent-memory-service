@@ -7,11 +7,12 @@ export function eventCategory(f:Pick<Fact,'predicate'|'content'>):string{
  const categories=['current city','job title','manager','backup name','primary name','session cadence','access code','hobby','salary','quote','budget','schedule','preference','reflection','contact','project','appointment','storage','plan'];
  return categories.find(c=>family===c||family.includes(c))??'memory record';
 }
-export function projectEvents(events:MemoryEvent[],facts:Fact[],visible:Set<string>):Fact[]{
+export function projectEvents(events:MemoryEvent[],facts:Fact[],visible:Set<string>,correctedStatements=new Set<string>()):Fact[]{
  const byId=new Map(facts.map(f=>[f.id,f]));
  const describe=(ids:string[]):string=>ids.length?ids.map(id=>{
   const f=byId.get(id);
-  return f&&visible.has(id)?`${f.content} (${f.modality}; ${f.state})`:'[value unavailable: removed, withdrawn, or dependent evidence no longer visible]';
+  if(f?.state==='retracted'&&correctedStatements.has(id))return `Statement later corrected (not a valid or current fact): ${f.content}${f.value?` [recorded value: ${f.value}]`:''}`;
+  return f&&f.state!=='erased'&&f.state!=='retracted'&&visible.has(id)?`${f.content} (${f.modality}; ${f.state})`:'[value unavailable: removed, withdrawn, or dependent evidence no longer visible]';
  }).join(' | '):'[none]';
  return events.map(e=>{
   const forgotten=e.type==='forget';

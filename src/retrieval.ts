@@ -41,11 +41,16 @@ export function collectCandidates(store:TenantStore,req:SearchRequest,vector:num
     lexicalAll.forEach((x,i)=>add(x.id,1/(60+i+1),'lexical'));
     entity.forEach((x,i)=>add(x.id,.5/(60+i+1),'entity'));
   }
-  if(config.eventView&&!config.experimental?.rawOnly&&(qi.operation||qi.trajectory||qi.historical)){
+  if(config.eventView&&!config.experimental?.rawOnly&&(qi.operation||qi.trajectory||qi.historical||qi.statementTrace)){
     let history=allFacts.filter(f=>allowed(f,{...qi,historical:true}));
     while(true){const ids=new Set(history.map(f=>f.id));const next=history.filter(f=>f.depends_on.every(id=>ids.has(id)));if(next.length===history.length)break;history=next;}
     const events=store.events().filter(e=>!qi.asOf||e.time_basis==='ordering'||Date.parse(e.observed_at)<=Date.parse(qi.asOf+'T23:59:59.999Z'));
-    const projected=projectEvents(events,allFacts,new Set(history.map(f=>f.id)));
+    const historyIds=new Set(history.map(f=>f.id));
+    // Corrections are statements in an audit trail, never valid historical
+    // facts. Keep them out of facts/raw routes and expose them only wrapped
+    // in operation events. Erased values and invalid dependencies stay hidden.
+    const correctedStatements=new Set(qi.statementTrace&&!qi.asOf?allFacts.filter(f=>f.state==='retracted'&&f.modality!=='quoted'&&f.modality!=='hypothetical'&&f.depends_on.every(id=>historyIds.has(id))).map(f=>f.id):[]);
+    const projected=projectEvents(events,allFacts,historyIds,correctedStatements);
     for(const f of projected){
       const relevance=overlap(req.query,f.content.replace(/_/g,' '));
       // A mutation event ("asked the memory service to forget…") IS the
@@ -269,7 +274,10 @@ export function packEvidence(store:TenantStore,req:SearchRequest,config:Config,f
     else if(f.state==='conflicted'){const independent=new Set(f.source_ids).size;bodyText=`[Conflicting statements recorded; no single current value] ${f.content}${config.experimental?.corroboration&&independent>=2?` (this value is corroborated by ${independent} independent statements)`:''}`;}
     const body=bodyText+(timeText?`\n${timeText}`:'');
     const transition=f.transition_time?` transition window: ${f.transition_time.start} to ${f.transition_time.end_exclusive} (${f.transition_time.precision} precision; exact boundary unknown);`:'';
-    const suffix=`${external.length?`\n[Original source ids: ${external.join(',')}]`:''}\n[status: ${state}; subject/speaker: ${f.subject}; scope: ${f.scope||'unspecified'};${transition} ${f.time_basis==='ordering'?'synthetic order marker, not an event date':'observed'}: ${f.observed_at};${f.time_text?` original time: ${f.time_text};`:''}${f.valid_from?` valid from: ${f.valid_from};`:''}${f.valid_to?` valid until: ${f.valid_to};`:''} source: ${f.source_ids.map(id=>id.slice(0,12)).join(',')}]`;
+    // A relative week's calendar-normalized start is not a stated day. Keep
+    // it for internal ordering, but do not reintroduce it as a precise date.
+    const normalizedWeekStart=f.event_time?.precision==='week'&&f.event_time.anchor&&f.valid_from===f.event_time.start;
+    const suffix=`${external.length?`\n[Original source ids: ${external.join(',')}]`:''}\n[status: ${state}; subject/speaker: ${f.subject};${f.scope?` scope: ${f.scope};`:''}${transition} ${f.time_basis==='ordering'?'synthetic order marker, not an event date':'observed'}: ${f.observed_at};${f.time_text?` original time: ${f.time_text};`:''}${f.valid_from&&!normalizedWeekStart?` valid from: ${f.valid_from};`:''}${f.valid_to?` valid until: ${f.valid_to};`:''} source: ${f.source_ids.map(id=>id.slice(0,12)).join(',')}]`;
     // Time anchor leads the content: the answer model reads sequentially and
     // temporal questions lose their footing when dates hide in a suffix.
     const lead=!f.observed_at||f.time_basis==='ordering'?'[time: session order only] ':`[${String(f.observed_at).slice(0,10)} | ${f.subject}] `;

@@ -59,7 +59,7 @@ export type TransitionPlan={fingerprint:string;decisions:{index:number;relation:
 export type Snapshot = { revision: number; facts: Fact[]; tail: StoredMessage[]; anchor: string | null; erasureBoundaries?:ErasureBoundary[];erasureSources?:StoredMessage[] };
 export type Prepared = { sourceCoveragePlan?:import('./source-coverage.js').SourceCoveragePlan; sourceOperationPlan?:import('./source-operation-routing.js').RoutedPlan; facts: Fact[]; operations: Operation[]; messages: StoredMessage[]; passages?:Passage[]; sourceFormat?:'dual-source-v2-s1'|'facts-only-v2-s1'|'dual-source-v3-s1'|'facts-only-v3-s1'|'dual-source-v4-s1'|'facts-only-v4-s1'|'dual-source-v5-s1'|'facts-only-v5-s1'|'dual-source-v6-s1'|'facts-only-v6-s1'|'dual-source-v7-s1'|'facts-only-v7-s1'|'dual-source-v8-s1'|'facts-only-v8-s1'|'dual-source-v9-s1'|'facts-only-v9-s1'|'dual-source-v10-s1'; erasurePlan?:ErasurePlan;sourceErasurePlan?:SourceErasurePlan;transitionPlan?:TransitionPlan; anchor: string | null; degraded: string[]; embeddingSpace: string };
 export type Candidate = { fact: Fact; score: number; signals: string[] };
-export type QueryIntent = { historical: boolean; trajectory: boolean; list: boolean; asOf: string | null; entities: string[]; operation?:boolean; mode?:'current'|'historical'|'list'|'operation'|'trajectory'; temporal?:boolean };
+export type QueryIntent = { historical: boolean; trajectory: boolean; list: boolean; asOf: string | null; entities: string[]; operation?:boolean; mode?:'current'|'historical'|'list'|'operation'|'trajectory'; temporal?:boolean; statementTrace?:boolean };
 
 export class ServiceError extends Error {
   constructor(public code: string, message: string, public status = 503) { super(message); }
