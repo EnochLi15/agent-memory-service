@@ -3,8 +3,8 @@ import {prepareExtractionShards} from '../dist/extraction-shards.js';import {Ext
 const req={user_id:'u',request_id:'transport',session_id:'s',messages:['I use Firefox.','My brother uses Brave.','My laptop is silver.','My tablet is blue.'].map(content=>({role:'user',content,timestamp:'2026-01-01T00:00:00Z'}))};
 const input=JSON.stringify({PARTICIPANT_INDEX:[0,1,2,3],NEW_MESSAGES:req.messages});
 const apiError=(status:number)=>OpenAI.APIError.generate(status,{message:'private-provider-detail'},undefined,new Headers());
-test('typed connection, timeout, rate limit and server failures remain unavailable after shard cancellation',async()=>{
- for(const error of [new OpenAI.APIConnectionError({message:'private-provider-detail'}),new OpenAI.APIConnectionTimeoutError({message:'private-provider-detail'}),apiError(408),apiError(409),apiError(429),apiError(500),apiError(502),apiError(503),apiError(504)]){
+test('typed connection, timeout, rate limit, server and undecodable-output failures remain unavailable after shard cancellation',async()=>{
+ for(const error of [new OpenAI.APIConnectionError({message:'private-provider-detail'}),new OpenAI.APIConnectionTimeoutError({message:'private-provider-detail'}),apiError(408),apiError(409),apiError(429),apiError(500),apiError(502),apiError(503),apiError(504),new SyntaxError('Unexpected token')]){
   let started=0,cleaned=0,release!:()=>void;const barrier=new Promise<void>(r=>release=r);
   await assert.rejects(prepareExtractionShards(req,'prompt',input,3,AbortSignal.timeout(2000),async(_s,_u,signal,shard)=>{
    if(++started===3)release();await barrier;if(shard.index===0)throw error;
@@ -14,14 +14,36 @@ test('typed connection, timeout, rate limit and server failures remain unavailab
  }
 });
 test('schema, semantic and permanent provider failures cannot become retryable by their wording',async()=>{
- for(const error of [new Error('Connection error.'),new SyntaxError('Invalid JSON'),new ServiceError('EXTRACTION_SCHEMA','foreign group'),new ServiceError('EVIDENCE_VALIDATION','unsupported fact'),apiError(400),apiError(401),apiError(403),apiError(404)])await assert.rejects(prepareExtractionShards(req,'prompt',input,3,AbortSignal.timeout(2000),async()=>{throw error;}),{code:'EVIDENCE_VALIDATION'});
+ for(const error of [new Error('Connection error.'),new ServiceError('EXTRACTION_SCHEMA','foreign group'),new ServiceError('EVIDENCE_VALIDATION','unsupported fact'),apiError(400),apiError(401),apiError(403),apiError(404)])await assert.rejects(prepareExtractionShards(req,'prompt',input,3,AbortSignal.timeout(2000),async()=>{throw error;}),{code:'EVIDENCE_VALIDATION'});
 });
-test('unavailable shard preparation cannot fall back to offline success or proceed to embedding',async()=>{
+test('undecodable shard output degrades to the deterministic plan without semantic verification',async()=>{
+ const four={user_id:'u',request_id:'shard-bad-json',session_id:'s',messages:['I use Firefox.','My brother uses Brave.','My laptop is silver.','My tablet is blue.'].map(content=>({role:'user',content,timestamp:'2026-01-01T00:00:00Z'}))};
+ let verified=0,jsonCalls=0;
+ const model={json:async()=>{jsonCalls++;throw new SyntaxError('Unexpected token');},verify:async()=>{verified++;return [];},embedBatch:async()=>[] as number[][]};
+ const config=configFromEnv({MEMORY_MODE:'enhanced',MEMORY_EXTRACTION_FORMAT:'message_groups',MEMORY_EXTRACTION_WORKERS:'3'});
+ // A live model that cannot produce decodable JSON is an outage, not a
+ // semantic verdict: with four participants the sharded path must degrade
+ // to the offline plan with an auditable marker — the evaluator never
+ // replays a failed add, so HTTP 200 must stay achievable.
+ const prepared=await new Extractor(config,model as any).prepare(four,{revision:0,facts:[],tail:[],anchor:null},AbortSignal.timeout(2000));
+ assert.ok(jsonCalls>=3,'the sharded path ran');
+ assert.ok(prepared.degraded.includes('extraction_offline'),JSON.stringify(prepared.degraded));
+ assert.equal(verified,0,'offline facts never touch the unavailable semantic verifier');
+ assert.ok(prepared.facts.length>0);
+});
+test('unavailable shard preparation degrades to the deterministic plan without model verification',async()=>{
  let verified=0,embedded=0;
  const model={json:async()=>{throw new OpenAI.APIConnectionError({});},verify:async()=>{verified++;return [];},embedBatch:async()=>{embedded++;return [];}};
  const config=configFromEnv({MEMORY_MODE:'enhanced',MEMORY_EXTRACTION_FORMAT:'message_groups',MEMORY_EXTRACTION_WORKERS:'3'});
- await assert.rejects(new Extractor(config,model as any).prepare(req,{revision:0,facts:[],tail:[],anchor:null},AbortSignal.timeout(2000)),{code:'EXTRACTION_UNAVAILABLE'});
- assert.equal(verified,0);assert.equal(embedded,0);
+ // Capability failures degrade-commit (the evaluator never replays a failed
+ // add): unreachable shards fall back to the deterministic offline plan with
+ // an auditable marker, and those offline facts never touch the unavailable
+ // semantic verifier — their evidence is the verbatim quote itself.
+ const prepared=await new Extractor(config,model as any).prepare(req,{revision:0,facts:[],tail:[],anchor:null},AbortSignal.timeout(2000));
+ assert.ok(prepared.degraded.includes('extraction_offline'),JSON.stringify(prepared.degraded));
+ assert.equal(verified,0);
+ assert.ok(prepared.facts.length>0);
+ assert.ok(embedded>0||prepared.degraded.includes('embedding_lexical'));
 });
 
 import {createServer} from 'node:http';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
@@ -40,8 +62,11 @@ test('HTTP connection failure has no receipt; retrying the same request commits 
  const app=await buildServer(config),body={...req,messages:['What is gravity?','What is a rainbow?','What is photosynthesis?','What is geometry?'].map(content=>({...req.messages[0]!,content}))};
  const inspect=(expected:number,receipt:boolean)=>{const store=new TenantStore(dir,'u');try{assert.equal(store.revision(),expected);assert.equal(!!store.receipt(body.request_id,hash(JSON.stringify(addSchema.parse(body)))),receipt);}finally{store.close();}};
  try{
-  const failed=await app.inject({method:'POST',url:'/add',payload:body});assert.equal(failed.statusCode,503);assert.equal(failed.json().error.code,'EXTRACTION_UNAVAILABLE');inspect(0,false);
-  broken=false;const retried=await app.inject({method:'POST',url:'/add',payload:body});assert.equal(retried.statusCode,200,retried.body);inspect(1,true);
+  // A destroyed connection is a capability failure: the add degrade-commits
+  // instead of returning 5xx, because the evaluator never replays a failed
+  // add. The commit lands exactly once; identical retries replay the receipt
+  // without touching the provider again.
+  const degraded=await app.inject({method:'POST',url:'/add',payload:body});assert.equal(degraded.statusCode,200,degraded.body);inspect(1,true);
   const after=calls;assert.equal((await app.inject({method:'POST',url:'/add',payload:body})).statusCode,200);assert.equal(calls,after);inspect(1,true);
  }finally{await app.close();gateway.closeAllConnections();await new Promise<void>(r=>gateway.close(()=>r()));rmSync(dir,{recursive:true,force:true});}
 });

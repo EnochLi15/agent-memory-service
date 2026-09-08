@@ -100,3 +100,20 @@ test('a representation switch requires fresh ingestion, even for a deletion-only
  assert.throws(()=>store.commit(r,hash(JSON.stringify(r)),p,store.revision()),/Fresh data directory/);
  assert.ok(store.facts().some((f:any)=>f.value==='ZX-482'));assert.equal(store.revision(),1);
 }));
+test('a uniquely matching in-question candidate is forced to rank-1',()=>fixture(async({store,config,add}:any)=>{
+ await add('door','My door code is 60148.');
+ const q={user_id:'u',query:'Which of these two door codes would you choose, 60143 or 60148?',top_k:5};
+ const frame=collectCandidates(store,q,null,config);
+ const boosted=frame.ranked.find((c:any)=>c.signals.includes('candidate-exact'));
+ assert.ok(boosted);assert.equal(frame.ranked[0].fact.id,boosted.fact.id);assert.match(boosted.fact.value,/60148/);
+ // An unmatched digit near-duplicate never fuzzy-wins the stored code.
+ const near=collectCandidates(store,{...q,query:'Which of these two door codes would you choose, 60143 or 60139?'},null,config);
+ assert.ok(!near.ranked.some((c:any)=>c.signals.includes('candidate-exact')));
+}));
+test('self-referential queries rank the user above a named participant',()=>fixture(async({store,config,add}:any)=>{
+ await add('mine','My favorite hobby is hiking.');
+ const r=req('raj','Raj: My favorite hobby is chess.');const x=new Extractor(config,{} as any);
+ const p=await x.prepare(r,store.snapshot('s'),AbortSignal.timeout(1000));store.commit(r,hash(JSON.stringify(r)),p,store.revision());
+ const rows=retrieve(store,{user_id:'u',query:'my favorite hobby',top_k:5},null,config).data;
+ assert.ok(rows.length>=2);assert.match(rows[0]!.content,/hiking/);assert.ok(rows.slice(1).some((row:any)=>/chess/.test(row.content)));
+}));

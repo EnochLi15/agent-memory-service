@@ -10,6 +10,7 @@ import { addSchema,searchSchema,ServiceError } from './types.js';
 export async function buildServer(config:Config=configFromEnv()){
   mkdirSync(config.dataDir,{recursive:true});accessSync(config.dataDir,constants.W_OK);
   const engine=new Engine(config);await engine.ready;
+  void engine.modelProbe().catch(()=>{}); // warm the readiness probe before first /health
   const app=Fastify({logger:false,exposeHeadRoutes:false,bodyLimit:8*1024*1024,requestTimeout:config.addTimeout+1000});
   const audit=new WeakMap<FastifyRequest,{request_id?:string;tenant?:string;error_code?:string}>();
   const identify=(request:FastifyRequest,body:{user_id:string;request_id?:string})=>audit.set(request,{request_id:body.request_id,tenant:createHash('sha256').update(body.user_id).digest('hex').slice(0,16)});
@@ -29,7 +30,15 @@ export async function buildServer(config:Config=configFromEnv()){
     const status=(error as {statusCode?:number}).statusCode;
     return reply.code(status===413?413:status===400?400:503).send({error:{code:'UNAVAILABLE',message:'Request could not be completed'}});
   });
-  app.get('/health',async(request,reply)=>engine.isHealthy()?{status:'ok'}:reply.code(503).send({status:'unavailable'}));
+  app.get('/health',async(request,reply)=>{
+    // Degraded commits mean a dead or slow model endpoint does not make the
+    // service unusable (adds fall back deterministically), so health reflects
+    // engine readiness only; the probe result is metadata. Many gateways never
+    // implement GET /models — failing 2xx on that would kill a working deployment.
+    if(!engine.isHealthy())return reply.code(503).send({status:'unavailable'});
+    const models=await engine.modelProbe().catch(()=>false);
+    return {status:'ok',models:models?'ok':'degraded'};
+  });
   app.post('/add',async request=>{const body=addSchema.parse(request.body);identify(request,body);return engine.add(body,AbortSignal.timeout(config.addTimeout));});
   app.post('/search',async request=>{const body=searchSchema.parse(request.body);identify(request,body);return engine.search(body,AbortSignal.timeout(config.searchTimeout));});
   app.addHook('onClose',async()=>engine.close());

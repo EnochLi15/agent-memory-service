@@ -139,8 +139,11 @@ test('repeating a completed property deletion is a safe no-op but an unrelated m
  }
  assert.equal(store.db.prepare('SELECT count(*) AS n FROM markers').get().n,1);
  assert.equal(store.facts().filter((f:any)=>f.predicate==='access_code'&&f.state==='erased').length,1);
- await assert.rejects(()=>x.prepare(request('Forget my bank account.'),store.snapshot('s'),AbortSignal.timeout(1000)),/bind/);
- await assert.rejects(()=>x.prepare(request('Forget my access code NEW-123.'),store.snapshot('s'),AbortSignal.timeout(1000)),/bind/);
+ // Unbindable deletions fail closed: HTTP success must mean retirement took
+ // effect. The skip now surfaces at the pending-command guard instead of the
+ // offline binder, so match both rejection wordings.
+ await assert.rejects(()=>x.prepare(request('Forget my bank account.'),store.snapshot('s'),AbortSignal.timeout(1000)),/bind|operation/i);
+ await assert.rejects(()=>x.prepare(request('Forget my access code NEW-123.'),store.snapshot('s'),AbortSignal.timeout(1000)),/bind|operation/i);
 }));
 
 test('repairing one non-authorizing witness preserves a sibling valid forget',()=>fixture(async({store,snapshot,fact}:any)=>{

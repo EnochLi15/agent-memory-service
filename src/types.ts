@@ -1,7 +1,11 @@
 import { z } from 'zod';
 import {createHash} from 'node:crypto';
 
-export const messageSchema = z.object({ role: z.string(), content: z.string(), timestamp: z.string().datetime({ offset: true }) });
+// Official evaluation messages carry no per-message timestamp: order comes from
+// session sequence and [Session time: ...] anchors. Ingestion fills missing
+// stamps with deterministic synthetic ordering markers (see temporal.ts), and
+// such messages stay flagged time_basis='ordering' instead of claiming a date.
+export const messageSchema = z.object({ role: z.string(), content: z.string(), timestamp: z.string().datetime({ offset: true }).optional() });
 export const addSchema = z.object({ request_id: z.string(), user_id: z.string(), session_id: z.string(), messages: z.array(messageSchema) });
 export const searchSchema = z.object({ query: z.string(), user_id: z.string(), top_k: z.number().finite().nonnegative(), options: z.array(z.unknown()).optional() });
 export type Message = z.infer<typeof messageSchema>;

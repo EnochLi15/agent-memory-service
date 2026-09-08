@@ -14,7 +14,7 @@ export interface Config {
   rerank: boolean; rawFallback: boolean;incrementalVerification:boolean;
   relationMode:'off'|'cooccurrence'|'conditional';rerankPolicy:'always'|'selective';rerankFormat:'ids'|'indices';
   candidateLimit:number;rerankCandidates:number;coveragePacking:boolean;sourceIndex:boolean;eventView:boolean;
-  experimental: {rawOnly:boolean;lifecycle:boolean;temporal:boolean;multiHop:boolean;reflection:boolean};
+  experimental: {rawOnly:boolean;lifecycle:boolean;temporal:boolean;multiHop:boolean;reflection:boolean;aggregate:boolean;corroboration:boolean};
 }
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   if(env.MEMORY_MODE!==undefined&&!['offline','enhanced'].includes(env.MEMORY_MODE))throw new Error('Invalid MEMORY_MODE');
@@ -84,7 +84,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     rerankCandidates:Math.min(200,Math.max(1,Math.floor(num('MEMORY_RERANK_CANDIDATES',80)))),
     coveragePacking:env.MEMORY_COVERAGE_PACKING!=='false',sourceIndex:env.MEMORY_SOURCE_INDEX!=='false',
     eventView:env.MEMORY_EVENT_VIEW!=='false',
-    experimental:{rawOnly:env.MEMORY_EXPERIMENT_RAW_ONLY==='true',lifecycle:env.MEMORY_EXPERIMENT_LIFECYCLE!=='false',temporal:env.MEMORY_EXPERIMENT_TEMPORAL!=='false',multiHop:env.MEMORY_EXPERIMENT_MULTI_HOP!=='false',reflection:env.MEMORY_EXPERIMENT_REFLECTION!=='false'},
+    experimental:{rawOnly:env.MEMORY_EXPERIMENT_RAW_ONLY==='true',lifecycle:env.MEMORY_EXPERIMENT_LIFECYCLE!=='false',temporal:env.MEMORY_EXPERIMENT_TEMPORAL!=='false',multiHop:env.MEMORY_EXPERIMENT_MULTI_HOP!=='false',reflection:env.MEMORY_EXPERIMENT_REFLECTION!=='false',aggregate:env.MEMORY_EXPERIMENT_AGGREGATE==='true',corroboration:env.MEMORY_EXPERIMENT_CORROBORATION==='true'},
   };
 }
 

@@ -71,3 +71,6 @@ export class ContinuationAttempt {
 const context=new AsyncLocalStorage<ContinuationAttempt>();
 export const withContinuation=<T>(attempt:ContinuationAttempt,run:()=>Promise<T>):Promise<T>=>context.run(attempt,run);
 export const continuationCall=(identity:unknown,signal:AbortSignal,generate:()=>Promise<unknown>):Promise<unknown>=>context.getStore()?.call(identity,signal,generate)??generate();
+/** True while a resumable continuation wraps this preparation. Callers use it
+ * to keep continuation mode's strict no-degraded-fallback contract. */
+export const continuationActive=():boolean=>context.getStore()!==undefined;

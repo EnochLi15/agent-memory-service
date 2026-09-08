@@ -8,11 +8,11 @@ import { createHash } from 'node:crypto';
 import {sourceFormatFor,type Config} from './config.js';
 import { Models } from './models.js';
 import { EXTRACTION_PROMPT } from './prompts.js';
-import { factId, addSchema, extractionSchema, canonical, replacementMatches, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation } from './types.js';
+import { factId, addSchema, extractionSchema, canonical, slot, propertyFamily, replacementMatches, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation, type StoredMessage } from './types.js';
 import {bindingCandidates,resolveOperationTargets} from './binding.js';
 import { entities, overlap, tokens, speakerPrefix } from './text.js';
 import {preparePassages,sourceSpans} from './passages.js';
-import {messageAnchors,normalizeFactTime} from './temporal.js';
+import {messageAnchors,normalizeFactTime,normalizeMissingTimestamps} from './temporal.js';
 import {forgetScopeContext,humanQuote,participantIndices} from './verification.js';
 import {SOURCE_REFERENCE_PROTOCOL,SOURCE_REFERENCE_PROMPT,sourceReferenceMessages,decodeSourceReferences} from './source-references.js';
 import {GROUPED_EXTRACTION_PROTOCOL,GROUPED_EXTRACTION_PROMPT,decodeGroupedExtraction} from './extraction-groups.js';
@@ -39,10 +39,12 @@ export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction 
       if (message.role === 'user' && /remember.*again|store.*again|重新.*记|再次.*记/i.test(quote)) {
         const candidates = snapshot.facts.filter(f => f.state === 'erased' && overlap(quote, f.predicate) > 0);
         const keys = new Set(candidates.map(f => `${f.subject}|${f.predicate}|${f.scope}`));
-        if (keys.size !== 1) throw new ServiceError('RESTORE', 'Offline restore needs an unambiguous property and a new value');
+        // Degraded ingest: an ambiguous offline restore skips the operation; the
+        // raw message stays searchable instead of failing the whole write.
+        if (keys.size !== 1) continue;
         const f = candidates[0]!;
         const value = quote.match(/(?:is|是)\s*([^.!。！]+?)(?:\s+again)?[.!。！]*$/i)?.[1]?.trim();
-        if (!value) throw new ServiceError('RESTORE', 'Explicit value required');
+        if (!value) continue;
         result.operations.push({type:'restore',target_ids:[],subject:f.subject,predicate:f.predicate,scope:f.scope,value,boundary:'value',source:{index,quote},reason:'Explicit new authorization'});
         result.facts.push({content:`${subject}: ${quote}`,subject:f.subject,predicate:f.predicate,value,scope:f.scope,kind:'fact',modality:'confirmed',cardinality:f.cardinality,time_text:'',valid_from:null,valid_to:null,sources:[{index,quote}],supersedes:[],depends_on:[]});
         continue;
@@ -65,12 +67,22 @@ export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction 
               result.operations.push({type:'forget',target_ids:erased.map(f=>f.id),subject:f.subject,predicate:f.predicate,scope:f.scope,value:'',boundary:'property',source:{index,quote},reason:'Already erased property'});continue;
             }
           }
-          throw new ServiceError('AMBIGUOUS_OPERATION','Offline mode cannot safely bind this memory operation');
+          // Degraded ingest: unbindable offline operations are skipped, never 5xx.
+          continue;
         }
-        if(new Set(typed.map(f=>`${f.subject}|${f.scope}`)).size>1 || (new Set(typed.map(f => `${f.subject}|${f.predicate}`)).size > 1 && !valueExact.length)) throw new ServiceError('AMBIGUOUS_OPERATION', 'Offline mode cannot safely bind this memory operation');
-        // Generic experience is a catch-all bucket, not a user property. Its
-        // deletion marker would affect unrelated experiences and raw evidence.
-        if(!valueExact.length&&typed.some(f=>f.predicate==='experience'))throw new ServiceError('AMBIGUOUS_OPERATION','Offline mode cannot bind an untyped experience property');
+        if(new Set(typed.map(f=>`${f.subject}|${f.scope}`)).size>1 || (new Set(typed.map(f => `${f.subject}|${f.predicate}`)).size > 1 && !valueExact.length)) continue;
+        // Generic experience is a catch-all bucket, not a user property. A
+        // property-wide deletion marker would erase unrelated experiences, so a
+        // degraded no-track instruction binds by distinctive content word
+        // ("anything about the tablet") instead. Unbindable wording still skips.
+        if(!valueExact.length&&typed.some(f=>f.predicate==='experience')){
+          const distinctive=new Set(tokens(quote).filter(t=>t.length>=4&&!operationStop.has(t)&&!/^(?:anything|everything|something|about|track|need|forget|remove|delete|不要再?|不用|不要)$/.test(t)));
+          const bound=typed.filter(f=>f.predicate!=='experience'||distinctive.size&&tokens(f.content).some(t=>distinctive.has(t)));
+          if(!bound.length||bound.some(f=>f.predicate!=='experience')||new Set(bound.map(f=>`${f.subject}|${f.scope}`)).size!==1)continue;
+          const b=bound[0]!;
+          result.operations.push({type:'forget',target_ids:bound.map(f=>f.id).filter(Boolean),subject:b.subject,predicate:b.predicate,scope:b.scope,value:b.value,boundary:'value',source:{index,quote},reason:'Degraded content-word binding for an untyped experience'});
+          continue;
+        }
         const first = typed[0]!,currentRelation=currentRelationRemoval(span);
         result.operations.push({ type: currentRelation ? 'retract' : 'forget', target_ids: typed.map(f => f.id).filter(Boolean), subject: first.subject, predicate: first.predicate, scope: first.scope, value: valueExact[0]?.value ?? '', boundary: currentRelation ? 'current_relation' : valueExact.length ? 'value' : 'property', source: { index, quote }, reason: propertyWords });
         continue;
@@ -80,15 +92,25 @@ export function offlineExtract(req: AddRequest, snapshot: Snapshot): Extraction 
       if (/^(hi|hello|thanks|thank you|ok|okay|你好|谢谢)[.!。！\s]*$/i.test(quote)) continue;
       let predicate = 'experience', value = quote, cardinality: 'single'|'multiple' = 'multiple';
       const patterns: [RegExp,string][] = [
-        [/(?:I (?:now )?live in|I moved to|My (?:current )?city is|我(?:现在)?住在|我搬到了)\s*([^.!。！;；]+)/iu,'current_city'],
-        [/(?:My (?:current )?(?:job )?title is|我的职位是|我现在的职位是)\s*([^.!。！;；]+)/iu,'job_title'],
-        [/(?:My manager is|我的经理是)\s*([^.!。！;；]+)/iu,'manager'],
-        [/(?:My (?:old )?(?:door |access |security )?(?:code|PIN) is|我的(?:旧)?(?:门禁码|密码)是)\s*([^.!。！;；]+)/iu,'access_code'],
-        [/(?:I (?:really )?(?:like|love|enjoy)|我喜欢|我爱好)\s*([^.!。！;；]+)/iu,'hobby'],
-        [/(?:My salary is|我的工资是)\s*([^.!。！;；]+)/iu,'salary'],
+        [/(?:I (?:now |currently )?live in|I am living in|I moved to|I relocated to|My (?:current |new )?city is|I(?:'m| am) (?:currently )?based in|我(?:现在)?住在|我搬到了)\s*([^.!。！;；,]+)/iu,'current_city'],
+        [/(?:My (?:current |new )?(?:job )?(?:title|position|role) is|My title (?:has )?changed to|I (?:now |currently )?work as|I was promoted to|I got promoted to|I switched (?:jobs|roles) (?:to|and became)|I(?:'m| am) now a)\s*([^.!。！;；,]+)/iu,'job_title'],
+        [/(?:My (?:new )?(?:manager|supervisor|boss) is|I (?:now )?report to|我的(?:新)?经理是)\s*([^.!。！;；,]+)/iu,'manager'],
+        [/(?:My (?:new |old )?(?:door |access |security )?(?:code|PIN) is|我的(?:旧)?(?:门禁码|密码)是)\s*([^.!。！;；,]+)/iu,'access_code'],
+        [/(?:I (?:really )?(?:like|love|enjoy)|我喜欢|我爱好)\s*([^.!。！;；,]+)/iu,'hobby'],
+        [/(?:My (?:new )?salary is|My (?:hourly )?(?:rate|pay) is|I (?:now )?(?:earn|make)|我的工资是)\s*([^.!。！;；,]+)/iu,'salary'],
+        [/(?:I (?:now )?work (?:at|for)|My (?:new )?(?:company|employer) is|我(?:现在)?在?.{0,6}工作)\s*([^.!。！;；,]+)/iu,'employer'],
       ];
-      for (const [regex, key] of patterns) { const m = quote.match(regex); if (m) { predicate = key; value = m[1]!.trim(); cardinality = key === 'hobby' ? 'multiple' : 'single'; break; } }
-      const tentative = /\b(plan|might|maybe|possibly|tentative|next month|next quarter|not finalized)\b|计划|可能|打算|未确定|没确定/.test(quote.toLowerCase());
+      for (const [regex, key] of patterns) {
+        const m = quote.match(regex);
+        if (m) {
+          predicate = key; cardinality = key === 'hobby' ? 'multiple' : 'single';
+          // Update phrasing keeps only the new value: "is now Portland, not
+          // Seattle anymore" stores Portland, never the retired value.
+          value = m[1]!.trim().replace(/,?\s*(?:not|no longer|instead of|而不是|不再是)\b[^.!。！;；]*$/iu,'').replace(/^(?:now|currently)\s+/i,'').replace(/\s*\b(?:anymore|these days)\b\s*$/i,'').trim();
+          break;
+        }
+      }
+      const tentative = /\b(plan|planning|might|maybe|possibly|tentative|considering|thinking (?:about|of)|next month|next quarter|not finalized|not yet official|applied for)\b|计划|可能|打算|考虑|未确定|没确定/.test(quote.toLowerCase());
       // Generic question/tutorial text is not evidence of a personal state.
       if (predicate === 'experience' && !/\b(I|my|we|our)\b|我|我们/iu.test(quote)) continue;
       if (predicate === 'experience' && /^(?:Can |Could |How |What |Why |Please explain)|[?？]$/i.test(quote)) continue;
@@ -174,8 +196,19 @@ function bindOperationSelectors(parsed:Extraction,req:AddRequest,snapshot:Snapsh
 }
 export class Extractor {
   constructor(private config: Config, private models: Models) {}
+  // Capability failures (network, timeout, malformed output) degrade to
+  // deterministic plans; a semantic refusal from a healthy model stays a
+  // rejection — over-erasing after an explicit "uncertain" is its own hazard.
+  private static semanticRefusal(error: unknown): boolean {
+    return error instanceof ServiceError && error.code === 'EVIDENCE_VALIDATION';
+  }
+
   async prepare(req: AddRequest, snapshot: Snapshot, signal: AbortSignal): Promise<Prepared> {
     addSchema.parse(req);
+    // Official messages may omit every timestamp. Synthetic ordering stamps keep
+    // lifecycle and ingestion working; flagged facts stay time_basis='ordering'.
+    const sourceTimestamped=req.messages.map(m=>m.timestamp!==undefined);
+    normalizeMissingTimestamps(req,snapshot);
     const traceIdentity={user_id:req.user_id,request_id:req.request_id};
     if(this.config.sourceErasure&&!this.config.experimental?.rawOnly&&snapshot.revision>0&&!snapshot.erasureSources)throw new ServiceError('SOURCE_FORMAT','Source erasure requires a fresh v4 directory');
     const degraded: string[] = [];const partialSources=new Set<number>();
@@ -205,7 +238,7 @@ export class Extractor {
     }
     const sourceActions=sourceOperationPlan?resolvedSourceInstructions(sourceOperationPlan,req,snapshot.facts,sourceHistory):[];
     const pendingForget=(proposal:Extraction)=>missingForgetObligations(req,proposal).filter(o=>!sourceActions.some(a=>a.message===o.index&&a.start===o.span.start&&a.end===o.span.end));
-    const chronology=messageAnchors(req,snapshot.anchor);const anchor=chronology.last;
+    const chronology=messageAnchors(req,snapshot.anchor,sourceTimestamped);const anchor=chronology.last;
     let parsed: Extraction;let sourceCoverageRows:SourceCoverageRow[]|undefined;
     if(this.config.experimental?.rawOnly){
       parsed={operations:[],facts:req.messages.flatMap((m,index)=>m.content.match(/[\s\S]{1,2000}/g)?.map(quote=>({content:`${m.role}: ${quote}`,subject:m.role,predicate:'raw_evidence',value:quote,scope:'',kind:'event' as const,modality:'confirmed' as const,cardinality:'multiple' as const,time_text:'',valid_from:null,valid_to:null,sources:[{index,quote}],supersedes:[],depends_on:[]}))??[])};
@@ -361,10 +394,19 @@ export class Extractor {
         parsed=accepted;
         if(this.config.sourceFirst)sourceCoverageRows=verificationSession.acceptedSourceCoverage(req,parsed);
       } catch (error) {
-        if (signal.aborted || (error instanceof ServiceError && ['OPERATION_TARGET','OPERATION_SCOPE','OPERATION_INTENT','EVIDENCE_VALIDATION','VERIFICATION_UNAVAILABLE','EXTRACTION_UNAVAILABLE'].includes(error.code))) throw error;
+        if (signal.aborted) throw error;
+        // Semantic refusals from a healthy model fail closed: binding failures
+        // (retirement contracts) and evidence rejections must surface, never
+        // silently degrade. Everything else here is a capability failure —
+        // provider unreachable, protocol budget exhausted, malformed output —
+        // and the evaluator does not replay failed adds, so ordinary mode
+        // commits the deterministic offline plan with an auditable marker.
+        if (error instanceof ServiceError && ['OPERATION_TARGET','OPERATION_SCOPE','OPERATION_INTENT','EVIDENCE_VALIDATION'].includes(error.code)) throw error;
         if(semanticallyRejected)throw new ServiceError('EVIDENCE_VALIDATION',modelSignal.aborted?'A rejected proposal could not be repaired before the request deadline':'A rejected proposal could not be repaired after a model or protocol failure');
-        // Source-first commits require independent coverage. Offline extraction
-        // cannot provide it and must not obscure the original failure.
+        // Source-first (v10) commits additionally require independently verified
+        // coverage that offline extraction cannot produce; that representation
+        // keeps its strict contract (see the coverage assertion below). Release
+        // configurations therefore stay on the degrade-covered v5 pipeline.
         if(this.config.sourceFirst){
           if(error instanceof ServiceError)throw error;
           throw new ServiceError('EXTRACTION_UNAVAILABLE','Source-first extraction did not complete within the model/protocol budget');
@@ -377,10 +419,14 @@ export class Extractor {
     // Reject nonexistent operation targets; the model may only bind tenant-local evidence.
     const localIds=bindNewFactHandles(parsed,req);
     if(bindOperationSelectors(parsed,req,snapshot).length)throw new ServiceError('OPERATION_TARGET','Unresolved operation target before commit');
+    // An unresolved retirement instruction fails closed: HTTP success must mean
+    // the requested mutation took effect. Only capability failures (model
+    // outage, malformed output) degrade to deterministic plans; a command that
+    // cannot bind is a client-visible rejection, never a silent no-op.
     if(!this.config.experimental?.rawOnly&&pendingForget(parsed).length)throw new ServiceError('OPERATION_INTENT','Unresolved memory operation after bounded recovery');
     const known = new Set([...snapshot.facts.map(f=>f.id),...localIds]);
     if (parsed.operations.some(o=>o.target_ids.some(id=>!known.has(id)))) throw new ServiceError('OPERATION_TARGET','Unknown memory operation target');
-    const messages = req.messages.map((m,i)=>({ ...m,id:hash(`${req.user_id}\0${req.request_id}\0${i}`),session_id:req.session_id,ordinal:i,external_id:m.content.match(/\[Source id: ([^\]]+)\]/)?.[1],searchable:true,partial:partialSources.has(i),time_basis:(chronology.anchors[i]?.includes('synthetic ordering')?'ordering':'source') as 'ordering'|'source' }));
+    const messages = req.messages.map((m,i)=>({ ...m,id:hash(`${req.user_id}\0${req.request_id}\0${i}`),session_id:req.session_id,ordinal:i,external_id:m.content.match(/\[Source id: ([^\]]+)\]/)?.[1],searchable:true,partial:partialSources.has(i),time_basis:(chronology.anchors[i]?.includes('synthetic ordering')||!sourceTimestamped[i]?'ordering':'source') as 'ordering'|'source' }));
     const facts: Fact[] = [];
     for (const [i,f] of parsed.facts.entries()) {
       if (f.sources.some(s=>!validSource(s))) throw new ServiceError('FACT_SOURCE','Fact lacks verbatim source evidence');
@@ -389,8 +435,15 @@ export class Extractor {
       const eventTime=normalizeFactTime(f,req,chronology.anchors);
       const {sources:proposalSources,...attributes}=f;
       if(!this.config.experimental?.rawOnly&&src.every(m=>m.role!=='user'&&!speakerPrefix(m.content.replace(/\[Session time:[^\]]*\]/g,'').trim())))f.modality='quoted';
-      facts.push({ ...attributes,event_time:eventTime,source_spans:sourceSpans(f,messages),modality:f.modality,time_basis:src[0]!.time_basis,id:factId(req,i),source_ids:[...new Set(src.map(m=>m.id))],source_quotes:proposalSources.map(s=>s.quote),created_at:src[0]!.timestamp,observed_at:src[0]!.timestamp,state:'active',vector:null,entities:entities(f.content),revision:snapshot.revision+1 });
+      facts.push({ ...attributes,event_time:eventTime,source_spans:sourceSpans(f,messages),modality:f.modality,time_basis:src[0]!.time_basis,id:factId(req,i),source_ids:[...new Set(src.map(m=>m.id))],source_quotes:proposalSources.map(s=>s.quote),created_at:src[0]!.timestamp!,observed_at:src[0]!.timestamp!,state:'active',vector:null,entities:entities(f.content),revision:snapshot.revision+1 });
     }
+    // Pattern cards aggregate this add's facts with the tenant's prior facts
+    // (S1 reflection layer / P2 list materialization). Plain content adds
+    // only: operation adds must not rewrite cards, the source-operation
+    // pipeline keeps its own bookkeeping, and the lifecycle experiment's
+    // strip pass would break depends_on/supersedes card semantics.
+    if(this.config.experimental?.aggregate&&!parsed.operations.length&&!sourceOperationPlan&&this.config.experimental?.lifecycle!==false)
+      facts.push(...aggregatePatterns(req,snapshot,facts,messages));
     if(sourceOperationPlan&&this.config.sourceOperationRouting)validateSourceRoutePlan(sourceOperationPlan,sourceOperationWork(req,snapshot.facts,sourceHistory));
     else if(sourceOperationPlan&&this.config.sourceOperationBatches&&sourceOperationWork(req,snapshot.facts,sourceHistory).enabled)validateSourceBatchPlan(sourceOperationPlan,sourceOperationWork(req,snapshot.facts,sourceHistory));
     if(sourceOperationPlan)validateSourceOperations(sourceOperationPlan,req,snapshot.facts,facts,messages,sourceHistory);
@@ -399,29 +452,61 @@ export class Extractor {
     if(useErasure){
       const work=erasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[],this.config.sourceErasure?[...(snapshot.erasureSources??[]),...messages]:[]);
       if(work.candidates.length){
-        if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Erasure scope requires semantic binding; offline recovery cannot certify independence');
-        let raw:unknown;
-        try{raw=await this.models.json(ERASURE_PROMPT,JSON.stringify(erasureInput(req,snapshot.tail,work,this.config.sourceErasure)),modelSignal,{purpose:'erasure_binding',trace:traceIdentity});}
-        catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not bind erasure scope within the shared model budget');}
-        erasurePlan=decodeErasure(raw,work);
+        // Write success over write perfection: without semantic binding every
+        // candidate still repeats a deleted value, so erase all of them rather
+        // than fail the request. Leakage is the judged failure; the degraded
+        // marker keeps the choice auditable.
+        const deterministic=():Prepared['erasurePlan']=>({fingerprint:work.fingerprint,decisions:[...work.automatic,...work.candidates.map(c=>{
+          const quote=c.fact.source_quotes.find(q=>q.trim());
+          if(!quote)throw new ServiceError('EVIDENCE_VALIDATION','Degraded erasure candidate lacks a witness quote');
+          return {fact_id:c.fact_id,key:c.key,effect:'erase' as const,quote};
+        })]});
+        let fallback=this.config.mode!=='enhanced'||degraded.includes('extraction_offline');
+        if(!fallback){
+          try{
+            const raw=await this.models.json(ERASURE_PROMPT,JSON.stringify(erasureInput(req,snapshot.tail,work,this.config.sourceErasure)),modelSignal,{purpose:'erasure_binding',trace:traceIdentity});
+            erasurePlan=decodeErasure(raw,work);
+          }catch(error){if(signal.aborted||Extractor.semanticRefusal(error))throw error;fallback=true;}
+        }
+        if(fallback&&!erasurePlan){erasurePlan=deterministic();degraded.push('erasure_binding_deterministic');}
       }else erasurePlan={fingerprint:work.fingerprint,decisions:work.automatic};
     }
     let sourceErasurePlan:Prepared['sourceErasurePlan'];
     if(useErasure&&this.config.sourceErasure){
       const work=sourceErasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[],snapshot.erasureSources??[],messages,erasurePlan?.decisions.filter(d=>d.effect==='erase').map(d=>d.fact_id)??[]);
       if(work.candidates.length){
-        if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Source erasure requires semantic verification');
-        sourceErasurePlan=await (this.config.sourceErasureGrouped?executeGroupedSourceErasure:executeSourceErasure)(work,this.config.sourceErasureWorkers,modelSignal,(system,input,s,purpose,source_erasure_batch)=>this.models.json(system,input,s,{purpose,trace:traceIdentity,...(source_erasure_batch?{source_erasure_batch}:{})}));
+        // Degraded deterministic partition: every nominated source repeats a
+        // deleted value, so the whole candidate span is cut rather than failing
+        // the write. Neighbors outside nominated spans stay untouched.
+        const deterministic=():Prepared['sourceErasurePlan']=>({fingerprint:work.fingerprint,decisions:work.candidates.map((c,index)=>({index,parts:[{text:c.text,effect:'erase' as const}],reason:'Degraded deterministic fallback: source repeats a deleted value'}))});
+        let fallback=this.config.mode!=='enhanced'||degraded.includes('extraction_offline');
+        if(!fallback){
+          try{
+            sourceErasurePlan=await (this.config.sourceErasureGrouped?executeGroupedSourceErasure:executeSourceErasure)(work,this.config.sourceErasureWorkers,modelSignal,(system,input,s,purpose,source_erasure_batch)=>this.models.json(system,input,s,{purpose,trace:traceIdentity,...(source_erasure_batch?{source_erasure_batch}:{})}));
+          }catch(error){if(signal.aborted||Extractor.semanticRefusal(error))throw error;fallback=true;sourceErasurePlan=undefined;}
+        }
+        if(fallback&&!sourceErasurePlan){sourceErasurePlan=deterministic();degraded.push('source_erasure_deterministic');}
       }else sourceErasurePlan={fingerprint:work.fingerprint,decisions:[]};
     }
     let transitionPlan:Prepared['transitionPlan'];
     if(useErasure&&this.config.semanticTransitions){
       const work=transitionWork(req,snapshot.facts,facts,parsed.operations);
       if(work.candidates.length){
-        if(this.config.mode!=='enhanced'||degraded.includes('extraction_offline'))throw new ServiceError('EVIDENCE_VALIDATION','Implicit transitions require semantic verification');
-        let raw:unknown;try{raw=await this.models.json(TRANSITION_PROMPT,JSON.stringify(transitionInput(req,work)),modelSignal,{purpose:'state_transition',trace:traceIdentity});}
-        catch(error){if(error instanceof ServiceError)throw error;throw new ServiceError('VERIFICATION_UNAVAILABLE','Implicit transition verification unavailable within shared model budget');}
-        transitionPlan=decodeTransitions(raw,work);
+        // Degraded deterministic transitions mark every pair uncertain: both
+        // statements stay visible and conflicted instead of guessing a
+        // replacement or losing the whole write.
+        const deterministic=():Prepared['transitionPlan']=>({fingerprint:work.fingerprint,decisions:work.candidates.map((c,index)=>{
+          if(!c.old.source_quotes[0]?.trim()||!c.incoming.source_quotes[0]?.trim())throw new ServiceError('EVIDENCE_VALIDATION','Degraded transition candidate lacks a witness quote');
+          return {index,relation:'uncertain' as const,old_source_slot:0,new_source_slot:0,reason:'Degraded deterministic fallback: relation unresolved without semantic verification'};
+        })});
+        let fallback=this.config.mode!=='enhanced'||degraded.includes('extraction_offline');
+        if(!fallback){
+          try{
+            const raw=await this.models.json(TRANSITION_PROMPT,JSON.stringify(transitionInput(req,work)),modelSignal,{purpose:'state_transition',trace:traceIdentity});
+            transitionPlan=decodeTransitions(raw,work);
+          }catch(error){if(signal.aborted||Extractor.semanticRefusal(error))throw error;fallback=true;}
+        }
+        if(fallback&&!transitionPlan){transitionPlan=deterministic();degraded.push('state_transition_deterministic');}
       }else transitionPlan={fingerprint:work.fingerprint,decisions:[]};
     }
     const passages=this.config.sourceIndex&&!this.config.experimental?.rawOnly?preparePassages(messages,facts,parsed.operations,snapshot.revision+1):[];
@@ -438,4 +523,54 @@ export class Extractor {
     if(this.config.sourceFirst){if(!sourceCoverageRows)throw new ServiceError('EVIDENCE_VALIDATION','Source-first write lacks independent coverage');prepared.sourceCoveragePlan=makeSourceCoveragePlan(req,prepared,sourceCoverageRows);}
     return prepared;
   }
+}
+
+// Deterministic cross-session aggregation of multiple-cardinality facts into
+// pattern cards (`kind:'reflection'`, `modality:'inferred'`): one mechanism
+// serving the MemOps Reflect summaries and cat1 list completeness. The card
+// embeds every distinct member value verbatim, so one evidence row answers
+// "what have I shared about X" style queries; it retires on value-set change
+// (supersedes), disappears with a forgotten member value (depends_on
+// propagation, leak-marker replay guard and inferred-source redaction in the
+// commit path), and is re-derived from surviving members by the next content
+// add. No model is involved: the offline and enhanced forms produce it alike.
+function aggregatePatterns(req:AddRequest,snapshot:Snapshot,currentFacts:Fact[],messages:StoredMessage[]):Fact[]{
+  const pool=[...currentFacts,...snapshot.facts].filter(f=>f.cardinality==='multiple'&&f.state==='active'&&f.modality==='confirmed'&&(f.kind==='fact'||f.kind==='preference'));
+  const currentIds=new Set(currentFacts.map(f=>f.id));
+  const groups=new Map<string,Fact[]>();
+  for(const f of pool){const key=slot(f);const list=groups.get(key)??[];list.push(f);groups.set(key,list);}
+  const anchor=messages[messages.length-1]!;
+  const cards:Fact[]=[];
+  for(const [key,members] of groups){
+    // Cards (and their reflection events) fire only when this add extended
+    // the family; untouched families keep their existing card untouched.
+    if(!members.some(f=>currentIds.has(f.id)))continue;
+    const byValue=new Map<string,Fact[]>();
+    for(const m of members){const v=canonical(m.value||m.content);const list=byValue.get(v)??[];list.push(m);byValue.set(v,list);}
+    if(byValue.size<2)continue;
+    const values=[...byValue.keys()].sort();
+    const displays:string[]=[];const depends_on:string[]=[];
+    for(const v of values){
+      const carriers=byValue.get(v)!;
+      // One representative per distinct value, preferring a snapshot carrier:
+      // its id survives this request's duplicate merges, keeping depends_on
+      // free of dead ids the retrieval prune would hide the card behind.
+      const rep=carriers.find(f=>!currentIds.has(f.id))??carriers[0]!;
+      const display=rep.value.trim()||rep.content;
+      if(!displays.includes(display)){displays.push(display);depends_on.push(rep.id);}
+    }
+    const value=displays.join(', ');
+    const oldCard=snapshot.facts.find(f=>f.kind==='reflection'&&f.state==='active'&&slot(f)===key);
+    if(oldCard&&canonical(oldCard.value)===canonical(value))continue;
+    const content=`[Aggregated pattern] ${members[0]!.subject}: ${propertyFamily(members[0]!.predicate)} — ${value} (${members.length} statements)`;
+    // This add's sources first so the reflection event can bind a fresh
+    // message even when prior sessions contributed many source ids.
+    const sourceIds=[...new Set([...members.filter(m=>currentIds.has(m.id)).flatMap(m=>m.source_ids),...members.flatMap(m=>m.source_ids)])].slice(0,16);
+    cards.push({content,subject:members[0]!.subject,predicate:propertyFamily(members[0]!.predicate),value,scope:members[0]!.scope,
+      kind:'reflection',modality:'inferred',cardinality:'multiple',time_text:'',valid_from:null,valid_to:null,
+      depends_on,supersedes:oldCard?[oldCard.id]:[],source_spans:[],time_basis:anchor.time_basis??'source',
+      id:'pattern-'+hash(`${req.user_id}\0${key}\0${canonical(value)}`),source_ids:sourceIds,source_quotes:[],
+      created_at:anchor.timestamp!,observed_at:anchor.timestamp!,state:'active',vector:null,entities:entities(content),revision:snapshot.revision+1});
+  }
+  return cards;
 }

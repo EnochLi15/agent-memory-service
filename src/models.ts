@@ -1,4 +1,4 @@
-import {continuationCall} from './write-continuation.js';
+import {continuationCall,continuationActive} from './write-continuation.js';
 import {setTimeout as retryWait} from 'node:timers/promises';
 import {modelRetryDelay,modelRateLimitDelay,classifyStreamError} from './model-retry.js';
 import {sharedModelGate,ModelGate} from './model-gate.js';
@@ -61,7 +61,15 @@ export class Models {
           repair='\nPROTOCOL_REPAIR: '+JSON.stringify({error:'Previous verification was invalid JSON; no checks could be decoded.'})+'. Return valid JSON containing every check in CHECK_SCOPE. Do not change the proposal or guess a passing verdict.';
           continue;
         }
-        if(error instanceof ServiceError&&error.code==='EVIDENCE_VALIDATION')throw error;
+        if(error instanceof ServiceError&&error.code==='EVIDENCE_VALIDATION'){
+          // Undecodable verification output that survived its bounded repair is
+          // a channel outage, not a semantic verdict. Continuation mode keeps
+          // the strict terminal rejection (the closed ledger replays it);
+          // ordinary evaluation mode reports the channel unavailable so the
+          // write degrades to the deterministic plan with an audit marker.
+          if(error instanceof VerificationJsonError&&!continuationActive())throw new ServiceError('VERIFICATION_UNAVAILABLE','Verification output could not be decoded within the repair budget');
+          throw error;
+        }
         throw new ServiceError('VERIFICATION_UNAVAILABLE','Could not complete evidence verification within the request budget');
       }
       try{const decoded=named?decodeNamedVerification(raw,proposal,scope,coverage):compact?decodeCompactVerification(raw,proposal,scope,coverage):undefined;return session.evaluate(plan,decoded?.canonical??raw,decoded?.protocolErrors);}
@@ -96,12 +104,24 @@ export class Models {
       return packet.value;
     }
     catch(error){
-      // Outside the typed verification envelope, syntax remains terminal.
-      // Keep the private audit's invalid_json classification and never expose
-      // raw output or invite an HTTP retry against an already closed ledger.
-      if(error instanceof SyntaxError)throw new ServiceError('EVIDENCE_VALIDATION','Model returned invalid JSON; this preparation cannot be resumed');
+      // Outside the typed verification envelope the terminal classification
+      // splits by write mode. Continuation mode keeps the strict contract: a
+      // typed rejection is recorded in the closed ledger, so an identical
+      // retry replays it instead of regenerating the prefix. Ordinary
+      // evaluation mode treats undecodable output as a model capability
+      // failure — the raw parse error propagates so the caller degrades to
+      // the deterministic plan with an audit marker (HTTP 200 stays
+      // retrievable). Never expose raw output.
+      if(error instanceof SyntaxError&&continuationActive())throw new ServiceError('EVIDENCE_VALIDATION','Model returned invalid JSON; this preparation cannot be resumed');
       throw error;
     }
+  }
+  /** Cheap endpoint liveness probe (model listing, no completion tokens). */
+  async probe():Promise<boolean>{
+    try{
+      const response=await fetch(`${this.config.llmBase}/models`,{method:'GET',headers:this.config.llmKey?{Authorization:`Bearer ${this.config.llmKey}`}:{},signal:AbortSignal.timeout(5000)});
+      return response.ok;
+    }catch{return false;}
   }
   private async generateJson(system:string,user:string,signal:AbortSignal,context?:GenerationContext):Promise<unknown>{
     // Streaming prevents idle gateway disconnects during long structured generations.

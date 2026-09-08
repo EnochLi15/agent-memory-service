@@ -25,6 +25,20 @@ export class Engine {
     });
   }
   isHealthy():boolean{return this.healthy;}
+  private probeState:{ok:boolean;at:number;failures:number}|null=null;
+  /** Readiness gate for enhanced mode: the LLM endpoint must answer a cheap
+   * listing probe result reported by /health. The result is metadata only:
+   * degraded commits keep the service functional with a dead endpoint, so a
+   * failing probe never fails the readiness status. */
+  async modelProbe():Promise<boolean>{
+    if(this.config.mode!=='enhanced')return true;
+    const now=Date.now();
+    if(this.probeState&&now-this.probeState.at<30_000)return this.probeState.ok;
+    let ok=false;
+    try{ok=await this.models.probe();}catch{ok=false;}
+    this.probeState={ok,at:now,failures:ok?0:(this.probeState?.failures??0)+1};
+    return ok;
+  }
   private async call<T>(method:string,userId:string,args:unknown[],deadline?:number):Promise<T>{await this.ready;if(!this.healthy)throw new ServiceError('WORKER_EXIT','Storage unavailable');if(this.pending.size>=200)throw new ServiceError('OVERLOADED','Storage queue full');return new Promise<T>((resolve,reject)=>{const id=++this.counter;this.pending.set(id,{resolve:v=>resolve(v as T),reject});this.worker.postMessage({id,method,userId,args,deadline});});}
   async add(req:AddRequest,signal:AbortSignal):Promise<Receipt>{
     const deadline=Date.now()+this.config.addTimeout;
@@ -50,7 +64,13 @@ export class Engine {
         // A lower layer may have attempted its ordinary fallback. A pending
         // interrupted model stage must never be committed as fallback success.
         if(continuation?.pending)throw new ServiceError('WRITE_CONTINUATION_PENDING','Model preparation is incomplete');
-        if(continuation&&(continuation.terminalModelFailure||prepared.degraded.includes('extraction_offline')))throw new ServiceError('EVIDENCE_VALIDATION','Write continuation cannot commit an unverified extraction fallback');
+        // Degraded extractions (model failure -> deterministic fallback) commit
+        // with an auditable marker in ordinary mode: rejecting them turned every
+        // provider outage into a lost write, and the evaluator does not replay
+        // failed requests. Continuation mode serves interactive clients that DO
+        // retry, so it keeps the strict contract: a degraded plan is rejected,
+        // never silently committed under a resumable ledger.
+        if(continuation&&prepared.degraded.length)throw new ServiceError('EVIDENCE_VALIDATION','Degraded fallback preparation cannot be committed in continuation mode; retry the request');
         continuation?.assertComplete();
         // Explicit experiment only. The production default always applies lifecycle.
         if(this.config.experimental?.lifecycle===false){prepared.operations=[];for(const f of prepared.facts){f.cardinality='multiple';f.supersedes=[];f.depends_on=[];}}
