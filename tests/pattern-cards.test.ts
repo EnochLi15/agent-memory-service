@@ -137,3 +137,54 @@ test('MEMORY_EXPERIMENT_REFLECTION=false hides cards from retrieval while keepin
     assert.ok(items.length>0,'member facts still retrievable');
   });
 });
+
+const messageRows=(dir:string):{content:string;redacted?:boolean}[]=>{const store=new TenantStore(dir,user);const rows=store.db.prepare('SELECT body FROM messages').all() as {body:string}[];store.close();return rows.map(r=>JSON.parse(r.body));};
+
+test('forgetting one member redacts no sibling message (member-granular erasure)',async()=>{
+  await withServer({},async(app,dir)=>{
+    await add(app,'r1','I like hiking.','s1');
+    await add(app,'r2','I enjoy rock climbing.','s2');
+    assert.equal((await add(app,'r3','Forget that I like hiking.','s3')).statusCode,200);
+    // The card dies with its member, but its source union spans the innocent
+    // sibling: erasing that union would over-erase the sibling's raw message.
+    const sibling=messageRows(dir).find(m=>m.content.includes('rock climbing'));
+    assert.ok(sibling,'sibling message present');
+    assert.ok(!sibling.redacted,'innocent sibling message stays unredacted');
+    assert.equal(sibling.content,'I enjoy rock climbing.','raw message text untouched');
+    assert.ok(!messageRows(dir).some(m=>m.content.includes('I like hiking')),'forgotten member message redacted away');
+  });
+});
+
+test('an exact replay of a forgotten member resurrects nothing and hurts no sibling',async()=>{
+  await withServer({},async(app,dir)=>{
+    await add(app,'r1','I like hiking.','s1');
+    await add(app,'r2','I enjoy rock climbing.','s2');
+    await add(app,'r3','Forget that I like hiking.','s3');
+    assert.equal((await add(app,'r4','I like hiking.','s4')).statusCode,200);
+    assert.equal(reflections(dir).filter(c=>c.state==='active').length,0,'no card carries the replayed value');
+    const items=JSON.parse((await search(app,'hiking')).body).data as {content:string}[];
+    assert.equal(items.length,0,'replay cannot resurrect the forgotten value');
+    const sibling=messageRows(dir).find(m=>m.content.includes('rock climbing'));
+    assert.equal(sibling?.content,'I enjoy rock climbing.','sibling untouched by the replay');
+  });
+});
+
+test('a restored member rejoins the family card on the next content add',async()=>{
+  await withServer({},async(app,dir)=>{
+    await add(app,'r1','I like hiking.','s1');
+    await add(app,'r2','I enjoy rock climbing.','s2');
+    await add(app,'r3','Forget that I like hiking.','s3');
+    // Explicit reauthorization, then the value returns as a normal statement.
+    assert.equal((await add(app,'r4','Remember that my hobby is hiking again.','s4')).statusCode,200);
+    const store=new TenantStore(dir,user);
+    const restored=store.facts().find(f=>f.value==='hiking');
+    assert.ok(restored&&restored.state==='active','restored member is active again');
+    store.close();
+    assert.equal((await add(app,'r5','I love painting.','s5')).statusCode,200);
+    const active=reflections(dir).filter(c=>c.state==='active');
+    assert.equal(active.length,1,'family card re-derived');
+    assert.equal(active[0]!.value,'hiking, painting, rock climbing');
+    const sibling=messageRows(dir).find(m=>m.content.includes('rock climbing'));
+    assert.equal(sibling?.content,'I enjoy rock climbing.','no derived text ever rewrites member messages');
+  });
+});

@@ -213,13 +213,25 @@ export class TenantStore {
       if(failAt==='operations')throw new ServiceError('INJECTED_FAILURE','Fault injection before fact commit');
       const markers=(this.db.prepare('SELECT body FROM markers').all() as Row[]).map(r=>JSON.parse(r.body) as Marker);
       const mergedIds=new Map<string,string>();
+      const markerAbsorbed=new Set<string>();
       for(const incoming of prepared.facts){
         const f={...incoming,revision,...(retained.has(incoming.id)?{erasure_exemptions:retained.get(incoming.id)!}:{})};
-        if(forcedErased.has(f.id)){rememberErasedQuotes(f);erasedIds.add(f.id);for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}f.state='erased';f.content='';f.value='';f.vector=null;f.source_quotes=[];f.entities=[];}
+        if(forcedErased.has(f.id)){rememberErasedQuotes(f);erasedIds.add(f.id);if(f.kind!=='reflection')for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}f.state='erased';f.content='';f.value='';f.vector=null;f.source_quotes=[];f.entities=[];}
         for(const id of f.supersedes){const old=all.find(x=>x.id===id);if(old&&!replacementMatches(f,old))throw new ServiceError('FACT_TARGET','Replacement targets a different subject, property or scope');}
         if(f.state==='erased'||f.state==='retracted'||f.state==='superseded'){this.put(f);all.push(f);for(const id of f.source_ids)suppressedSources.add(id);continue;}
         // An exact old-value replay cannot resurrect forgotten material.
-        if(markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)) && ((sameSlot(m,f) && (m.boundary==='property'||m.valueHash===valueDigest(f.value)))||factContainsValue(f,m)))){for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}continue;}
+        // Pattern cards are absorbed at member granularity instead: their
+        // source union spans innocent sibling members, so absorbing a card
+        // wholesale would redact those siblings' messages, and a stale marker
+        // on one constituent value (forgotten, then explicitly restored)
+        // must not suppress the family card forever. A card skips commit only
+        // when one of its value representatives was itself absorbed in this
+        // commit; every stored member already passed its own marker check.
+        const patternCard=f.kind==='reflection'&&f.modality==='inferred';
+        if(patternCard?(f.depends_on??[]).some(id=>markerAbsorbed.has(id)):markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)) && ((sameSlot(m,f) && (m.boundary==='property'||m.valueHash===valueDigest(f.value)))||factContainsValue(f,m)))){
+          if(!patternCard){markerAbsorbed.add(f.id);for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}}
+          continue;
+        }
         if(f.modality==='hypothetical'||f.modality==='quoted')continue;
         const same=all.filter(old=>(old.state==='active'||old.state==='conflicted')&&slot(old)===slot(f));
         const duplicate=same.find(old=>canonical(old.value)===canonical(f.value)&&old.modality===f.modality&&f.kind!=='event');
@@ -262,8 +274,13 @@ export class TenantStore {
       while(changed){changed=false;for(const f of all){
         if(f.state==='erased')continue;
         const dependent=(f.depends_on??[]).some(id=>erasedIds.has(id)) || (f.modality==='inferred'&&f.source_ids.some(id=>redactedSources.has(id)));
-        const leaked=markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value))&&factContainsValue(f,m));
-        if(dependent||leaked||forcedErased.has(f.id)){erasedIds.add(f.id);rememberErasedQuotes(f);for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}f.state='erased';f.content='';f.value='';f.vector=null;f.source_quotes=[];f.entities=[];f.revision=revision;this.put(f);changed=true;}
+        // A card leaks only through its members — replay defense already ran
+        // per member in the commit loop — so a member's marker never erases
+        // the card here, and erasing a card never redacts its member-spanning
+        // source union (each member's own lifecycle owns its sources).
+        const card=f.kind==='reflection';
+        const leaked=!card&&markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value))&&factContainsValue(f,m));
+        if(dependent||leaked||forcedErased.has(f.id)){erasedIds.add(f.id);rememberErasedQuotes(f);if(!card)for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}f.state='erased';f.content='';f.value='';f.vector=null;f.source_quotes=[];f.entities=[];f.revision=revision;this.put(f);changed=true;}
       }}
       for(const m of inserted){if(markers.some(marker=>containsValue(m.content,marker))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
       if(semanticErasure&&prepared.operations.some(o=>o.type==='forget')){
@@ -353,12 +370,16 @@ export class TenantStore {
       for(const sourceId of suppressedSources){
         const row=this.db.prepare('SELECT body FROM messages WHERE id=?').get(sourceId) as Row|undefined;if(!row)continue;
         const m=JSON.parse(row.body) as StoredMessage;
-        m.searchable=!!m.partial&&all.filter(f=>f.source_ids.includes(sourceId)).every(f=>f.state==='active'||f.state==='conflicted')&&!prepared.operations.some(o=>prepared.messages[o.source.index]?.id===sourceId);
+        // Reflection cards are derived fact-layer evidence whose source unions
+        // span member messages: the message layer's redaction bookkeeping skips
+        // them entirely, so a card (committed, erased or otherwise) can never
+        // cause a member message to be redacted or rewritten.
+        m.searchable=!!m.partial&&all.filter(f=>f.kind!=='reflection'&&f.source_ids.includes(sourceId)).every(f=>f.state==='active'||f.state==='conflicted')&&!prepared.operations.some(o=>prepared.messages[o.source.index]?.id===sourceId);
         if(sourceErasure){
           const cuts=sourceCuts.get(sourceId)??[];
           if(cuts.length){m.content=maskSource(m.content,cuts);m.redacted=true;m.partial=true;m.searchable=/[\p{L}\p{N}]/u.test(m.content);}
-        }else if(redactedSources.has(sourceId) || all.some(f=>f.state==='erased'&&f.source_ids.includes(sourceId)) || prepared.operations.some(o=>o.type==='forget'&&prepared.messages[o.source.index]?.id===sourceId)){
-          m.redacted=true;m.searchable=false;m.content=all.filter(f=>(f.state==='active'||f.state==='conflicted')&&f.source_ids.includes(sourceId)).map(f=>f.content).join('\n') || '[Memory content removed]';
+        }else if(redactedSources.has(sourceId) || all.some(f=>f.state==='erased'&&f.kind!=='reflection'&&f.source_ids.includes(sourceId)) || prepared.operations.some(o=>o.type==='forget'&&prepared.messages[o.source.index]?.id===sourceId)){
+          m.redacted=true;m.searchable=false;m.content=all.filter(f=>(f.state==='active'||f.state==='conflicted')&&f.kind!=='reflection'&&f.source_ids.includes(sourceId)).map(f=>f.content).join('\n') || '[Memory content removed]';
         }
         this.db.prepare('UPDATE messages SET body=? WHERE id=?').run(JSON.stringify(m),sourceId);
       }
