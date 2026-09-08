@@ -11,6 +11,18 @@ export function containsValue(text:string,m:ErasureBoundary):boolean{
  for(let i=0;n>0&&i+n<=words.length;i++)if(digest(words.slice(i,i+n).join(' '))===m.valueHash)return true;
  return false;
 }
+/** A phrase deleted in one wording re-enters through another: "brought on
+ * three new hires" vs "added three new hires". The digest window only proves
+ * the literal original; message and passage suppression also treat any
+ * contiguous two-token run of the boundary phrase (or its single token) as a
+ * mention. Fact-boundary semantics keep the stricter containsValue rules. */
+export function mentionsTokens(text:string,phrase:string[]):boolean{
+ const words=valueWords(text);
+ if(!phrase.length)return false;
+ if(phrase.length===1)return words.includes(phrase[0]!);
+ for(let i=0;i+1<words.length;i++)for(let j=0;j+1<phrase.length;j++)if(words[i]===phrase[j]&&words[i+1]===phrase[j+1]!)return true;
+ return false;
+}
 type ErasureFact=Pick<Fact,'id'|'content'|'subject'|'predicate'|'scope'|'scopeHash'|'value'|'source_ids'|'source_quotes'|'depends_on'>;
 /** A generated participant label is not a literal occurrence in human evidence.
  * Preserve actual values and quoted literals, including a real account named user. */

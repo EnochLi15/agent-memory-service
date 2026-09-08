@@ -17,7 +17,7 @@ import {eventCategory} from './events.js';
 import {resolveOperationTargets} from './binding.js';
 import {retirementEffectMismatch,missingForgetObligations} from './operation-intent.js';
 import {erasureAnchors,sourceErasureWork,validateSourceErasure,maskSource,assertErasedWitnessProgress} from './source-erasure.js';
-import {valueWords,valueDigest,containsValue,factContainsValue,valueOccurrences,boundaryKey,protectBoundary,retainedAgainst,erasureWork,validateErasurePlan,validateRetainedValueContexts} from './erasure.js';
+import {valueWords,valueDigest,containsValue,factContainsValue,valueOccurrences,mentionsTokens,boundaryKey,protectBoundary,retainedAgainst,erasureWork,validateErasurePlan,validateRetainedValueContexts} from './erasure.js';
 import type {ErasureBoundary} from './types.js';
 import {transitionKey,transitionWork,validateTransitions} from './transitions.js';
 
@@ -199,7 +199,12 @@ export class TenantStore {
           if(f.state==='erased')continue;
           for(const id of f.source_ids)suppressedSources.add(id);
           if(operation.type==='forget'){
-            const marker:Marker={subject:f.subject,predicate:f.predicate,scope:f.scope,boundary:operation.boundary,valueHash:valueDigest(f.value),tokenCount:valueWords(f.value).length,allowedValueHashes:[],revision,...(sourceErasure?{anchorHashes:erasureAnchors(f)}:{})};
+            // A narrative instruction binds by the named phrase ("the Tucson
+            // detail"), not by the erased sentence's wording: the marker
+            // carries the phrase so differently-worded echoes of it match.
+            const boundaryValue=operation.value||f.value;
+            const phrase=valueWords(operation.value);
+            const marker:Marker={subject:f.subject,predicate:f.predicate,scope:f.scope,boundary:operation.boundary,valueHash:valueDigest(boundaryValue),tokenCount:valueWords(boundaryValue).length,allowedValueHashes:[],revision,...(sourceErasure?{anchorHashes:erasureAnchors(f)}:{}),...(phrase.length&&phrase.length<=8?{phraseTokens:phrase}:{})};
             this.db.prepare('INSERT INTO markers(body) VALUES (?)').run(JSON.stringify(protectBoundary(marker)));
             erasedIds.add(f.id);for(const id of f.source_ids)redactedSources.add(id);
             rememberErasedQuotes(f);
@@ -228,7 +233,7 @@ export class TenantStore {
         // when one of its value representatives was itself absorbed in this
         // commit; every stored member already passed its own marker check.
         const patternCard=f.kind==='reflection'&&f.modality==='inferred';
-        if(patternCard?(f.depends_on??[]).some(id=>markerAbsorbed.has(id)):markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)) && ((sameSlot(m,f) && (m.boundary==='property'||m.valueHash===valueDigest(f.value)))||factContainsValue(f,m)))){
+        if(patternCard?(f.depends_on??[]).some(id=>markerAbsorbed.has(id)):markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)) && ((sameSlot(m,f) && (m.boundary==='property'||m.valueHash===valueDigest(f.value)))||factContainsValue(f,m)||(m.phraseTokens?.length?mentionsTokens(f.content,m.phraseTokens):false)))){
           if(!patternCard){markerAbsorbed.add(f.id);for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}}
           continue;
         }
@@ -286,11 +291,13 @@ export class TenantStore {
         const leaked=!card&&markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value))&&factContainsValue(f,m)&&(sameSlot(m,f)||f.source_ids.some(id=>redactedSources.has(id))));
         if(dependent||leaked||forcedErased.has(f.id)){erasedIds.add(f.id);rememberErasedQuotes(f);if(!card)for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}f.state='erased';f.content='';f.value='';f.vector=null;f.source_quotes=[];f.entities=[];f.revision=revision;this.put(f);changed=true;}
       }}
-      for(const m of inserted){if(markers.some(marker=>containsValue(m.content,marker))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
-      if(semanticErasure&&prepared.operations.some(o=>o.type==='forget')){
+      for(const m of inserted){if(markers.some(marker=>containsValue(m.content,marker)||(marker.phraseTokens?.length?mentionsTokens(m.content,marker.phraseTokens):false))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
+      if(prepared.operations.some(o=>o.type==='forget')){
         // Old assistant echoes have no fact links. They must not remain raw
-        // searchable evidence or return through the next session's tail.
-        for(const row of this.db.prepare('SELECT body FROM messages').all() as Row[]){const m=JSON.parse(row.body) as StoredMessage;if(markers.some(marker=>containsValue(m.content,marker))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
+        // searchable evidence or return through the next session's tail. This
+        // marker-driven sweep is deterministic and applies to every write
+        // mode: an offline forget erases echoes just as finally.
+        for(const row of this.db.prepare('SELECT body FROM messages').all() as Row[]){const m=JSON.parse(row.body) as StoredMessage;if(markers.some(marker=>containsValue(m.content,marker)||(marker.phraseTokens?.length?mentionsTokens(m.content,marker.phraseTokens):false))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
       }
       if(sourceErasure){
         // A short nonlexical value may have no model candidate; its authorized
@@ -365,7 +372,7 @@ export class TenantStore {
           }));
           redactPassage(p,cuts);
         }
-        if(!semanticErasure&&markers.some(m=>containsValue(p.content,m)&&(!linked.length||linked.some(f=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)))))){
+        if(!semanticErasure&&markers.some(m=>(containsValue(p.content,m)||(m.phraseTokens?.length?mentionsTokens(p.content,m.phraseTokens):false))&&(!linked.length||linked.some(f=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)))))){
           p.fragments=[];p.content='';p.vector=null;p.state='erased';
         }
         if(newPassageIds.has(p.id)||JSON.stringify(p)!==previous){p.revision=revision;this.putPassage(p);}
@@ -390,9 +397,9 @@ export class TenantStore {
       // Event records refer to state IDs; they never copy before/after values.
       const events:MemoryEvent[]=[];
       const current=new Map(this.facts().map(f=>[f.id,f]));
-      const event=(type:MemoryEvent['type'],f:Pick<Fact,'subject'|'predicate'|'scope'|'content'>,sourceIds:string[],beforeIds:string[],afterIds:string[],position=0,actor:MemoryEvent['actor']='observation'):void=>{
+      const event=(type:MemoryEvent['type'],f:Pick<Fact,'subject'|'predicate'|'scope'|'content'>,sourceIds:string[],beforeIds:string[],afterIds:string[],position=0,actor:MemoryEvent['actor']='observation',descriptor?:string):void=>{
         const source=inserted.filter(m=>sourceIds.includes(m.id)).sort((a,b)=>a.ordinal-b.ordinal)[0];if(!source)return;
-        events.push({id:'event-'+digest(`${req.user_id}\0${req.request_id}\0${events.length}`),type,actor,category:eventCategory(f),slot_hash:digest(slot(f)),source_ids:sourceIds,before_ids:beforeIds,after_ids:afterIds,ordinal:source.ordinal*10000000+position,observed_at:source.timestamp!,time_basis:source.time_basis??'source',revision});
+        events.push({id:'event-'+digest(`${req.user_id}\0${req.request_id}\0${events.length}`),type,actor,category:eventCategory(f),slot_hash:digest(slot(f)),source_ids:sourceIds,before_ids:beforeIds,after_ids:afterIds,ordinal:source.ordinal*10000000+position,observed_at:source.timestamp!,time_basis:source.time_basis??'source',revision,...(descriptor?{descriptor}:{})});
       };
       for(const f of prepared.facts){
         const id=mergedIds.get(f.id)??f.id;if(!current.has(id))continue;
@@ -405,7 +412,11 @@ export class TenantStore {
         const source=prepared.messages[o.source.index]!;const ids=operationTargets.get(o)??[];
         const after=['forget','retract'].includes(o.type)?[]:prepared.facts.filter(f=>slot(f)===slot(o)&&f.source_ids.includes(source.id)).map(f=>mergedIds.get(f.id)??f.id).filter(id=>current.has(id));
         const original=originalFacts.find(f=>ids.includes(f.id))??prepared.facts.find(f=>ids.includes(f.id));
-        event(o.type,{...o,content:original?.content??''},[source.id],ids,after,source.content.indexOf(o.source.quote),source.role==='user'?'user':'participant');
+        // "What did I ask you to remove?" is answerable only if the trace
+        // names the removed category in the user's own words, value-free.
+        const tracePhrase=o.type==='forget'&&o.value?valueWords(o.value):[];
+        const traceDescriptor=o.type==='forget'&&o.reason&&o.reason.length<=40&&!(tracePhrase.length&&mentionsTokens(o.reason,tracePhrase))?o.reason:undefined;
+        event(o.type,{...o,content:original?.content??''},[source.id],ids,after,source.content.indexOf(o.source.quote),source.role==='user'?'user':'participant',traceDescriptor);
         this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:o.type,target_ids:ids,subject:o.subject,predicate:o.predicate,scope:'',scopeHash:scopeKey(o),boundary:o.boundary,source_id:source.id,revision}));
       }
       if(sourceActions)for(const d of sourceActions.plan.decisions.filter(d=>d.action==='reject_source')){
