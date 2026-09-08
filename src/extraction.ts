@@ -17,7 +17,7 @@ import {forgetScopeContext,humanQuote,participantIndices} from './verification.j
 import {SOURCE_REFERENCE_PROTOCOL,SOURCE_REFERENCE_PROMPT,sourceReferenceMessages,decodeSourceReferences} from './source-references.js';
 import {GROUPED_EXTRACTION_PROTOCOL,GROUPED_EXTRACTION_PROMPT,decodeGroupedExtraction} from './extraction-groups.js';
 import {VerificationSession} from './verification-session.js';
-import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,replacementBindingProblems,operationBindingProblems,RepairScopeError,type RepairScope} from './repair.js';
+import {PATCH_PROMPT,SEMANTIC_RETIREMENT_REPAIR_PROMPT,applyRepair,scopeForFindings,retirementInstructionsAtRisk,replacementTargetGroups,replacementBindingProblems,operationBindingProblems,RepairScopeError,type RepairScope} from './repair.js';
 import {sourceErasureWork} from './source-erasure.js';
 import {conservativeSourceErasureFallback} from './source-erasure-fallback.js';
 import {executeSourceErasure} from './source-erasure-execution.js';
@@ -451,11 +451,12 @@ export class Extractor {
       // This inner budget never extends the caller's absolute request deadline.
       let semanticallyRejected=false,unresolvedOperationIntent=false;const verificationSession=new VerificationSession(this.config.incrementalVerification);
       try {
-        let issue='';let failedProposal:unknown;let repairScope:RepairScope|undefined;let accepted:Extraction|undefined;
+        let issue='';let failedProposal:unknown;let repairScope:RepairScope|undefined;let semanticRepairFindings:string[]=[];let accepted:Extraction|undefined;
         for(let attempt=0;attempt<=this.config.maxRepairRounds;attempt++){
           const prior=extractionSchema.safeParse(failedProposal);
           const patchMode=!!issue&&prior.success;
           const scope=repairScope??{fact_indices:prior.success?prior.data.facts.map((_,i)=>i):[],operation_indices:prior.success?prior.data.operations.map((_,i)=>i):[],source_indices:req.messages.map((_,i)=>i)};
+          const rejectedFindings=semanticRepairFindings;semanticRepairFindings=[];
           // A scope belongs to one rejected proposal. Consume it before the next
           // validation pass, whose indices may include newly appended facts.
           repairScope=undefined;
@@ -463,10 +464,11 @@ export class Extractor {
           // Do not ask a scoped repair to append an operation from another
           // message. Remaining obligations are checked again after this patch.
           const missingInstructions=patchMode?pendingForget(prior.data!).filter(({index})=>scope.source_indices.includes(index)).map(({index,span})=>({index,start:span.start,end:span.end,quote:span.quote})):[];
-          const repairInput=issue?JSON.stringify({...JSON.parse(user),...(grouped&&patchMode?{EXTRACTION_PROTOCOL:'flat-patch-v1',NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))}:{}),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:patchMode?indexedProposal(prior.data!):failedProposal,...(missingInstructions.length?{MISSING_OPERATION_INSTRUCTIONS:missingInstructions}:{}),...(patchMode?{REPAIR_SCOPE:scope,REPLACEMENT_TARGET_GROUPS:replacementTargetGroups(prior.data!,relevant),FORGET_SCOPE_CONTEXT:repairForgetContext(prior.data!),FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
+          const atRiskInstructions=patchMode?retirementInstructionsAtRisk(req,prior.data!,rejectedFindings,scope,sourceActions):[];
+          const repairInput=issue?JSON.stringify({...JSON.parse(user),...(grouped&&patchMode?{EXTRACTION_PROTOCOL:'flat-patch-v1',NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))}:{}),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:patchMode?indexedProposal(prior.data!):failedProposal,...(missingInstructions.length?{MISSING_OPERATION_INSTRUCTIONS:missingInstructions}:{}),...(atRiskInstructions.length?{AT_RISK_OPERATION_INSTRUCTIONS:atRiskInstructions}:{}),...(patchMode?{REPAIR_SCOPE:scope,REPLACEMENT_TARGET_GROUPS:replacementTargetGroups(prior.data!,relevant),FORGET_SCOPE_CONTEXT:repairForgetContext(prior.data!),FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
           const output=!issue&&grouped&&this.config.extractionWorkers>1&&participantIndices(req).length>=4
             ?await prepareExtractionShards(req,extractionPrompt,user,this.config.extractionWorkers,modelSignal,(prompt,input,s,extraction_shard)=>this.models.json(prompt,input,s,{purpose:'extraction',trace:traceIdentity,extraction_shard}))
-            :await this.models.json(patchMode?PATCH_PROMPT:extractionPrompt+repairSystem,repairInput,modelSignal,{purpose:issue?'repair':'extraction',trace:traceIdentity});
+            :await this.models.json(patchMode?PATCH_PROMPT+(atRiskInstructions.length?SEMANTIC_RETIREMENT_REPAIR_PROMPT:''):extractionPrompt+repairSystem,repairInput,modelSignal,{purpose:issue?'repair':'extraction',trace:traceIdentity});
           let raw:unknown=output;
           if(grouped&&!patchMode){
             try{raw=references?decodeSourceReferences(output,req):decodeGroupedExtraction(output,req);}
@@ -485,6 +487,7 @@ export class Extractor {
                 // Discard the invalid patch. Preserve the rejected proposal and
                 // its exact scope, then spend only an already-allowed attempt.
                 repairScope=scope;
+                semanticRepairFindings=rejectedFindings;
                 issue+=' Patch rejected: '+error.message+'. Retry within the unchanged REPAIR_SCOPE; do not add sources outside that scope or the edited fact\'s original sources.';
                 continue;
               }
@@ -573,7 +576,7 @@ export class Extractor {
           if(invalid.length||badOps.length){issue='Every source quote must be an exact substring of the indicated NEW_MESSAGES content. Operations must cite a USER message, or a named real participant changing their own facts. An unlabelled assistant reply never authorizes changes. Never copy CONTEXT_ONLY as a new source. Fix all facts/operations and return the full object. Invalid fact spans: '+JSON.stringify(invalid.slice(0,8));continue;}
           const rejectionFindings=sourceRejectionFindings(sourceOperationPlan,req,valid.data.facts,sourceHistory);
           const findings=rejectionFindings.length?rejectionFindings:await this.models.verify(valid.data,req,bindingPool,missingPersonalSources(req,valid.data),modelSignal,verificationSession,sourceActions);
-          if(findings.length){expandTargets(valid.data);semanticallyRejected=true;repairScope=scopeForFindings(valid.data,findings);issue='Semantic verification rejected the proposal. Repair these specific failures while preserving supported unrelated facts. '+JSON.stringify(findings)+'. Return the complete corrected object.';continue;}
+          if(findings.length){expandTargets(valid.data);semanticallyRejected=true;repairScope=scopeForFindings(valid.data,findings);semanticRepairFindings=findings;issue='Semantic verification rejected the proposal. Repair these specific failures while preserving supported unrelated facts. '+JSON.stringify(findings)+'. Return the complete corrected object.';continue;}
           accepted=valid.data;break;
         }
         if(!accepted&&issue.startsWith('Unknown target'))throw new ServiceError('OPERATION_TARGET','Unknown memory operation target after repair');
