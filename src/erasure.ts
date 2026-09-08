@@ -34,13 +34,19 @@ export function buildPhraseEcho(phrase:string[]):PhraseEchoIndex{
  * A reworded replay of a three-plus-token phrase shares several consecutive
  * bigrams ("added three new hires last quarter"), while one shared bigram is
  * usually coincidence — a new "Alice Van Jones" after "Alice Van Smith" was
- * retired must survive with its record and message intact. One- and
- * two-token phrases can only ever share one bigram and keep the
- * single-match rule. A later message may also carry just the surname of a
- * retired titled name — "the Mehta stuff" after "Professor Anil Mehta" —
- * which no bigram reaches; that relaxation fires only for phrases carrying
- * a title, so common-noun phrases ("salary information") never redact
- * ordinary later talk of "salary". */
+ * retired must survive with its record and message intact. One exception
+ * carries only one shared bigram yet is still the same property: a
+ * possessive-anchored phrase ("Sarah's salary") echoed with its opening
+ * possessive bigram AND its head noun — "Sarah's annual salary at Meridian"
+ * — is the same subject's same category under different wording, unlike
+ * "Alice Van Jones" (head noun Smith absent) or another team's "L6 band
+ * floor" (opening "L6 comp" bigram absent). One- and two-token phrases can
+ * only ever share one bigram and keep the single-match rule. A later
+ * message may also carry just the surname of a retired titled name — "the
+ * Mehta stuff" after "Professor Anil Mehta" — which no bigram reaches; that
+ * relaxation fires only for phrases carrying a title, so common-noun
+ * phrases ("salary information") never redact ordinary later talk of
+ * "salary". */
 export function echoMentions(text:string,echo:PhraseEchoIndex|undefined):boolean{
  if(!echo||!echo.t.length)return false;
  const words=valueWords(text),tokenSet=new Set(words.map(w=>digest(w)));
@@ -49,6 +55,7 @@ export function echoMentions(text:string,echo:PhraseEchoIndex|undefined):boolean
  const shared=echo.p.filter(h=>pairSet.has(h)).length;
  if(echo.t.length===2)return shared>0;
  if(shared>=2)return true;
+ if(shared===1&&pairSet.has(echo.p[0]!)&&tokenSet.has(echo.t[echo.t.length-1]!))return true;
  if(echo.t.length>5)return false;
  if(!echo.titles.some(Boolean))return false;
  return echo.t.some((h,i)=>!echo.titles[i]&&(echo.lengths[i]??0)>=3&&tokenSet.has(h));

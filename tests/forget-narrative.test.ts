@@ -235,3 +235,30 @@ test('review F4: marker rows carry no plaintext of the erased value while echo s
     assert.equal(tail[2]!.redacted,true,'the hashed echo index still suppresses a verbatim replay');
   }finally{done();}
 });
+
+// "Forget Sarah's salary information" binds by the phrase [sarah s salary].
+// An assistant confirmation restating the property shares only the (sarah s)
+// bigram with that phrase — too few for the ≥2-bigram echo window — but it
+// carries BOTH the opening possessive bigram and the head noun "salary":
+// the same subject's same category under different wording, so it is still
+// an echo. A different property of the same subject (a signing bonus) or a
+// different subject's same wording (Alice Van Jones) shares neither and
+// survives.
+test('possessive echo: a confirmation restating the same subject and property is suppressed while a different property survives',async()=>{
+  const {store,done}=await fixture([
+    [{role:'user',content:"One more thing on the financial side—Sarah's annual salary at Meridian is $58,500, which she confirmed with HR last week. That's about $6,000 more than what she was earning at the clinic."},{role:'assistant',content:"I've noted Sarah's annual salary at Meridian as $58,500."}],
+    [{role:'user',content:"Please go ahead and forget Sarah's salary information."}],
+    [{role:'user',content:"Sarah's signing bonus was $6,000, which is separate from her pay."}],
+  ]);
+  try{
+    assert.ok(store.facts().every(f=>!/58,?500/.test(`${f.content} ${f.value}`)),'no record still carries the erased salary figure');
+    const bonus=store.facts().find(f=>/\$6,000/.test(f.content));
+    assert.ok(bonus&&bonus.state==='active','the different-property bonus fact stays active');
+    const tail=store.snapshot('s').tail;
+    assert.equal(tail[0]!.redacted,true,'the statement message carrying the literal is redacted');
+    assert.equal(tail[1]!.redacted,true,'the assistant confirmation restating the property is redacted');
+    assert.ok(!tail[3]!.redacted,'the bonus message is untouched');
+    const rows=(store.db.prepare('SELECT body FROM markers').all() as {body:string}[]).map(r=>r.body).join('\n');
+    assert.ok(!rows.includes('58,500')&&!rows.includes('salary'),'no marker row stores the plaintext value or phrase');
+  }finally{done();}
+});
