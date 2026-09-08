@@ -1,5 +1,9 @@
 FROM node:24.18.0-bookworm-slim AS build
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && rm -rf /var/lib/apt/lists/*
+# Build-time apt mirror override (defaults to upstream; no behavior change unless set):
+#   docker build --build-arg APT_MIRROR=mirrors.tuna.tsinghua.edu.cn .
+ARG APT_MIRROR=deb.debian.org
+RUN sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
+  && apt-get update && apt-get install -y --no-install-recommends python3 make g++ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
