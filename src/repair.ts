@@ -92,6 +92,31 @@ export function operationBindingProblems(proposal:Extraction,targets:Pick<Fact,'
   return [{operation,code:codes[0]!,codes,requested:{subject:o.subject,predicate:o.predicate,scope:o.scope},selected_targets:selected.map(f=>({id:label(f.id),proposal_index:proposalIndex(f.id),subject:f.subject,predicate:f.predicate,scope:f.scope,...(f.scopeHash?{scopeHash:f.scopeHash}:{}),content:f.content})),selected_target_groups:[...groups.values()]}];
  });
 }
+/** Partition an explicit selection, never discover or authorize deletion targets.
+ * Keep the original slot first and append other slots without moving siblings. */
+export function splitForgetScopeProposal(req:AddRequest,proposal:Extraction,stored:Fact[]){
+ const problems=operationBindingProblems(proposal,stored),candidate=structuredClone(proposal),origins=proposal.operations.map((_,i)=>i),obligations=forgetObligations(req);
+ if(!problems.length)return null;
+ for(const problem of problems){
+  const index=problem.operation,op=proposal.operations[index]!,source=op.source as {index:number;quote:string;start?:number},text=req.messages[source.index]?.content??'',at=text.indexOf(source.quote);
+  if(op.type!=='forget'||op.boundary!=='value'||!op.target_ids.length||op.target_ids.length>8||new Set(op.target_ids).size!==op.target_ids.length||problem.codes.some(c=>c!=='OPERATION_SCOPE'&&c!=='AMBIGUOUS_OPERATION'))return null;
+  if(!authorizesForget(op,req)||obligations.filter(o=>o.index===source.index).length!==1||!source.quote||at<0||text.lastIndexOf(source.quote)!==at||(source.start!==undefined&&source.start!==at))return null;
+  const selected=op.target_ids.map(id=>stored.find(f=>f.id===id));
+  if(selected.some(f=>!f||f.state!=='active'||f.kind==='reflection'||f.depends_on.length||f.scopeHash||canonical(f.subject)!==canonical(op.subject)))return null;
+  const groups=[...problem.selected_target_groups];
+  const first=groups.findIndex(g=>canonical(g.subject)===canonical(op.subject)&&propertyFamily(g.predicate)===propertyFamily(op.predicate)&&canonical(g.scope)===canonical(op.scope));
+  if(groups.length<2||first<0)return null;
+  groups.unshift(...groups.splice(first,1));
+  for(const [position,group] of groups.entries()){
+   const facts=group.target_ids.map(id=>stored.find(f=>f.id===id)!),record=facts[0]!;
+   if(!record.value||facts.some(f=>JSON.stringify([f.subject,f.predicate,f.scope,f.value])!==JSON.stringify([record.subject,record.predicate,record.scope,record.value])))return null;
+   const next={...structuredClone(op),subject:record.subject,predicate:record.predicate,scope:record.scope,value:record.value,target_ids:op.target_ids.filter(id=>group.target_ids.includes(id))};
+   if(position===0)candidate.operations[index]=next;else{candidate.operations.push(next);origins.push(index);}
+  }
+  if(candidate.operations.length-proposal.operations.length>8)return null;
+ }
+ return {candidate,origins,indices:problems.map(p=>p.operation)};
+}
 /** Structural compatibility only. The semantic verifier still checks whether the
  * source authorizes replacement, and same-chunk references still need chronology. */
 export function replacementTargetGroups(proposal:Extraction,existing:Pick<Fact,'id'|'subject'|'predicate'|'scope'>[]){

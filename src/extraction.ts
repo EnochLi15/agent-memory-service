@@ -17,7 +17,7 @@ import {forgetScopeContext,humanQuote,participantIndices} from './verification.j
 import {SOURCE_REFERENCE_PROTOCOL,SOURCE_REFERENCE_PROMPT,sourceReferenceMessages,decodeSourceReferences} from './source-references.js';
 import {GROUPED_EXTRACTION_PROTOCOL,GROUPED_EXTRACTION_PROMPT,decodeGroupedExtraction} from './extraction-groups.js';
 import {VerificationSession} from './verification-session.js';
-import {PATCH_PROMPT,SEMANTIC_RETIREMENT_REPAIR_PROMPT,SOURCE_AUTHORIZATION_REPAIR_PROMPT,sourceAuthorizationCandidates,uniqueSourceOnlyProposal,applyRepair,scopeForFindings,retirementInstructionsAtRisk,replacementTargetGroups,replacementBindingProblems,operationBindingProblems,RepairScopeError,type RepairScope} from './repair.js';
+import {PATCH_PROMPT,SEMANTIC_RETIREMENT_REPAIR_PROMPT,SOURCE_AUTHORIZATION_REPAIR_PROMPT,sourceAuthorizationCandidates,uniqueSourceOnlyProposal,splitForgetScopeProposal,applyRepair,scopeForFindings,retirementInstructionsAtRisk,replacementTargetGroups,replacementBindingProblems,operationBindingProblems,RepairScopeError,type RepairScope} from './repair.js';
 import {sourceErasureWork} from './source-erasure.js';
 import {conservativeSourceErasureFallback} from './source-erasure-fallback.js';
 import {executeSourceErasure} from './source-erasure-execution.js';
@@ -385,7 +385,7 @@ export class Extractor {
     normalizeMissingTimestamps(req,snapshot);
     const traceIdentity={user_id:req.user_id,request_id:req.request_id};
     if(this.config.sourceErasure&&!this.config.experimental?.rawOnly&&snapshot.revision>0&&!snapshot.erasureSources)throw new ServiceError('SOURCE_FORMAT','Source erasure requires a fresh v4 directory');
-    const degraded: string[] = [];const partialSources=new Set<number>();let sourceOnlyProposalUsed=false;
+    const degraded: string[] = [];const partialSources=new Set<number>();let operationProposalUsed=false;
     const modelSignal=AbortSignal.any([signal,AbortSignal.timeout(Math.min(95000,Math.max(500,this.config.addTimeout-25000)))]);
     const sourceHistory=this.config.sourceOperationHistory?(snapshot.erasureSources??[]):[];
     let sourceOperationPlan:Prepared['sourceOperationPlan'];
@@ -523,12 +523,27 @@ export class Extractor {
           const unauthorized=valid.data.operations.flatMap((o,index)=>o.type==='forget'&&!authorizesForget(o,req)?[index]:[]);
           const badOps=valid.data.operations.filter(o=>!req.messages[o.source.index]?.content.includes(o.source.quote)||!humanOperation(o,req));
           const sourceFeedback=invalid.length||badOps.length||unauthorized.length?' SOURCE_ERRORS: '+JSON.stringify({facts:invalid,operations:badOps,authorization_errors:unauthorized.map(operation=>({operation,source:valid.data.operations[operation]!.source,reason:'Cited span does not authorize deletion of this target.'}))})+'. Also repair these exact human source spans in this same patch; copy from NEW_MESSAGES without paraphrasing. For authorization errors cite an actual deletion instruction for the same target, not a reason for removal; remove only that unsupported operation if no such instruction exists. Preserve valid sibling operations.':'';
-          const badScopes=operationBindingProblems(valid.data,bindingPool,id=>id,id=>valid.data.facts.findIndex((_,i)=>factId(req,i)===id));
+          let badScopes=operationBindingProblems(valid.data,bindingPool,id=>id,id=>valid.data.facts.findIndex((_,i)=>factId(req,i)===id));
           // Resolve a copy to expose independent selector failures in the same
           // bounded patch as scope errors. Do not silently bind the failed proposal
           // or grant permission to edit valid sibling operations.
           const selectorIssues=bindOperationSelectors(structuredClone(valid.data),req,snapshot).filter(issue=>!badScopes.some(o=>o.operation===issue.operation));
           const badReplacements=valid.data.facts.flatMap((f,index)=>f.supersedes.some(id=>{const old=bindingPool.find(t=>t.id===id);return old&&!replacementMatches(f,old);})?[index]:[]);
+          if(badScopes.length&&!badReplacements.length&&!selectorIssues.length&&!invalid.length&&!badOps.length&&!unauthorized.length&&!degraded.length&&!modelSignal.aborted&&this.config.mode==='enhanced'&&!this.config.experimental?.rawOnly&&this.config.experimental?.lifecycle!==false&&this.models instanceof Models&&this.models.verify===Models.prototype.verify&&badScopes.every(({operation:i})=>originalOperationSources[i]?.index===valid.data.operations[i]!.source.index&&originalOperationSources[i]?.quote===valid.data.operations[i]!.source.quote)){
+            const split=splitForgetScopeProposal(req,valid.data,snapshot.facts);
+            if(split){
+              const selected=split.candidate.operations.map(o=>JSON.stringify(o.target_ids));let usable=false;
+              try{
+                bindNewFactHandles(split.candidate,req);
+                usable=!bindOperationSelectors(split.candidate,req,snapshot).length&&split.candidate.operations.every((o,i)=>JSON.stringify(o.target_ids)===selected[i]);
+              }catch{ /* A structural proposal cannot bypass chronology or expand selectors. */ }
+              if(usable){
+                const previous=extractionSchema.parse(failedProposal),aliasesByOperation=valid.data.operations.map((o,i)=>new Map(o.target_ids.map((id,j)=>[id,previous.operations[i]!.target_ids[j]!])));
+                previous.operations=split.candidate.operations.map((o,i)=>({...structuredClone(o),target_ids:o.target_ids.map(id=>aliasesByOperation[split.origins[i]!]!.get(id)!)}));
+                failedProposal=previous;valid.data=split.candidate;badScopes=[];operationProposalUsed=true;
+              }
+            }
+          }
           if(badScopes.length||badReplacements.length||selectorIssues.length){
             expandTargets(valid.data);
             const facts=new Set([...badReplacements,...invalid.map(f=>f.fact),...badScopes.flatMap(o=>o.selected_targets.map(f=>f.proposal_index).filter(i=>i>=0))]);
@@ -555,7 +570,7 @@ export class Extractor {
                 // exact proposal whose new witness is about to be checked.
                 const previous=extractionSchema.parse(failedProposal);
                 for(const i of sourceOnly.indices)previous.operations[i]!.source={...sourceOnly.candidate.operations[i]!.source};
-                failedProposal=previous;valid.data=sourceOnly.candidate;unauthorized.length=0;sourceOnlyProposalUsed=true;
+                failedProposal=previous;valid.data=sourceOnly.candidate;unauthorized.length=0;operationProposalUsed=true;
               }
             }
           }
@@ -617,7 +632,7 @@ export class Extractor {
         // and the evaluator does not replay failed adds, so ordinary mode
         // commits the deterministic offline plan with an auditable marker.
         if (error instanceof ServiceError && ['OPERATION_TARGET','OPERATION_SCOPE','OPERATION_INTENT','EVIDENCE_VALIDATION'].includes(error.code)) throw error;
-        if(sourceOnlyProposalUsed)throw new ServiceError('EVIDENCE_VALIDATION','Source-only operation proposal could not complete independent verification');
+        if(operationProposalUsed)throw new ServiceError('EVIDENCE_VALIDATION','Local operation proposal could not complete independent verification');
         if(unresolvedOperationIntent)throw new ServiceError('OPERATION_INTENT','Unresolved retirement instruction or unauthorized operation could not be repaired');
         if(semanticallyRejected)throw new ServiceError('EVIDENCE_VALIDATION',modelSignal.aborted?'A rejected proposal could not be repaired before the request deadline':'A rejected proposal could not be repaired after a model or protocol failure');
         // Source-first (v10) commits additionally require independently verified
@@ -750,7 +765,7 @@ export class Extractor {
         if (facts.some(f=>f.content.length>=3500)) degraded.push('long_evidence_lexical');
       } catch(error) { if (signal.aborted) throw error; degraded.push('embedding_lexical'); }
     }
-    if(sourceOnlyProposalUsed&&degraded.length)throw new ServiceError('EVIDENCE_VALIDATION','Source-only operation proposal cannot use degraded preparation');
+    if(operationProposalUsed&&degraded.length)throw new ServiceError('EVIDENCE_VALIDATION','Local operation proposal cannot use degraded preparation');
     const sourceFormat=sourceFormatFor(this.config);
     const prepared:Prepared={ ...(sourceOperationPlan?{sourceOperationPlan}:{}),facts,operations:parsed.operations,messages,passages,sourceFormat,...(erasurePlan?{erasurePlan}:{}),...(sourceErasurePlan?{sourceErasurePlan}:{}),...(transitionPlan?{transitionPlan}:{}),anchor,degraded,embeddingSpace:this.config.embeddingSpace };
     if(this.config.sourceFirst){if(!sourceCoverageRows)throw new ServiceError('EVIDENCE_VALIDATION','Source-first write lacks independent coverage');prepared.sourceCoveragePlan=makeSourceCoveragePlan(req,prepared,sourceCoverageRows);}

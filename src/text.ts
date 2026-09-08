@@ -5,6 +5,13 @@ import type { QueryIntent } from './types.js';
 export function speakerPrefix(text:string):RegExpMatchArray|null{
   const match=text.match(/^([\p{L}][\p{L} .'-]{0,40}):\s*/u);if(!match)return null;
   const name=match[1]!.trim();
+  // A draft introduction is not a person. Periods in a speaker label must
+  // belong to initials or conventional titles, rather than whole sentences.
+  if(/\bhere(?:\s+(?:is|are)|'s)\b/i.test(name))return null;
+  for(const period of name.matchAll(/\./g)){
+    const word=name.slice(0,period.index).match(/([\p{L}]+)$/u)?.[1];
+    if(!word||[...word].length!==1&&!/^(?:dr|prof|st|mr|mrs|ms|mx|jr|sr|rev|fr)$/i.test(word))return null;
+  }
   // Assistant document headings are not a named human participant. Treating
   // recipe steps as human speech can turn "Remove from heat" into erasure.
   if(/^(?:ingredients|instructions|steps|directions|recipe|requirements|examples?|output|input|method|procedure|materials|preparation|serving suggestions)$/i.test(name))return null;
