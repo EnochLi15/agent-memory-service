@@ -30,6 +30,41 @@ function markerConcerns(m:Marker,f:Fact):boolean{
   // is not erased merely because it happens to contain the same literal value.
   return canonical(m.subject)===canonical(f.subject)&&(!f.scope||sameScope(m,f));
 }
+/** Source identity alone is too coarse after a verified partial erasure. This
+ * exemption needs every declared witness, not just one surviving quotation.
+ * Missing sources, incomplete spans and ambiguous repeated quotes keep the
+ * conservative dependency rule. It does not override explicit dependencies,
+ * erased-value leakage or an independent semantic erasure verdict.
+ */
+function intactReviewedInference(f:Fact,sources:Map<string,StoredMessage>,cuts:Map<string,{start:number;end:number}[]>,reviewed:Set<string>,redacted:Set<string>):boolean{
+ const ids=new Set(f.source_ids);
+ if(!ids.size||ids.size!==f.source_ids.length||!f.source_quotes.length||f.source_ids.some(id=>!sources.has(id)||redacted.has(id)&&!reviewed.has(id)))return false;
+ const witnesses:{source_id:string;start:number;end:number;quote:string}[]=[];
+ for(const quote of f.source_quotes){
+  if(!quote.trim())return false;
+  const matches:typeof witnesses=[];
+  for(const id of ids){const text=sources.get(id)!.content,start=text.indexOf(quote);
+   if(start<0)continue;
+   if(text.indexOf(quote,start+1)>=0)return false;
+   matches.push({source_id:id,start,end:start+quote.length,quote});
+  }
+  if(matches.length!==1)return false;
+  witnesses.push(matches[0]!);
+ }
+ if([...ids].some(id=>!witnesses.some(w=>w.source_id===id)))return false;
+ const spans=f.source_spans??[];
+ if(spans.length){
+  const covered=new Set<number>();
+  for(const span of spans){const text=sources.get(span.source_id)?.content;
+   if(text===undefined||!ids.has(span.source_id)||!Number.isInteger(span.start)||!Number.isInteger(span.end)||span.start<0||span.end<=span.start||span.end>text.length)return false;
+   const index=witnesses.findIndex(w=>w.source_id===span.source_id&&span.start<=w.start&&span.end>=w.end&&text.slice(span.start,span.end).trim()===w.quote.trim());
+   if(index<0)return false;
+   covered.add(index);
+  }
+  if(covered.size!==witnesses.length)return false;
+ }
+ return [...witnesses,...spans].every(w=>!(cuts.get(w.source_id)??[]).some(c=>c.start<w.end&&w.start<c.end));
+}
 export class TenantStore {
   readonly db: Database.Database;readonly preparation:PreparationLedger;
   constructor(dir:string, readonly userId:string, expectedFormat?:Prepared['sourceFormat']) {
@@ -140,6 +175,7 @@ export class TenantStore {
       // redaction must not excuse loss of an unrelated accepted raw witness.
       const coverageErasureCuts=coveragePrepared?structuredClone(sourceCuts):new Map<string,{start:number;end:number}[]>();
       const sourceWitnesses=sourceErasure?[...this.facts(),...prepared.facts].map(f=>({id:f.id,source_ids:[...f.source_ids],source_quotes:[...f.source_quotes]})):[];
+      const inferenceSources=new Map(sourceErasure?[...(this.db.prepare('SELECT body FROM messages').all() as Row[]).map(r=>JSON.parse(r.body) as StoredMessage),...prepared.messages].map(m=>[m.id,m] as const):[]);
       const revision=expectedRevision+1;
       if(prepared.sourceFormat){
         const format=this.meta('source_format');
@@ -281,7 +317,8 @@ export class TenantStore {
       all=this.facts();let changed=true;
       while(changed){changed=false;for(const f of all){
         if(f.state==='erased')continue;
-        const dependent=(f.depends_on??[]).some(id=>erasedIds.has(id)) || (f.modality==='inferred'&&f.source_ids.some(id=>redactedSources.has(id)));
+        const sourceDependent=f.modality==='inferred'&&f.source_ids.some(id=>redactedSources.has(id))&&!(sourceErasure&&intactReviewedInference(f,inferenceSources,sourceCuts,reviewedSources,redactedSources));
+        const dependent=(f.depends_on??[]).some(id=>erasedIds.has(id)) || sourceDependent;
         // A card leaks only through its members — replay defense already ran
         // per member in the commit loop — so a member's marker never erases
         // the card here, and erasing a card never redacts its member-spanning
