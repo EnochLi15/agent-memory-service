@@ -23,6 +23,21 @@ export function mentionsTokens(text:string,phrase:string[]):boolean{
  for(let i=0;i+1<words.length;i++)for(let j=0;j+1<phrase.length;j++)if(words[i]===phrase[j]&&words[i+1]===phrase[j+1]!)return true;
  return false;
 }
+/** Title words that mark a retired phrase as a titled person name. */
+const TITLE_TOKENS=new Set(['professor','prof','doctor','dr','mr','mrs','ms','coach','manager','supervisor','advisor','mentor','director','president','captain','teacher','nurse','officer','colleague']);
+/** Suppression-only echo semantics: a later message may carry just the
+ * surname of a retired titled name — "the Mehta stuff" after "Professor
+ * Anil Mehta" was erased — and the strict bigram window misses it. A single
+ * token may relax the match only for name phrases carrying a title; a
+ * common-noun phrase ("salary information") must keep the strict window so
+ * ordinary later talk of "salary" is never redacted. */
+export function echoMentions(text:string,phrase:string[]):boolean{
+ if(mentionsTokens(text,phrase))return true;
+ if(phrase.length<2||phrase.length>5)return false;
+ if(!phrase.some(t=>TITLE_TOKENS.has(t)))return false;
+ const words=valueWords(text);
+ return phrase.some(t=>!TITLE_TOKENS.has(t)&&t.length>=3&&words.includes(t));
+}
 type ErasureFact=Pick<Fact,'id'|'content'|'subject'|'predicate'|'scope'|'scopeHash'|'value'|'source_ids'|'source_quotes'|'depends_on'>;
 /** A generated participant label is not a literal occurrence in human evidence.
  * Preserve actual values and quoted literals, including a real account named user. */

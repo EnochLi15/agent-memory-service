@@ -17,7 +17,7 @@ import {eventCategory} from './events.js';
 import {resolveOperationTargets} from './binding.js';
 import {retirementEffectMismatch,missingForgetObligations} from './operation-intent.js';
 import {erasureAnchors,sourceErasureWork,validateSourceErasure,maskSource,assertErasedWitnessProgress} from './source-erasure.js';
-import {valueWords,valueDigest,containsValue,factContainsValue,valueOccurrences,mentionsTokens,boundaryKey,protectBoundary,retainedAgainst,erasureWork,validateErasurePlan,validateRetainedValueContexts} from './erasure.js';
+import {valueWords,valueDigest,containsValue,factContainsValue,valueOccurrences,echoMentions,mentionsTokens,boundaryKey,protectBoundary,retainedAgainst,erasureWork,validateErasurePlan,validateRetainedValueContexts} from './erasure.js';
 import type {ErasureBoundary} from './types.js';
 import {transitionKey,transitionWork,validateTransitions} from './transitions.js';
 
@@ -233,7 +233,7 @@ export class TenantStore {
         // when one of its value representatives was itself absorbed in this
         // commit; every stored member already passed its own marker check.
         const patternCard=f.kind==='reflection'&&f.modality==='inferred';
-        if(patternCard?(f.depends_on??[]).some(id=>markerAbsorbed.has(id)):markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)) && ((sameSlot(m,f) && (m.boundary==='property'||m.valueHash===valueDigest(f.value)))||factContainsValue(f,m)||(m.phraseTokens?.length?mentionsTokens(f.content,m.phraseTokens):false)))){
+        if(patternCard?(f.depends_on??[]).some(id=>markerAbsorbed.has(id)):markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)) && ((sameSlot(m,f) && (m.boundary==='property'||m.valueHash===valueDigest(f.value)))||factContainsValue(f,m)||(m.phraseTokens?.length?echoMentions(f.content,m.phraseTokens):false)))){
           if(!patternCard){markerAbsorbed.add(f.id);for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}}
           continue;
         }
@@ -291,13 +291,13 @@ export class TenantStore {
         const leaked=!card&&markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value))&&factContainsValue(f,m)&&(sameSlot(m,f)||f.source_ids.some(id=>redactedSources.has(id))));
         if(dependent||leaked||forcedErased.has(f.id)){erasedIds.add(f.id);rememberErasedQuotes(f);if(!card)for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}f.state='erased';f.content='';f.value='';f.vector=null;f.source_quotes=[];f.entities=[];f.revision=revision;this.put(f);changed=true;}
       }}
-      for(const m of inserted){if(markers.some(marker=>containsValue(m.content,marker)||(marker.phraseTokens?.length?mentionsTokens(m.content,marker.phraseTokens):false))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
+      for(const m of inserted){if(markers.some(marker=>containsValue(m.content,marker)||(marker.phraseTokens?.length?echoMentions(m.content,marker.phraseTokens):false))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
       if(prepared.operations.some(o=>o.type==='forget')){
         // Old assistant echoes have no fact links. They must not remain raw
         // searchable evidence or return through the next session's tail. This
         // marker-driven sweep is deterministic and applies to every write
         // mode: an offline forget erases echoes just as finally.
-        for(const row of this.db.prepare('SELECT body FROM messages').all() as Row[]){const m=JSON.parse(row.body) as StoredMessage;if(markers.some(marker=>containsValue(m.content,marker)||(marker.phraseTokens?.length?mentionsTokens(m.content,marker.phraseTokens):false))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
+        for(const row of this.db.prepare('SELECT body FROM messages').all() as Row[]){const m=JSON.parse(row.body) as StoredMessage;if(markers.some(marker=>containsValue(m.content,marker)||(marker.phraseTokens?.length?echoMentions(m.content,marker.phraseTokens):false))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
       }
       if(sourceErasure){
         // A short nonlexical value may have no model candidate; its authorized
@@ -372,7 +372,7 @@ export class TenantStore {
           }));
           redactPassage(p,cuts);
         }
-        if(!semanticErasure&&markers.some(m=>(containsValue(p.content,m)||(m.phraseTokens?.length?mentionsTokens(p.content,m.phraseTokens):false))&&(!linked.length||linked.some(f=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)))))){
+        if(!semanticErasure&&markers.some(m=>(containsValue(p.content,m)||(m.phraseTokens?.length?echoMentions(p.content,m.phraseTokens):false))&&(!linked.length||linked.some(f=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)))))){
           p.fragments=[];p.content='';p.vector=null;p.state='erased';
         }
         if(newPassageIds.has(p.id)||JSON.stringify(p)!==previous){p.revision=revision;this.putPassage(p);}

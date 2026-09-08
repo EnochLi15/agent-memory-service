@@ -141,3 +141,36 @@ test('B14: a recipe direction ("Remove from heat") is procedural, not a retireme
     assert.ok(store.facts().some(f=>f.state==='active'),'the recipe note stays stored');
   }finally{done();}
 });
+
+// A later message echoing only the surname of a retired titled name ("the
+// Mehta stuff" after "Professor Anil Mehta") slips the strict bigram window;
+// suppression relaxes for name phrases, but never for common-noun phrases.
+test('A28 echo: a surname-only mention of a retired titled name cannot re-enter as searchable evidence',async()=>{
+  const {store,done}=await fixture([
+    [{role:'user',content:'My former advisor is Professor Anil Mehta.'}],
+    [{role:'user',content:'Please forget the information about Professor Anil Mehta.'}],
+    [{role:'user',content:'I just wanted to clear out the Mehta stuff specifically.'}],
+    [{role:'user',content:'Anyway, I have been enjoying swimming lately.'}],
+  ]);
+  try{
+    assert.ok(store.facts().every(f=>!/mehta/i.test(`${f.content} ${f.value}`)),'no record still carries the retired surname');
+    const tail=store.snapshot('s').tail;
+    assert.equal(tail.length,4,'all four messages are in the session tail');
+    assert.equal(tail[2]!.redacted,true,'the surname echo message is redacted');
+    assert.ok(!tail[3]!.redacted,'an unrelated later message stays untouched');
+  }finally{done();}
+});
+
+test('surname relaxation stays narrow: a retired common-noun phrase keeps the strict echo window',async()=>{
+  const {store,done}=await fixture([
+    [{role:'user',content:'I keep a sourdough bread starter on my kitchen counter.'}],
+    [{role:'user',content:'Please forget the sourdough bread starter detail.'}],
+    [{role:'user',content:'I love fresh bread with soup, and the kitchen counter is finally clean.'}],
+  ]);
+  try{
+    assert.ok(store.facts().filter(f=>/sourdough/i.test(`${f.content} ${f.value}`)).every(f=>f.state!=='active'),'the starter record is erased');
+    const tail=store.snapshot('s').tail;
+    assert.equal(tail.length,3,'all three messages are in the session tail');
+    assert.ok(!tail[2]!.redacted,'generic later bread talk is not redacted by a common-noun phrase');
+  }finally{done();}
+});
