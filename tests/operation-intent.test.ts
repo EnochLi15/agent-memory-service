@@ -47,7 +47,7 @@ async function fixture(fn:any){
  const req=request('My access code is ZX-482. My manager is Alice.','initial');
  const prepared=await offline.prepare(req,store.snapshot('s'),AbortSignal.timeout(1000));store.commit(req,hash(JSON.stringify(req)),prepared,0);
  const snapshot=store.snapshot('s');const fact=snapshot.facts.find(f=>f.predicate==='access_code')!;
- const prepare=(content:string,response:any)=>new Extractor(config,{verify:async()=>[],json:async()=>structuredClone(response),embedBatch:async()=>{throw Error('test embedding unavailable');}} as any).prepare(request(content),snapshot,AbortSignal.timeout(1000));
+ const prepare=(content:string,response:any,repair?:any)=>new Extractor(config,{verify:async()=>[],json:async(_system:string,_input:string,_signal:any,context:any)=>structuredClone(context?.purpose==='repair'&&repair?repair:response),embedBatch:async()=>{throw Error('test embedding unavailable');}} as any).prepare(request(content),snapshot,AbortSignal.timeout(1000));
  try{await fn({store,snapshot,fact,prepare});}finally{store.close();rmSync(dir,{recursive:true,force:true});}
 }
 
@@ -58,9 +58,10 @@ test('polite retirement intents survive model validation and erase evidence whil
  const evidence=retrieve(store,{user_id:'u',query:'previous access code manager',top_k:100},null,config).data;
  assert.doesNotMatch(JSON.stringify(evidence),/ZX-482/);assert.match(JSON.stringify(evidence),/Alice/);
 }));
-test('retirement paraphrase is handled even when the model emits empty arrays',()=>fixture(async({prepare,fact}:any)=>{
+test('retirement paraphrase requires an actual repaired operation after empty model arrays',()=>fixture(async({prepare,fact}:any)=>{
  for(const content of ['I do not need my access code stored anymore.','I no longer need you to remember my access code.','No need to track my access code anymore.']){
-  const p=await prepare(content,{facts:[],operations:[]});assert.equal(p.operations.length,1,content);assert.ok(p.operations[0].target_ids.includes(fact.id));
+  await assert.rejects(prepare(content,{facts:[],operations:[]}),(e:any)=>e.code==='OPERATION_INTENT');
+  const p=await prepare(content,{facts:[],operations:[]},{append_operations:proposal(content,[fact.id]).operations});assert.equal(p.operations.length,1,content);assert.ok(p.operations[0].target_ids.includes(fact.id));assert.ok(!p.degraded.includes('extraction_offline'));
  }
 }));
 test('stop-tracking directives retain negation, quotation and conditional boundaries',()=>{
@@ -80,10 +81,12 @@ test('one covered command cannot hide a second unresolved command',()=>fixture(a
  await assert.rejects(()=>prepare(content,proposal('Forget my access code.',[fact.id])),/operation|target|bind/i);
  await assert.rejects(()=>prepare(content,proposal(content,[fact.id])),/operation|target|bind/i);
 }));
-test('negation, quoted imperative, conditional and third-party request preserve stored values',()=>fixture(async({prepare}:any)=>{
+test('negation, quoted imperative, conditional and third-party request require removal of unauthorized operations',()=>fixture(async({prepare,store,snapshot}:any)=>{
  for(const content of ['Do not delete my access code.','Never erase my access code.','I do not want you to forget my access code.','"Forget my access code."',"I don't agree. 'Alice. Forget my access code.'",'If I change my mind, forget my access code.','Alice said: forget my access code.','我不想让你忘记我的门禁码。']){
-  const p=await prepare(content,proposal(content));assert.equal(p.operations.length,0,content);
+  await assert.rejects(prepare(content,proposal(content)),(e:any)=>e.code==='OPERATION_INTENT');
+  const p=await prepare(content,proposal(content),{operation_edits:[{index:0,remove:true}]});assert.equal(p.operations.length,0,content);assert.ok(!p.degraded.includes('extraction_offline'));
  }
+ assert.deepEqual(store.snapshot('s'),snapshot);
 }));
 test('unrelated quotation does not veto a separate real command',()=>fixture(async({prepare,fact}:any)=>{
  const content='Alice said "forget it." You can forget my access code.';

@@ -19,6 +19,7 @@ import {GROUPED_EXTRACTION_PROTOCOL,GROUPED_EXTRACTION_PROMPT,decodeGroupedExtra
 import {VerificationSession} from './verification-session.js';
 import {PATCH_PROMPT,applyRepair,scopeForFindings,replacementTargetGroups,replacementBindingProblems,operationBindingProblems,RepairScopeError,type RepairScope} from './repair.js';
 import {sourceErasureWork} from './source-erasure.js';
+import {conservativeSourceErasureFallback} from './source-erasure-fallback.js';
 import {executeSourceErasure} from './source-erasure-execution.js';
 import {executeGroupedSourceErasure} from './source-erasure-grouped.js';
 import {erasureWork,erasureInput,decodeErasure,ERASURE_PROMPT,containsValue,factContainsValue,valueWords,mentionsTokens} from './erasure.js';
@@ -448,7 +449,7 @@ export class Extractor {
       const user=JSON.stringify({...(sourceActions.length?{RESOLVED_SOURCE_ACTIONS:sourceActions}:{}),...(grouped?{EXTRACTION_PROTOCOL:references?SOURCE_REFERENCE_PROTOCOL:GROUPED_EXTRACTION_PROTOCOL,PARTICIPANT_INDEX:participantIndices(req)}:{}),OBSERVATION_DATE:anchor,EXISTING_FACTS:relevant,CONTEXT_ONLY:snapshot.tail.map(m=>({role:m.role,content:m.content})),NEW_MESSAGES:references?sourceReferenceMessages(req):req.messages.map((m,index)=>({index,...m}))});
       // Reserve time for grounded fallback, local embedding and atomic commit.
       // This inner budget never extends the caller's absolute request deadline.
-      let semanticallyRejected=false;const verificationSession=new VerificationSession(this.config.incrementalVerification);
+      let semanticallyRejected=false,unresolvedOperationIntent=false;const verificationSession=new VerificationSession(this.config.incrementalVerification);
       try {
         let issue='';let failedProposal:unknown;let repairScope:RepairScope|undefined;let accepted:Extraction|undefined;
         for(let attempt=0;attempt<=this.config.maxRepairRounds;attempt++){
@@ -459,7 +460,10 @@ export class Extractor {
           // validation pass, whose indices may include newly appended facts.
           repairScope=undefined;
           const repairSystem=issue?(patchMode?PATCH_PROMPT:'\nRepair the malformed proposal; return the complete extraction schema.'):'';
-          const repairInput=issue?JSON.stringify({...JSON.parse(user),...(grouped&&patchMode?{EXTRACTION_PROTOCOL:'flat-patch-v1',NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))}:{}),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:patchMode?indexedProposal(prior.data!):failedProposal,...(patchMode?{REPAIR_SCOPE:scope,REPLACEMENT_TARGET_GROUPS:replacementTargetGroups(prior.data!,relevant),FORGET_SCOPE_CONTEXT:repairForgetContext(prior.data!),FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
+          // Do not ask a scoped repair to append an operation from another
+          // message. Remaining obligations are checked again after this patch.
+          const missingInstructions=patchMode?pendingForget(prior.data!).filter(({index})=>scope.source_indices.includes(index)).map(({index,span})=>({index,start:span.start,end:span.end,quote:span.quote})):[];
+          const repairInput=issue?JSON.stringify({...JSON.parse(user),...(grouped&&patchMode?{EXTRACTION_PROTOCOL:'flat-patch-v1',NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))}:{}),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:patchMode?indexedProposal(prior.data!):failedProposal,...(missingInstructions.length?{MISSING_OPERATION_INSTRUCTIONS:missingInstructions}:{}),...(patchMode?{REPAIR_SCOPE:scope,REPLACEMENT_TARGET_GROUPS:replacementTargetGroups(prior.data!,relevant),FORGET_SCOPE_CONTEXT:repairForgetContext(prior.data!),FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
           const output=!issue&&grouped&&this.config.extractionWorkers>1&&participantIndices(req).length>=4
             ?await prepareExtractionShards(req,extractionPrompt,user,this.config.extractionWorkers,modelSignal,(prompt,input,s,extraction_shard)=>this.models.json(prompt,input,s,{purpose:'extraction',trace:traceIdentity,extraction_shard}))
             :await this.models.json(patchMode?PATCH_PROMPT:extractionPrompt+repairSystem,repairInput,modelSignal,{purpose:issue?'repair':'extraction',trace:traceIdentity});
@@ -499,6 +503,7 @@ export class Extractor {
           for(const o of valid.data.operations){resolveSource(o.source,req);const statement=req.messages[o.source.index]?.content??'';if(o.type==='retract'&&realControl(statement)&&/\b(?:forget|erase|delete)\b|remove .{0,100} entirely|彻底删除|完全移除/i.test(o.source.quote)&&!/current (?:colleague|contact)|当前同事|当前联系人/i.test(statement))o.type='forget';}
           failedProposal=structuredClone(valid.data);
           if(valid.data.operations.some(o=>retirementEffectMismatch(o,req))){
+            unresolvedOperationIntent=true;
             issue='Operation effect mismatch: a request to stop retaining information requires forget, not retract. Bind ALL affected properties within the requested entity boundary, including same-chunk transient facts, so their sources are erased. A status-only retraction cannot satisfy an erasure request. Preserve unrelated entities and facts. Only explicit removal from a current relationship list permits retract with current_relation.';
             continue;
           }
@@ -531,13 +536,15 @@ export class Extractor {
             const replacement_details=replacementBindingProblems(valid.data,bindingPool,id=>labels.get(id)??id);
             issue='Operation target binding: subject, property or scope does not match its selected targets. '+JSON.stringify({operations:operation_details,selector_issues:selectorIssues,replacement_facts:badReplacements,replacement_details})+sourceFeedback+'. Reuse matching existing fields only if that record is actually the requested target. For unresolved selectors, select actual targets from EXISTING_FACTS or earlier new:N facts; a missing target is not an executed operation. For same-chunk transient targets, proposal_index identifies the editable fact slot. If the user forgets multiple properties of one concrete entity, give those transient facts that same entity scope when their original statements support it; preserve unrelated devices. Alternatively split operations only when the source actually authorizes each distinct scope. Changing sources alone does not fix a scope mismatch. Never rename an existing or unrelated record to pass validation. If correcting an assistant claim that was never stored, keep the grounded USER facts but emit no operation or supersedes reference against an unrelated record. Cite the user correction itself, not the assistant restatement. Return the corrected object.';continue;}
           if(unauthorized.length){
+            unresolvedOperationIntent=true;
             const findings=unauthorized.map(index=>`operation ${index}: The cited source is not an authorizing user deletion instruction.`);
             repairScope=scopeForFindings(valid.data,findings);
             issue=JSON.stringify(findings)+' Repair only these operations; preserve valid sibling operations and unrelated facts. If NEW_MESSAGES contains an actual deletion instruction for this same target, replace the source with its exact authorizing span and preserve the target fields. A reason for removal is not itself a command. If no actual instruction authorizes that target, remove only the unsupported operation. Do not borrow an unrelated command or combine targets with different properties/scopes. Source repair still requires independent target and semantic verification.';
             continue;
           }
           if(valid.data.operations.some(o=>!groundedOperation(o,req,[...snapshot.facts,...proposalFacts(valid.data,req)]))){issue='An operation targets a fact with no matching topic in the new user request or preceding context. Do not delete unrelated memories. If the user rejects a never-stored assistant claim, return no operation. Recheck targets and return full JSON.';continue;}
-          if(pendingForget(valid.data).length){issue='A direct retirement instruction has no operation. Bind each instruction to tenant-local evidence; do not silently omit it. Return the full object.';continue;}
+          if(pendingForget(valid.data).length){unresolvedOperationIntent=true;issue='Direct retirement instructions remain uncovered. MISSING_OPERATION_INSTRUCTIONS gives each exact original message index, span and quote. Bind those instructions to their actual tenant-local targets, preserving valid sibling operations and unrelated facts. A distinct listed instruction may independently repeat the same target; cite its own witness and keep its subject, property, value and boundary grounded. Do not invent deletion for nearby advice or merge separate instructions into one broad source quote.';continue;}
+          unresolvedOperationIntent=false;
           const bindingIssues=bindOperationSelectors(valid.data,req,snapshot);
           if(bindingIssues.length){expandTargets(valid.data);issue='Operation target binding: '+JSON.stringify(bindingIssues)+'. Select the actual targets from EXISTING_FACTS or earlier new:N facts; do not treat a missing target as an executed operation.';continue;}
           if(attempt===this.config.maxRepairRounds&&invalid.length&&!badOps.length){
@@ -573,6 +580,7 @@ export class Extractor {
         if(!accepted&&issue.startsWith('Operation target binding'))throw new ServiceError('OPERATION_TARGET','Unresolved operation subject, property or scope after repair');
         if(!accepted&&issue.startsWith('Semantic verification'))throw new ServiceError('EVIDENCE_VALIDATION','Evidence still fails semantic verification after repair');
         if(!accepted&&issue.startsWith('Operation effect mismatch'))throw new ServiceError('OPERATION_INTENT','Retirement still has the wrong operation effect after repair');
+        if(!accepted&&unresolvedOperationIntent)throw new ServiceError('OPERATION_INTENT','Unresolved retirement instruction or unauthorized operation after bounded repair');
         if(!accepted)throw new ServiceError('EXTRACTION_SCHEMA','Could not validate structured evidence and exact sources');
         parsed=accepted;
         if(this.config.sourceFirst)sourceCoverageRows=verificationSession.acceptedSourceCoverage(req,parsed);
@@ -585,6 +593,7 @@ export class Extractor {
         // and the evaluator does not replay failed adds, so ordinary mode
         // commits the deterministic offline plan with an auditable marker.
         if (error instanceof ServiceError && ['OPERATION_TARGET','OPERATION_SCOPE','OPERATION_INTENT','EVIDENCE_VALIDATION'].includes(error.code)) throw error;
+        if(unresolvedOperationIntent)throw new ServiceError('OPERATION_INTENT','Unresolved retirement instruction or unauthorized operation could not be repaired');
         if(semanticallyRejected)throw new ServiceError('EVIDENCE_VALIDATION',modelSignal.aborted?'A rejected proposal could not be repaired before the request deadline':'A rejected proposal could not be repaired after a model or protocol failure');
         // Source-first (v10) commits additionally require independently verified
         // coverage that offline extraction cannot produce; that representation
@@ -666,17 +675,15 @@ export class Extractor {
     if(useErasure&&this.config.sourceErasure){
       const work=sourceErasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[],snapshot.erasureSources??[],messages,erasurePlan?.decisions.filter(d=>d.effect==='erase').map(d=>d.fact_id)??[]);
       if(work.candidates.length){
-        // Degraded deterministic partition: every nominated source repeats a
-        // deleted value, so the whole candidate span is cut rather than failing
-        // the write. Neighbors outside nominated spans stay untouched.
-        const deterministic=():Prepared['sourceErasurePlan']=>({fingerprint:work.fingerprint,decisions:work.candidates.map((c,index)=>({index,parts:[{text:c.text,effect:'erase' as const}],reason:'Degraded deterministic fallback: source repeats a deleted value'}))});
+        // Lexical nomination is not deletion authorization. Without independent
+        // source review, neither an erase nor a retain partition is certified.
         let fallback=this.config.mode!=='enhanced'||degraded.includes('extraction_offline');
         if(!fallback){
           try{
             sourceErasurePlan=await (this.config.sourceErasureGrouped?executeGroupedSourceErasure:executeSourceErasure)(work,this.config.sourceErasureWorkers,modelSignal,(system,input,s,purpose,source_erasure_batch)=>this.models.json(system,input,s,{purpose,trace:traceIdentity,...(source_erasure_batch?{source_erasure_batch}:{})}));
           }catch(error){if(signal.aborted||Extractor.semanticRefusal(error))throw error;fallback=true;sourceErasurePlan=undefined;}
         }
-        if(fallback&&!sourceErasurePlan){sourceErasurePlan=deterministic();degraded.push('source_erasure_deterministic');}
+        if(fallback&&!sourceErasurePlan)sourceErasurePlan=conservativeSourceErasureFallback(work);
       }else sourceErasurePlan={fingerprint:work.fingerprint,decisions:[]};
     }
     let transitionPlan:Prepared['transitionPlan'];
