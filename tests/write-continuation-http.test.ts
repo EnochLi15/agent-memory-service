@@ -18,6 +18,9 @@ test('extraction invalid JSON is terminal on the first HTTP response and never r
 for(const mode of ['recover','exhaust','transport_resume'])test(`verification JSON repair ${mode} preserves atomic HTTP writes and bounded continuation`,async()=>{
  let extraction=0,verification=0;const dir=mkdtempSync(join(tmpdir(),'http-verification-json-'));
  const provider=createServer(async(request,response)=>{
+  // The readiness probe warms GET /models at startup (metadata only); it must
+  // not reach the body parser as an empty POST.
+  if(request.method==='GET'){response.writeHead(200,{'content-type':'application/json'});response.end('{}');return;}
   const chunks:Buffer[]=[];for await(const chunk of request)chunks.push(chunk);const body=JSON.parse(Buffer.concat(chunks).toString());
   if(request.url==='/api/embed'){response.setHeader('content-type','application/json');response.end(JSON.stringify({embeddings:body.input.map(()=>[1,0])}));return;}
   const system=body.messages[0].content;let text:string;

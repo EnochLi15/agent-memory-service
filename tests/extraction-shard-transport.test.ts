@@ -3,8 +3,8 @@ import {prepareExtractionShards} from '../dist/extraction-shards.js';import {Ext
 const req={user_id:'u',request_id:'transport',session_id:'s',messages:['I use Firefox.','My brother uses Brave.','My laptop is silver.','My tablet is blue.'].map(content=>({role:'user',content,timestamp:'2026-01-01T00:00:00Z'}))};
 const input=JSON.stringify({PARTICIPANT_INDEX:[0,1,2,3],NEW_MESSAGES:req.messages});
 const apiError=(status:number)=>OpenAI.APIError.generate(status,{message:'private-provider-detail'},undefined,new Headers());
-test('typed connection, timeout, rate limit and server failures remain unavailable after shard cancellation',async()=>{
- for(const error of [new OpenAI.APIConnectionError({message:'private-provider-detail'}),new OpenAI.APIConnectionTimeoutError({message:'private-provider-detail'}),apiError(408),apiError(409),apiError(429),apiError(500),apiError(502),apiError(503),apiError(504)]){
+test('typed connection, timeout, rate limit, server and undecodable-output failures remain unavailable after shard cancellation',async()=>{
+ for(const error of [new OpenAI.APIConnectionError({message:'private-provider-detail'}),new OpenAI.APIConnectionTimeoutError({message:'private-provider-detail'}),apiError(408),apiError(409),apiError(429),apiError(500),apiError(502),apiError(503),apiError(504),new SyntaxError('Unexpected token')]){
   let started=0,cleaned=0,release!:()=>void;const barrier=new Promise<void>(r=>release=r);
   await assert.rejects(prepareExtractionShards(req,'prompt',input,3,AbortSignal.timeout(2000),async(_s,_u,signal,shard)=>{
    if(++started===3)release();await barrier;if(shard.index===0)throw error;
@@ -14,7 +14,22 @@ test('typed connection, timeout, rate limit and server failures remain unavailab
  }
 });
 test('schema, semantic and permanent provider failures cannot become retryable by their wording',async()=>{
- for(const error of [new Error('Connection error.'),new SyntaxError('Invalid JSON'),new ServiceError('EXTRACTION_SCHEMA','foreign group'),new ServiceError('EVIDENCE_VALIDATION','unsupported fact'),apiError(400),apiError(401),apiError(403),apiError(404)])await assert.rejects(prepareExtractionShards(req,'prompt',input,3,AbortSignal.timeout(2000),async()=>{throw error;}),{code:'EVIDENCE_VALIDATION'});
+ for(const error of [new Error('Connection error.'),new ServiceError('EXTRACTION_SCHEMA','foreign group'),new ServiceError('EVIDENCE_VALIDATION','unsupported fact'),apiError(400),apiError(401),apiError(403),apiError(404)])await assert.rejects(prepareExtractionShards(req,'prompt',input,3,AbortSignal.timeout(2000),async()=>{throw error;}),{code:'EVIDENCE_VALIDATION'});
+});
+test('undecodable shard output degrades to the deterministic plan without semantic verification',async()=>{
+ const four={user_id:'u',request_id:'shard-bad-json',session_id:'s',messages:['I use Firefox.','My brother uses Brave.','My laptop is silver.','My tablet is blue.'].map(content=>({role:'user',content,timestamp:'2026-01-01T00:00:00Z'}))};
+ let verified=0,jsonCalls=0;
+ const model={json:async()=>{jsonCalls++;throw new SyntaxError('Unexpected token');},verify:async()=>{verified++;return [];},embedBatch:async()=>[] as number[][]};
+ const config=configFromEnv({MEMORY_MODE:'enhanced',MEMORY_EXTRACTION_FORMAT:'message_groups',MEMORY_EXTRACTION_WORKERS:'3'});
+ // A live model that cannot produce decodable JSON is an outage, not a
+ // semantic verdict: with four participants the sharded path must degrade
+ // to the offline plan with an auditable marker — the evaluator never
+ // replays a failed add, so HTTP 200 must stay achievable.
+ const prepared=await new Extractor(config,model as any).prepare(four,{revision:0,facts:[],tail:[],anchor:null},AbortSignal.timeout(2000));
+ assert.ok(jsonCalls>=3,'the sharded path ran');
+ assert.ok(prepared.degraded.includes('extraction_offline'),JSON.stringify(prepared.degraded));
+ assert.equal(verified,0,'offline facts never touch the unavailable semantic verifier');
+ assert.ok(prepared.facts.length>0);
 });
 test('unavailable shard preparation degrades to the deterministic plan without model verification',async()=>{
  let verified=0,embedded=0;

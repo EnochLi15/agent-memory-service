@@ -52,6 +52,13 @@ export async function prepareExtractionShards(req:AddRequest,system:string,user:
   // signal is already aborted and would hide the original transport cause.
   if(!signal.aborted&&transientModelError(failure))
    throw new ServiceError('EXTRACTION_UNAVAILABLE','Parallel extraction could not reach the model provider');
+  if(!signal.aborted&&failure instanceof SyntaxError)
+   // Undecodable shard output is a model capability failure, not a semantic
+   // verdict: the caller degrades to the deterministic offline plan with an
+   // audit marker instead of terminal-failing the write. Continuation mode
+   // never reaches this branch — its json() already rethrows a typed
+   // EVIDENCE_VALIDATION rejection for the closed ledger to replay.
+   throw new ServiceError('EXTRACTION_UNAVAILABLE','Parallel extraction could not decode model output');
   throw new ServiceError('EVIDENCE_VALIDATION','Parallel extraction did not complete all participant groups: '+(failure instanceof Error?failure.message:'unknown shard failure'));
  }
  signal.throwIfAborted();
