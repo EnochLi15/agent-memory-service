@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { canonical, slot, sameScope, sameSlot, scopeKey, propertyFamily, replacementMatches, ServiceError, type AddRequest, type MemoryEvent, type Operation, type Fact, type Passage, type Prepared, type Receipt, type Snapshot, type StoredMessage, type QueryIntent } from './types.js';
 import { tokens } from './text.js';
 import {redactPassage} from './passages.js';
-import {eventCategory} from './events.js';
+import {eventCategory,eventDescriptor} from './events.js';
 import {resolveOperationTargets} from './binding.js';
 import {retirementEffectMismatch,missingForgetObligations} from './operation-intent.js';
 import {erasureAnchors,sourceErasureWork,validateSourceErasure,maskSource,assertErasedWitnessProgress} from './source-erasure.js';
@@ -452,13 +452,12 @@ export class TenantStore {
         const source=prepared.messages[o.source.index]!;const ids=operationTargets.get(o)??[];
         const after=['forget','retract'].includes(o.type)?[]:prepared.facts.filter(f=>slot(f)===slot(o)&&f.source_ids.includes(source.id)).map(f=>mergedIds.get(f.id)??f.id).filter(id=>current.has(id));
         const original=originalFacts.find(f=>ids.includes(f.id))??prepared.facts.find(f=>ids.includes(f.id));
-        // "What did I ask you to remove?" is answerable only if the trace
-        // names the removed category in the user's own words, value-free. The
-        // reason is model free text: it is admitted only when no token of what
-        // was erased — the operation's own value or a target's original value,
-        // which a property-boundary command does not repeat — appears in it.
+        // Free-text reasons can paraphrase or translate an erased value. Only
+        // a complete code-defined category label may enter the event trace;
+        // literal overlap with an erased value is an additional rejection.
         const secret=o.type==='forget'?new Set([...(o.value?valueWords(o.value):[]),...ids.flatMap(id=>valueWords(originalValues.get(id)??''))]):new Set<string>();
-        const traceDescriptor=o.type==='forget'&&o.reason&&o.reason.length<=40&&![...secret].some(w=>valueWords(o.reason).includes(w))?o.reason:undefined;
+        const descriptor=eventDescriptor(o.reason);
+        const traceDescriptor=o.type==='forget'&&descriptor&&![...secret].some(w=>valueWords(descriptor).includes(w))?descriptor:undefined;
         event(o.type,{...o,content:original?.content??''},[source.id],ids,after,source.content.indexOf(o.source.quote),source.role==='user'?'user':'participant',traceDescriptor);
         this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:o.type,target_ids:ids,subject:o.subject,predicate:o.predicate,scope:'',scopeHash:scopeKey(o),boundary:o.boundary,source_id:source.id,revision}));
       }

@@ -1,10 +1,17 @@
 import type {Fact,MemoryEvent} from './types.js';
 import {propertyFamily} from './types.js';
 
+const categories=['current city','job title','manager','backup name','primary name','session cadence','access code','hobby','salary','quote','budget','schedule','preference','reflection','contact','project','appointment','storage','plan','memory record'];
+const descriptors=new Set([...categories,'previous city']);
+/** Model reasons and legacy rows are untrusted: accept complete code-defined
+ * labels only. Normalizing or extracting a label from free text is not proof
+ * that the text is value-free. */
+export function eventDescriptor(value:unknown):string|undefined{
+ return typeof value==='string'&&descriptors.has(value)?value:undefined;
+}
 /** Retained audit categories come from a closed vocabulary, never model values. */
 export function eventCategory(f:Pick<Fact,'predicate'|'content'>):string{
  const family=propertyFamily(f.predicate,f.content);
- const categories=['current city','job title','manager','backup name','primary name','session cadence','access code','hobby','salary','quote','budget','schedule','preference','reflection','contact','project','appointment','storage','plan'];
  return categories.find(c=>family===c||family.includes(c))??'memory record';
 }
 export function projectEvents(events:MemoryEvent[],facts:Fact[],visible:Set<string>,correctedStatements=new Set<string>()):Fact[]{
@@ -16,12 +23,13 @@ export function projectEvents(events:MemoryEvent[],facts:Fact[],visible:Set<stri
  }).join(' | '):'[none]';
  return events.map(e=>{
   const forgotten=e.type==='forget';
-  // A value-free descriptor from the instruction ("my previous city") names
-  // WHAT was removed without leaking the removed value itself.
-  const named=e.descriptor||e.category;
-  const action=forgotten?`${named} entry was explicitly removed from memory (forgotten)`:`${e.type} ${e.category}`;
+  // Legacy descriptors may predate the write guard; validate both labels at
+  // projection too. This protects Search without rewriting stored event rows.
+  const category=categories.includes(e.category)?e.category:'memory record';
+  const named=eventDescriptor(e.descriptor)??category;
+  const action=forgotten?`${named} entry was explicitly removed from memory (forgotten)`:`${e.type} ${category}`;
   const actor=e.actor==='user'?'The user':e.actor==='participant'?'The source participant':null;
-  const authorization=actor&&forgotten?`${actor} explicitly asked the memory service to forget the ${named}. `:actor&&e.type==='restore'?`${actor} explicitly authorized remembering the new ${e.category} again. `:'';
+  const authorization=actor&&forgotten?`${actor} explicitly asked the memory service to forget the ${named}. `:actor&&e.type==='restore'?`${actor} explicitly authorized remembering the new ${category} again. `:'';
   const content=`${authorization}Memory operation ${action}. Source order ${e.ordinal}. Before: ${forgotten?'[forgotten value not retained]':describe(e.before_ids)}. After: ${forgotten?'[absent]':describe(e.after_ids)}.`;
   // The operation happened when it was observed; its target may describe a
   // much earlier event. Never copy that target's date onto the operation.
