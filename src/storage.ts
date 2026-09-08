@@ -155,6 +155,9 @@ export class TenantStore {
       for(const m of inserted)this.db.prepare('INSERT INTO messages VALUES (?,?,?,?)').run(m.id,m.session_id,m.ordinal,JSON.stringify(m));
       this.db.prepare('INSERT INTO sessions(id,anchor) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET anchor=excluded.anchor').run(req.session_id,prepared.anchor);
       const originalFacts=this.facts();const operationTargets=new Map<Operation,string[]>();
+      // Pending same-request targets are mutated during erasure as well. Keep
+      // their original values transiently before changing either target pool.
+      const originalValues=new Map([...originalFacts,...prepared.facts].map(f=>[f.id,f.value]));
       const priorErasedIds=new Set(originalFacts.filter(f=>f.state==='erased').map(f=>f.id));
       let all=structuredClone(originalFacts); const suppressedSources=new Set<string>(); const redactedSources=new Set<string>(); const erasedIds=new Set<string>(priorErasedIds);
       for(const f of all)if(retained.has(f.id)){f.erasure_exemptions=[...(f.erasure_exemptions??[]),...retained.get(f.id)!];this.put(f);}
@@ -417,8 +420,7 @@ export class TenantStore {
         // reason is model free text: it is admitted only when no token of what
         // was erased — the operation's own value or a target's original value,
         // which a property-boundary command does not repeat — appears in it.
-        const originals=ids.map(id=>originalFacts.find(f=>f.id===id)).filter((f):f is Fact=>!!f);
-        const secret=o.type==='forget'?new Set([...(o.value?valueWords(o.value):[]),...originals.flatMap(f=>valueWords(f.value))]):new Set<string>();
+        const secret=o.type==='forget'?new Set([...(o.value?valueWords(o.value):[]),...ids.flatMap(id=>valueWords(originalValues.get(id)??''))]):new Set<string>();
         const traceDescriptor=o.type==='forget'&&o.reason&&o.reason.length<=40&&![...secret].some(w=>valueWords(o.reason).includes(w))?o.reason:undefined;
         event(o.type,{...o,content:original?.content??''},[source.id],ids,after,source.content.indexOf(o.source.quote),source.role==='user'?'user':'participant',traceDescriptor);
         this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:o.type,target_ids:ids,subject:o.subject,predicate:o.predicate,scope:'',scopeHash:scopeKey(o),boundary:o.boundary,source_id:source.id,revision}));

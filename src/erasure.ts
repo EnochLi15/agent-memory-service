@@ -11,17 +11,14 @@ export function containsValue(text:string,m:ErasureBoundary):boolean{
  for(let i=0;n>0&&i+n<=words.length;i++)if(digest(words.slice(i,i+n).join(' '))===m.valueHash)return true;
  return false;
 }
-/** A phrase deleted in one wording re-enters through another: "brought on
- * three new hires" vs "added three new hires". The digest window only proves
- * the literal original; message and passage suppression also treat any
- * contiguous two-token run of the boundary phrase (or its single token) as a
- * mention. Fact-boundary semantics keep the stricter containsValue rules. */
+/** Binding preserves every named qualifier, while allowing word order to
+ * change. A shared pair cannot select a different person or project. */
 export function mentionsTokens(text:string,phrase:string[]):boolean{
- const words=valueWords(text);
- if(!phrase.length)return false;
- if(phrase.length===1)return words.includes(phrase[0]!);
- for(let i=0;i+1<words.length;i++)for(let j=0;j+1<phrase.length;j++)if(words[i]===phrase[j]&&words[i+1]===phrase[j+1]!)return true;
- return false;
+ const words=new Set(valueWords(text));
+ // A stated lower bound is a floor even when the fact uses "starts at".
+ // Preserve the other phrase qualifiers; never fall back to a shared pair.
+ if(/\b(?:starts?|begins?)\s+at\b/iu.test(text))words.add('floor');
+ return phrase.length>0&&phrase.every(w=>words.has(w));
 }
 /** Title words that mark a retired phrase as a titled person name. */
 const TITLE_TOKENS=new Set(['professor','prof','doctor','dr','mr','mrs','ms','coach','manager','supervisor','advisor','mentor','director','president','captain','teacher','nurse','officer','colleague']);
@@ -30,21 +27,30 @@ const TITLE_TOKENS=new Set(['professor','prof','doctor','dr','mr','mrs','ms','co
 export function buildPhraseEcho(phrase:string[]):PhraseEchoIndex{
  return {t:phrase.map(w=>digest(w)),p:phrase.slice(0,-1).map((w,i)=>digest(`${w} ${phrase[i+1]}`)),titles:phrase.map(w=>TITLE_TOKENS.has(w)),lengths:phrase.map(w=>w.length)};
 }
-/** Suppression-only echo semantics against a marker's hashed phrase index.
- * A reworded replay of a three-plus-token phrase shares several consecutive
- * bigrams ("added three new hires last quarter"), while one shared bigram is
- * usually coincidence — a new "Alice Van Jones" after "Alice Van Smith" was
- * retired must survive with its record and message intact. One- and
- * two-token phrases can only ever share one bigram and keep the
- * single-match rule. A later message may also carry just the surname of a
- * retired titled name — "the Mehta stuff" after "Professor Anil Mehta" —
- * which no bigram reaches; that relaxation fires only for phrases carrying
- * a title, so common-noun phrases ("salary information") never redact
- * ordinary later talk of "salary". */
+// Partial lexical matches are only candidates. Resolve them to prior memory
+// when the source explicitly refers back, without naming a different entity.
+const PRIOR_REFERENCE=/\b(?:as|like)\s+(?:I|we|you)\s+(?:(?:have|had)\s+)?(?:said|mentioned|noted|reported|told)\b|\b(?:previously|earlier)\s+(?:mentioned|discussed|shared)\b|\b(?:clear\s+out|forget|erase|remove|delete|discard)\b[^.!?]{0,80}\b(?:stuff|information|details?|records?|notes?|memory)\b/iu;
+function namesDifferentEntity(text:string,echo:PhraseEchoIndex):boolean{
+ const retired=new Set(echo.t);
+ const names=[...text.matchAll(/\b[\p{Lu}][\p{L}\p{N}'’.-]*(?:\s+(?:[\p{Lu}][\p{L}\p{N}'’.-]*|van|von|de|der|del|da|la)){1,5}\b/gu)].map(m=>m[0]);
+ // Explicit relation values need not be capitalized. Preserve their complete
+ // identity instead of treating a lower-case name as a shortened old name.
+ for(const m of text.matchAll(/\b(?:my|our|his|her|their)\s+[\p{L}\p{N}_ -]{1,45}\s+(?:is|was|are|were)\s+([^.!?]+)/giu))names.push(m[1]!);
+ for(const m of text.matchAll(/\bI\s+(?:(?:now|currently)\s+)?(?:report\s+to|work\s+(?:with|for))\s+([^.!?]+)/giu))names.push(m[1]!);
+ for(const candidate of names){
+  const name=valueWords(candidate).filter(w=>!TITLE_TOKENS.has(w)).map(digest);
+  if(name.some(h=>retired.has(h))&&name.some(h=>!retired.has(h)))return true;
+ }
+ return false;
+}
+/** Exact identity is sufficient; partial overlap alone never erases an
+ * ordinary new statement. Explicit replay/removal references may resolve a
+ * shortened name or reworded phrase, unless they name a different entity. */
 export function echoMentions(text:string,echo:PhraseEchoIndex|undefined):boolean{
  if(!echo||!echo.t.length)return false;
- const words=valueWords(text),tokenSet=new Set(words.map(w=>digest(w)));
- if(echo.t.length===1)return tokenSet.has(echo.t[0]!);
+ const words=valueWords(text),hashed=words.map(digest),tokenSet=new Set(hashed);
+ for(let i=0;i+echo.t.length<=hashed.length;i++)if(echo.t.every((h,j)=>hashed[i+j]===h))return true;
+ if(!PRIOR_REFERENCE.test(text)||namesDifferentEntity(text,echo))return false;
  const pairSet=new Set(words.slice(0,-1).map((w,i)=>digest(`${w} ${words[i+1]!}`)));
  const shared=echo.p.filter(h=>pairSet.has(h)).length;
  if(echo.t.length===2)return shared>0;

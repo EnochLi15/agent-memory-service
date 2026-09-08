@@ -182,6 +182,9 @@ const operationStop=new Set('i my me we our you your user assistant the a an is 
 // retention clause ("Everything else about Portland should stay") fences its
 // tokens off the deletion.
 const IMPERATIVE=/(?:^|[,;:—–]\s*|\b(?:so|well|actually|now)\s+,?\s*)(?:you\s+(?:can|could|should|may|might)\s+(?:go\s+ahead\s+and\s+|just\s+|simply\s+)?|please\s+|kindly\s+)?(?:forget|remove|delete|discard|erase)\b/iu;
+// A numeric reference without a named property may restate a prior command.
+// Explicit selectors ("forget my salary 240") always use normal binding.
+const NUMERIC_RETIREMENT=/\bI (?:do not|don't) (?:need|want) (?:that|this|the)\s+[$€£]?\d[\d,.]*(?:\s+(?:figure|number|amount|quote))?\s+(?:stored|remembered|kept)(?:\s+(?:here|by you))?\s+anymore\b/iu;
 function forgetPhrase(quote:string):string{
   const m=quote.match(/\b(?:forget|remove|delete|discard|erase)\s+(?:the\s+|any\s+|that\s+|those\s+)?(?:(?:detail|part|info(?:rmation)?|record|entry|mention|note|idea|timeline|quote|figure)s?\s+(?:about|of|on|regarding)\s+)?([\p{L}\p{N}][^,;.!?—–]{1,80})/iu);
   // Only a named-information shape ("the Tucson detail", "the detail about
@@ -206,6 +209,7 @@ function narrativeForget(quote:string,facts:Fact[],req:AddRequest,index:number,c
     // anymore") names its target by number when no imperative carries it.
     // Facts an earlier command in the same message already bound stay out:
     // a second operation on them would carry a different deletion boundary.
+    if(!NUMERIC_RETIREMENT.test(quote))return null;
     const numeral=valueWords(quote).find(t=>/^\d{2,}$/.test(t));
     if(!numeral)return null;
     const matched=facts.filter(f=>f.state!=='erased'&&!coveredIds.has(f.id)&&mentionsTokens(`${f.content} ${f.value}`,[numeral]));
@@ -251,7 +255,7 @@ function anaphoricMirror(span:{start:number;quote:string},body:string,index:numb
   if(!ops.length)return null;
   const spanNumbers=[...new Set(span.quote.match(/\d{2,}/g)??[])];
   const pure=ANAPHORIC_TAIL.test(span.quote.replace(/\s+/g,' ').trim());
-  if(!pure&&!spanNumbers.length)return null;
+  if(!pure&&!NUMERIC_RETIREMENT.test(span.quote))return null;
   // A pure anaphoric tail restates the nearest earlier command; a numbered
   // sentence mirrors only an operation whose erased target or value echoes
   // that number, so a distinct named command never inherits a different
