@@ -659,12 +659,21 @@ export class Extractor {
     // only: operation adds must not rewrite cards, the source-operation
     // pipeline keeps its own bookkeeping, and the lifecycle experiment's
     // strip pass would break depends_on/supersedes card semantics.
-    if(this.config.experimental?.aggregate&&!parsed.operations.length&&!sourceOperationPlan&&this.config.experimental?.lifecycle!==false)
-      facts.push(...aggregatePatterns(req,snapshot,facts,messages));
+    const useErasure=this.config.erasureBinding&&!this.config.experimental?.rawOnly;
+    if(this.config.experimental?.aggregate&&!parsed.operations.length&&!sourceOperationPlan&&this.config.experimental?.lifecycle!==false){
+      const cards=aggregatePatterns(req,snapshot,facts,messages);
+      // Only this invocation's new optional rollups may be deferred. A stored
+      // card or a model-proposed reflection is never identified by its label.
+      // Nomination precedes all erasure plans; no uncertain verdict is changed.
+      const fresh=cards.filter(card=>!snapshot.facts.some(f=>f.id===card.id));
+      const deferred=new Set(useErasure&&this.config.sourceErasure
+        ?sourceErasureWork(req,[],fresh,[],snapshot.erasureBoundaries??[],[],[]).candidates.map(c=>c.id):[]);
+      facts.push(...cards.filter(card=>!deferred.has(card.id)));
+      if(deferred.size)degraded.push('aggregate_deferred_erasure');
+    }
     if(sourceOperationPlan&&this.config.sourceOperationRouting)validateSourceRoutePlan(sourceOperationPlan,sourceOperationWork(req,snapshot.facts,sourceHistory));
     else if(sourceOperationPlan&&this.config.sourceOperationBatches&&sourceOperationWork(req,snapshot.facts,sourceHistory).enabled)validateSourceBatchPlan(sourceOperationPlan,sourceOperationWork(req,snapshot.facts,sourceHistory));
     if(sourceOperationPlan)validateSourceOperations(sourceOperationPlan,req,snapshot.facts,facts,messages,sourceHistory);
-    const useErasure=this.config.erasureBinding&&!this.config.experimental?.rawOnly;
     let erasurePlan:Prepared['erasurePlan'];
     if(useErasure){
       const work=erasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[],this.config.sourceErasure?[...(snapshot.erasureSources??[]),...messages]:[]);
