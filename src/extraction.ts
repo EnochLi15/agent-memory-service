@@ -17,7 +17,7 @@ import {forgetScopeContext,humanQuote,participantIndices} from './verification.j
 import {SOURCE_REFERENCE_PROTOCOL,SOURCE_REFERENCE_PROMPT,sourceReferenceMessages,decodeSourceReferences} from './source-references.js';
 import {GROUPED_EXTRACTION_PROTOCOL,GROUPED_EXTRACTION_PROMPT,decodeGroupedExtraction} from './extraction-groups.js';
 import {VerificationSession} from './verification-session.js';
-import {PATCH_PROMPT,SEMANTIC_RETIREMENT_REPAIR_PROMPT,applyRepair,scopeForFindings,retirementInstructionsAtRisk,replacementTargetGroups,replacementBindingProblems,operationBindingProblems,RepairScopeError,type RepairScope} from './repair.js';
+import {PATCH_PROMPT,SEMANTIC_RETIREMENT_REPAIR_PROMPT,SOURCE_AUTHORIZATION_REPAIR_PROMPT,sourceAuthorizationCandidates,applyRepair,scopeForFindings,retirementInstructionsAtRisk,replacementTargetGroups,replacementBindingProblems,operationBindingProblems,RepairScopeError,type RepairScope} from './repair.js';
 import {sourceErasureWork} from './source-erasure.js';
 import {conservativeSourceErasureFallback} from './source-erasure-fallback.js';
 import {executeSourceErasure} from './source-erasure-execution.js';
@@ -465,10 +465,11 @@ export class Extractor {
           // message. Remaining obligations are checked again after this patch.
           const missingInstructions=patchMode?pendingForget(prior.data!).filter(({index})=>scope.source_indices.includes(index)).map(({index,span})=>({index,start:span.start,end:span.end,quote:span.quote})):[];
           const atRiskInstructions=patchMode?retirementInstructionsAtRisk(req,prior.data!,rejectedFindings,scope,sourceActions):[];
-          const repairInput=issue?JSON.stringify({...JSON.parse(user),...(grouped&&patchMode?{EXTRACTION_PROTOCOL:'flat-patch-v1',NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))}:{}),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:patchMode?indexedProposal(prior.data!):failedProposal,...(missingInstructions.length?{MISSING_OPERATION_INSTRUCTIONS:missingInstructions}:{}),...(atRiskInstructions.length?{AT_RISK_OPERATION_INSTRUCTIONS:atRiskInstructions}:{}),...(patchMode?{REPAIR_SCOPE:scope,REPLACEMENT_TARGET_GROUPS:replacementTargetGroups(prior.data!,relevant),FORGET_SCOPE_CONTEXT:repairForgetContext(prior.data!),FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
+          const sourceCandidates=patchMode?sourceAuthorizationCandidates(req,prior.data!,scope):[];
+          const repairInput=issue?JSON.stringify({...JSON.parse(user),...(grouped&&patchMode?{EXTRACTION_PROTOCOL:'flat-patch-v1',NEW_MESSAGES:req.messages.map((m,index)=>({index,...m}))}:{}),EXISTING_FACTS:relevant,REPAIR_FEEDBACK:issue,FAILED_PROPOSAL:patchMode?indexedProposal(prior.data!):failedProposal,...(missingInstructions.length?{MISSING_OPERATION_INSTRUCTIONS:missingInstructions}:{}),...(atRiskInstructions.length?{AT_RISK_OPERATION_INSTRUCTIONS:atRiskInstructions}:{}),...(sourceCandidates.length?{SOURCE_AUTHORIZATION_CANDIDATES:sourceCandidates}:{}),...(patchMode?{REPAIR_SCOPE:scope,REPLACEMENT_TARGET_GROUPS:replacementTargetGroups(prior.data!,relevant),FORGET_SCOPE_CONTEXT:repairForgetContext(prior.data!),FACT_RULES:EXTRACTION_PROMPT}:{})}):user;
           const output=!issue&&grouped&&this.config.extractionWorkers>1&&participantIndices(req).length>=4
             ?await prepareExtractionShards(req,extractionPrompt,user,this.config.extractionWorkers,modelSignal,(prompt,input,s,extraction_shard)=>this.models.json(prompt,input,s,{purpose:'extraction',trace:traceIdentity,extraction_shard}))
-            :await this.models.json(patchMode?PATCH_PROMPT+(atRiskInstructions.length?SEMANTIC_RETIREMENT_REPAIR_PROMPT:''):extractionPrompt+repairSystem,repairInput,modelSignal,{purpose:issue?'repair':'extraction',trace:traceIdentity});
+            :await this.models.json(patchMode?PATCH_PROMPT+(atRiskInstructions.length?SEMANTIC_RETIREMENT_REPAIR_PROMPT:'')+(sourceCandidates.length?SOURCE_AUTHORIZATION_REPAIR_PROMPT:''):extractionPrompt+repairSystem,repairInput,modelSignal,{purpose:issue?'repair':'extraction',trace:traceIdentity});
           let raw:unknown=output;
           if(grouped&&!patchMode){
             try{raw=references?decodeSourceReferences(output,req):decodeGroupedExtraction(output,req);}
