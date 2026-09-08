@@ -9,6 +9,10 @@ const retirement=/\b(?:I (?:do not|don't) need .{1,160}(?:stored|remembered|kept
 const secondPersonRetirement=/\byou (?:do not|don't) need to (?:keep track of|track|retain|store|remember|keep) .{1,160} anymore\b/iu;
 const emphasizedSecondPersonRetirement=/\byou (?:do not|don't) really need to (?:keep track of|track|retain|store|remember|keep(?!\s+(?:forgetting|deleting|erasing|removing))) .{1,160} anymore\b/iu;
 const nonDirectEmphasis=/\b(?:maybe|perhaps|possibly|probably|necessarily)\b|\bnot (?:sure|certain|saying|asking|telling)\b/iu;
+// Only a complete direct statement retires tracking here. The object must be
+// a concrete reference, not a question or the management of forgetting itself.
+const trackingRetirement=/^(?:(?:there is|there's) )?no need (?:for you )?to worry about tracking ((?:my|our|your|the|a|an|this|that|these|those|his|her|their)\b.{1,160}) anymore[.!。！]?$/iu;
+const indirectTrackingObject=/\b(?:not|never|whether|if|unless|when|stop(?:ping)?|forget(?:ting)?|delet(?:e|ing)|eras(?:e|ing)|remov(?:e|ing))\b/iu;
 const noStore=/^(?:(?:no|okay|ok|actually|well)\s*[,，:]\s*)?(?:please\s+)?(?:do not|don't|never)\s+(?:store|retain|save|keep(?!\s+(?:forgetting|deleting|erasing|removing))|remember|track|log)\b|^(?:请)?(?:不要|别)(?:保存|存储|记住)/iu;
 const negative=new RegExp(String.raw`\b(?:(?:do not|don't|never|must not|mustn't|won't)\s+(?:(?:want|need)\s+(?:you\s+)?to\s+)?${verb}|(?:should not|shouldn't)\s+${verb})\b|别忘|不要忘|不想.*忘|不要(?:删除|移除)|别(?:删除|移除)`,'iu');
 const request=new RegExp(String.raw`^(?:(?:now|okay|ok|also|then|actually|and)\s*[,，:]?\s*)?(?:(?:please|kindly|can you|could you|would you|you can|you may|you should|you must|I want you to|I need you to|let's)\s+)?${verb}\b|^(?:请|帮我|麻烦你|你可以|你应该)?(?:忘掉|忘记|删除|移除|不要再记)`,'iu');
@@ -48,7 +52,9 @@ export function instructionSpans(text:string):InstructionSpan[]{
   // Keep tentative cues and confirmation questions out of this new matching
   // branch. Existing non-emphasized recognition is unchanged.
   const emphasized=emphasizedSecondPersonRetirement.test(body)&&!/[?？]\s*$/.test(clause)&&!nonDirectEmphasis.test(body);
-  const direct=!blocked&&!procedural&&(retirement.test(body)||secondPersonRetirement.test(body)||emphasized||noStore.test(body)||request.test(body)||(!/[?？]\s*$/.test(clause)&&imperativeMid.test(body)));
+  const tracking=body.trim().match(trackingRetirement);
+  const directTracking=!!tracking&&!nonDirectEmphasis.test(clause)&&!indirectTrackingObject.test(tracking[1]!);
+  const direct=!blocked&&!procedural&&(retirement.test(body)||secondPersonRetirement.test(body)||emphasized||directTracking||noStore.test(body)||request.test(body)||(!/[?？]\s*$/.test(clause)&&imperativeMid.test(body)));
   spans.push({start,end,quote:text.slice(start,end).trim(),intent:direct?'forget':blocked&&mention.test(body)?'blocked':'none'});
  }
  return spans;
