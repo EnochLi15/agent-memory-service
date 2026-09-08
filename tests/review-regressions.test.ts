@@ -28,7 +28,7 @@ test('an offline named-property deletion spares an independent same-literal reco
  }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
 
-test('degraded erasure binding erases echoes but retains an independent same-literal record',async()=>{
+test('ambiguous erasure rejects classifier outage, then reviewed echoes and independent names commit',async()=>{
  const config=configFromEnv({MEMORY_MODE:'enhanced',MEMORY_ERASURE_BINDING:'true'});
  const dir=mkdtempSync(join(tmpdir(),'review-degraded-'));const store=new TenantStore(dir,'u');
  const fact=(content:string,predicate:string,value:string,scope='',index=0)=>({content,predicate,value,scope,subject:'user',sources:[{index,quote:content}]});
@@ -47,8 +47,19 @@ test('degraded erasure binding erases echoes but retains an independent same-lit
   return structuredClone(forgetProposal);
  }} as any;
  try{
-  const prepared=await new Extractor(config,model).prepare(forget,store.snapshot('s'),AbortSignal.timeout(1000));
-  assert.equal(erasureCalls,1);assert.ok(prepared.degraded.includes('erasure_binding_deterministic'),JSON.stringify(prepared.degraded));
+  const logical=()=>store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map((row:any)=>({name:row.name,rows:store.db.prepare('SELECT * FROM \"'+row.name.replaceAll('\"','\"\"')+'\"').all().map(x=>JSON.stringify(x)).sort()}));
+  const before=store.snapshot('s'),beforeTables=logical();
+  await assert.rejects(()=>new Extractor(config,model).prepare(forget,before,AbortSignal.timeout(1000)),/Erasure scope semantic review required/);
+  assert.equal(erasureCalls,1);assert.deepEqual(store.snapshot('s'),before);assert.deepEqual(logical(),beforeTables);
+  assert.equal(store.receipt(forget.request_id,hash(JSON.stringify(forget))),null);
+  // The original echo/neighbor success contract still needs an explicit scope
+  // verdict; sharing a source is not a substitute during a classifier outage.
+  const reviewed={...model,json:async(_s:string,input:string,_signal:AbortSignal,context:any)=>{
+   if(context?.purpose!=='erasure_binding')return structuredClone(forgetProposal);
+   const x=JSON.parse(input);return {decisions:x.CANDIDATES.map((c:any)=>({index:c.index,effect:x.FACTS[c.fact_slot].fact.id===independent.id?'retain':'erase',quote:x.FACTS[c.fact_slot].fact.source_quotes[0],reason:'Synthetic reviewed backup echo versus independent coworker.',value_context:null}))};
+  }};
+  const prepared=await new Extractor(config,reviewed).prepare(forget,before,AbortSignal.timeout(1000));
+  assert.deepEqual(prepared.degraded,[]);
   store.commit(forget,hash(JSON.stringify(forget)),prepared,store.revision());
   assert.equal(store.facts().find((f:any)=>f.id===target.id).state,'erased');
   assert.equal(store.facts().find((f:any)=>f.id===echo.id).state,'erased','a same-source echo dies with the target');

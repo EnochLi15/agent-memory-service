@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import {sourceFormatFor,type Config} from './config.js';
 import { Models } from './models.js';
 import { EXTRACTION_PROMPT } from './prompts.js';
-import { factId, addSchema, extractionSchema, canonical, slot, propertyFamily, replacementMatches, sameSlot, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation, type StoredMessage } from './types.js';
+import { factId, addSchema, extractionSchema, canonical, slot, propertyFamily, replacementMatches, ServiceError, type AddRequest, type Extraction, type ExtractedFact, type Fact, type Snapshot, type Prepared, type Operation, type StoredMessage } from './types.js';
 import {bindingCandidates,resolveOperationTargets} from './binding.js';
 import { entities, overlap, tokens, speakerPrefix } from './text.js';
 import {preparePassages,sourceSpans} from './passages.js';
@@ -22,7 +22,7 @@ import {sourceErasureWork} from './source-erasure.js';
 import {conservativeSourceErasureFallback} from './source-erasure-fallback.js';
 import {executeSourceErasure} from './source-erasure-execution.js';
 import {executeGroupedSourceErasure} from './source-erasure-grouped.js';
-import {erasureWork,erasureInput,decodeErasure,ERASURE_PROMPT,containsValue,factContainsValue,valueWords,mentionsTokens} from './erasure.js';
+import {erasureWork,erasureInput,decodeErasure,ERASURE_PROMPT,valueWords,mentionsTokens} from './erasure.js';
 import {transitionWork,transitionInput,decodeTransitions,TRANSITION_PROMPT} from './transitions.js';
 
 export function hash(s: string): string { return createHash('sha256').update(s).digest('hex'); }
@@ -693,23 +693,9 @@ export class Extractor {
     if(useErasure){
       const work=erasureWork(req,snapshot.facts,facts,parsed.operations,snapshot.erasureBoundaries??[],this.config.sourceErasure?[...(snapshot.erasureSources??[]),...messages]:[]);
       if(work.candidates.length){
-        // Write success over write perfection, but never a silent independent
-        // deletion: without semantic binding only same-slot echoes and records
-        // sharing the erased target's sources die with it. A cross-slot record
-        // survives the outage as a retained (unverified) neighbor; the degraded
-        // marker keeps that choice auditable instead of guessing independence.
-        const deterministic=():Prepared['erasurePlan']=>({fingerprint:work.fingerprint,decisions:[...work.automatic,...work.candidates.map(c=>{
-          const quote=c.fact.source_quotes.find(q=>q.trim());
-          if(!quote)throw new ServiceError('EVIDENCE_VALIDATION','Degraded erasure candidate lacks a witness quote');
-          const auth=c.authorization as {target?:{source_ids:string[]}}|null|undefined;
-          const linked=sameSlot(c.fact,c.boundary)||(auth?.target?.source_ids.some(id=>c.fact.source_ids.includes(id))??false);
-          if(linked)return {fact_id:c.fact_id,key:c.key,effect:'erase' as const,quote};
-          // A retained neighbor must witness the colliding value itself; if no
-          // quote can, the write stays committable by erasing conservatively.
-          const witnessed=factContainsValue(c.fact,c.boundary)?c.fact.source_quotes.find(q=>containsValue(q,c.boundary))??null:null;
-          if(!witnessed)return {fact_id:c.fact_id,key:c.key,effect:'erase' as const,quote};
-          return {fact_id:c.fact_id,key:c.key,effect:'retain' as const,quote:witnessed};
-        })]});
+        // Candidate overlap is not deletion authority. An unavailable scope
+        // classifier cannot certify either erasure or independent retention.
+        // Exact automatic boundaries still take the no-candidate path below.
         let fallback=this.config.mode!=='enhanced'||degraded.includes('extraction_offline');
         if(!fallback){
           try{
@@ -717,7 +703,7 @@ export class Extractor {
             erasurePlan=decodeErasure(raw,work);
           }catch(error){if(signal.aborted||Extractor.semanticRefusal(error))throw error;fallback=true;}
         }
-        if(fallback&&!erasurePlan){erasurePlan=deterministic();degraded.push('erasure_binding_deterministic');}
+        if(fallback&&!erasurePlan)throw new ServiceError('EVIDENCE_VALIDATION',`Erasure scope semantic review required for ${work.candidates.length} unresolved fact/boundary pairs; source overlap cannot authorize deletion or retention`);
       }else erasurePlan={fingerprint:work.fingerprint,decisions:work.automatic};
     }
     let sourceErasurePlan:Prepared['sourceErasurePlan'];
