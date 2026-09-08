@@ -22,7 +22,7 @@ export function transitionWork(req:AddRequest,prior:Fact[],incoming:Fact[],opera
   }
   pool.push(f);
  }
- if(candidates.length>64||JSON.stringify(candidates).length>64000)throw new ServiceError('EVIDENCE_VALIDATION','Implicit transition verification exceeds bounded capacity');
+ if(candidates.length>64)throw new ServiceError('EVIDENCE_VALIDATION','Implicit transition verification exceeds bounded capacity');
  const fingerprint=createHash('sha256').update(JSON.stringify({request:req,prior:prior.map(meaning).sort((a,b)=>a.id.localeCompare(b.id)),incoming:incoming.map(meaning),operations})).digest('hex');
  return {fingerprint,candidates};
 }
@@ -30,6 +30,27 @@ export function transitionWork(req:AddRequest,prior:Fact[],incoming:Fact[],opera
 export function transitionInput(req:Pick<AddRequest,'messages'>,work:ReturnType<typeof transitionWork>){
  const labelled=(f:ReturnType<typeof meaning>)=>({...f,source_quotes:f.source_quotes.map((quote,slot)=>({slot,quote}))});
  return {NEW_MESSAGES:req.messages,CANDIDATES:work.candidates.map((c,index)=>({...c,index,old:labelled(c.old),incoming:labelled(c.incoming)}))};
+}
+/** Plan every bounded request before any semantic call. Facts, witness slots and
+ * messages stay intact; only candidate indexes become local to each batch. The
+ * global fingerprint and complete decision coverage remain the commit contract. */
+export function transitionBatches(req:Pick<AddRequest,'messages'>,work:ReturnType<typeof transitionWork>){
+ if(work.candidates.length>64)throw new ServiceError('EVIDENCE_VALIDATION','Implicit transition verification exceeds bounded capacity');
+ const batches:{offset:number;work:ReturnType<typeof transitionWork>;input:string}[]=[];
+ for(let offset=0;offset<work.candidates.length;){
+  if(batches.length===4)throw new ServiceError('EVIDENCE_VALIDATION','Implicit transition verification exceeds bounded batch capacity');
+  let end=offset,input='';
+  while(end<work.candidates.length){
+   const next=JSON.stringify(transitionInput(req,{...work,candidates:work.candidates.slice(offset,end+1)}));
+   if(next.length>64000){
+    if(end===offset)throw new ServiceError('EVIDENCE_VALIDATION','Implicit transition candidate exceeds bounded request capacity');
+    break;
+   }
+   input=next;end++;
+  }
+  batches.push({offset,work:{...work,candidates:work.candidates.slice(offset,end)},input});offset=end;
+ }
+ return batches;
 }
 export function decodeTransitions(raw:unknown,work:ReturnType<typeof transitionWork>):TransitionPlan{
  const rows=(raw as any)?.decisions;if(!Array.isArray(rows)||rows.length!==work.candidates.length)throw new ServiceError('EVIDENCE_VALIDATION','Incomplete implicit transition decisions');

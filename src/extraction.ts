@@ -23,7 +23,7 @@ import {conservativeSourceErasureFallback} from './source-erasure-fallback.js';
 import {executeSourceErasure} from './source-erasure-execution.js';
 import {executeGroupedSourceErasure} from './source-erasure-grouped.js';
 import {erasureWork,erasureInput,decodeErasure,ERASURE_PROMPT,valueWords,mentionsTokens} from './erasure.js';
-import {transitionWork,transitionInput,decodeTransitions,TRANSITION_PROMPT} from './transitions.js';
+import {transitionWork,transitionBatches,decodeTransitions,TRANSITION_PROMPT} from './transitions.js';
 
 export function hash(s: string): string { return createHash('sha256').update(s).digest('hex'); }
 import {retirementEffectMismatch,currentRelationRemoval,realControl,instructionSpans,authorizesForget,missingForgetObligations,missingPersonalSources} from './operation-intent.js';
@@ -725,6 +725,7 @@ export class Extractor {
     if(useErasure&&this.config.semanticTransitions){
       const work=transitionWork(req,snapshot.facts,facts,parsed.operations);
       if(work.candidates.length){
+        const batches=transitionBatches(req,work);
         // Degraded deterministic transitions mark every pair uncertain: both
         // statements stay visible and conflicted instead of guessing a
         // replacement or losing the whole write.
@@ -735,8 +736,13 @@ export class Extractor {
         let fallback=this.config.mode!=='enhanced'||degraded.includes('extraction_offline');
         if(!fallback){
           try{
-            const raw=await this.models.json(TRANSITION_PROMPT,JSON.stringify(transitionInput(req,work)),modelSignal,{purpose:'state_transition',trace:traceIdentity});
-            transitionPlan=decodeTransitions(raw,work);
+            const decisions:NonNullable<Prepared['transitionPlan']>['decisions']=[];
+            for(const batch of batches){
+              const raw=await this.models.json(TRANSITION_PROMPT,batch.input,modelSignal,{purpose:'state_transition',trace:traceIdentity});
+              const checked=decodeTransitions(raw,batch.work);
+              decisions.push(...checked.decisions.map(d=>({...d,index:d.index+batch.offset})));
+            }
+            transitionPlan=decodeTransitions({decisions},work);
           }catch(error){if(signal.aborted||Extractor.semanticRefusal(error))throw error;fallback=true;}
         }
         if(fallback&&!transitionPlan){transitionPlan=deterministic();degraded.push('state_transition_deterministic');}
