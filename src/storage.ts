@@ -17,7 +17,7 @@ import {eventCategory} from './events.js';
 import {resolveOperationTargets} from './binding.js';
 import {retirementEffectMismatch,missingForgetObligations} from './operation-intent.js';
 import {erasureAnchors,sourceErasureWork,validateSourceErasure,maskSource,assertErasedWitnessProgress} from './source-erasure.js';
-import {valueWords,valueDigest,containsValue,factContainsValue,valueOccurrences,echoMentions,mentionsTokens,boundaryKey,protectBoundary,retainedAgainst,erasureWork,validateErasurePlan,validateRetainedValueContexts} from './erasure.js';
+import {valueWords,valueDigest,containsValue,factContainsValue,valueOccurrences,echoMentions,buildPhraseEcho,boundaryKey,protectBoundary,retainedAgainst,erasureWork,validateErasurePlan,validateRetainedValueContexts} from './erasure.js';
 import type {ErasureBoundary} from './types.js';
 import {transitionKey,transitionWork,validateTransitions} from './transitions.js';
 
@@ -204,7 +204,7 @@ export class TenantStore {
             // carries the phrase so differently-worded echoes of it match.
             const boundaryValue=operation.value||f.value;
             const phrase=valueWords(operation.value);
-            const marker:Marker={subject:f.subject,predicate:f.predicate,scope:f.scope,boundary:operation.boundary,valueHash:valueDigest(boundaryValue),tokenCount:valueWords(boundaryValue).length,allowedValueHashes:[],revision,...(sourceErasure?{anchorHashes:erasureAnchors(f)}:{}),...(phrase.length&&phrase.length<=8?{phraseTokens:phrase}:{})};
+            const marker:Marker={subject:f.subject,predicate:f.predicate,scope:f.scope,boundary:operation.boundary,valueHash:valueDigest(boundaryValue),tokenCount:valueWords(boundaryValue).length,allowedValueHashes:[],revision,...(sourceErasure?{anchorHashes:erasureAnchors(f)}:{}),...(phrase.length&&phrase.length<=8?{phraseEcho:buildPhraseEcho(phrase)}:{})};
             this.db.prepare('INSERT INTO markers(body) VALUES (?)').run(JSON.stringify(protectBoundary(marker)));
             erasedIds.add(f.id);for(const id of f.source_ids)redactedSources.add(id);
             rememberErasedQuotes(f);
@@ -233,7 +233,7 @@ export class TenantStore {
         // when one of its value representatives was itself absorbed in this
         // commit; every stored member already passed its own marker check.
         const patternCard=f.kind==='reflection'&&f.modality==='inferred';
-        if(patternCard?(f.depends_on??[]).some(id=>markerAbsorbed.has(id)):markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)) && ((sameSlot(m,f) && (m.boundary==='property'||m.valueHash===valueDigest(f.value)))||factContainsValue(f,m)||(m.phraseTokens?.length?echoMentions(f.content,m.phraseTokens):false)))){
+        if(patternCard?(f.depends_on??[]).some(id=>markerAbsorbed.has(id)):markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)) && ((sameSlot(m,f) && (m.boundary==='property'||m.valueHash===valueDigest(f.value)))||factContainsValue(f,m)||(m.phraseEcho?echoMentions(f.content,m.phraseEcho):false)))){
           if(!patternCard){markerAbsorbed.add(f.id);for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}}
           continue;
         }
@@ -291,13 +291,13 @@ export class TenantStore {
         const leaked=!card&&markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value))&&factContainsValue(f,m)&&(sameSlot(m,f)||f.source_ids.some(id=>redactedSources.has(id))));
         if(dependent||leaked||forcedErased.has(f.id)){erasedIds.add(f.id);rememberErasedQuotes(f);if(!card)for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}f.state='erased';f.content='';f.value='';f.vector=null;f.source_quotes=[];f.entities=[];f.revision=revision;this.put(f);changed=true;}
       }}
-      for(const m of inserted){if(markers.some(marker=>containsValue(m.content,marker)||(marker.phraseTokens?.length?echoMentions(m.content,marker.phraseTokens):false))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
+      for(const m of inserted){if(markers.some(marker=>containsValue(m.content,marker)||(marker.phraseEcho?echoMentions(m.content,marker.phraseEcho):false))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
       if(prepared.operations.some(o=>o.type==='forget')){
         // Old assistant echoes have no fact links. They must not remain raw
         // searchable evidence or return through the next session's tail. This
         // marker-driven sweep is deterministic and applies to every write
         // mode: an offline forget erases echoes just as finally.
-        for(const row of this.db.prepare('SELECT body FROM messages').all() as Row[]){const m=JSON.parse(row.body) as StoredMessage;if(markers.some(marker=>containsValue(m.content,marker)||(marker.phraseTokens?.length?echoMentions(m.content,marker.phraseTokens):false))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
+        for(const row of this.db.prepare('SELECT body FROM messages').all() as Row[]){const m=JSON.parse(row.body) as StoredMessage;if(markers.some(marker=>containsValue(m.content,marker)||(marker.phraseEcho?echoMentions(m.content,marker.phraseEcho):false))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
       }
       if(sourceErasure){
         // A short nonlexical value may have no model candidate; its authorized
@@ -372,7 +372,7 @@ export class TenantStore {
           }));
           redactPassage(p,cuts);
         }
-        if(!semanticErasure&&markers.some(m=>(containsValue(p.content,m)||(m.phraseTokens?.length?echoMentions(p.content,m.phraseTokens):false))&&(!linked.length||linked.some(f=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)))))){
+        if(!semanticErasure&&markers.some(m=>(containsValue(p.content,m)||(m.phraseEcho?echoMentions(p.content,m.phraseEcho):false))&&(!linked.length||linked.some(f=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value)))))){
           p.fragments=[];p.content='';p.vector=null;p.state='erased';
         }
         if(newPassageIds.has(p.id)||JSON.stringify(p)!==previous){p.revision=revision;this.putPassage(p);}
@@ -413,9 +413,13 @@ export class TenantStore {
         const after=['forget','retract'].includes(o.type)?[]:prepared.facts.filter(f=>slot(f)===slot(o)&&f.source_ids.includes(source.id)).map(f=>mergedIds.get(f.id)??f.id).filter(id=>current.has(id));
         const original=originalFacts.find(f=>ids.includes(f.id))??prepared.facts.find(f=>ids.includes(f.id));
         // "What did I ask you to remove?" is answerable only if the trace
-        // names the removed category in the user's own words, value-free.
-        const tracePhrase=o.type==='forget'&&o.value?valueWords(o.value):[];
-        const traceDescriptor=o.type==='forget'&&o.reason&&o.reason.length<=40&&!(tracePhrase.length&&mentionsTokens(o.reason,tracePhrase))?o.reason:undefined;
+        // names the removed category in the user's own words, value-free. The
+        // reason is model free text: it is admitted only when no token of what
+        // was erased — the operation's own value or a target's original value,
+        // which a property-boundary command does not repeat — appears in it.
+        const originals=ids.map(id=>originalFacts.find(f=>f.id===id)).filter((f):f is Fact=>!!f);
+        const secret=o.type==='forget'?new Set([...(o.value?valueWords(o.value):[]),...originals.flatMap(f=>valueWords(f.value))]):new Set<string>();
+        const traceDescriptor=o.type==='forget'&&o.reason&&o.reason.length<=40&&![...secret].some(w=>valueWords(o.reason).includes(w))?o.reason:undefined;
         event(o.type,{...o,content:original?.content??''},[source.id],ids,after,source.content.indexOf(o.source.quote),source.role==='user'?'user':'participant',traceDescriptor);
         this.db.prepare('INSERT INTO operations(body) VALUES (?)').run(JSON.stringify({type:o.type,target_ids:ids,subject:o.subject,predicate:o.predicate,scope:'',scopeHash:scopeKey(o),boundary:o.boundary,source_id:source.id,revision}));
       }

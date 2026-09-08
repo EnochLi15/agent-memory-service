@@ -174,3 +174,64 @@ test('surname relaxation stays narrow: a retired common-noun phrase keeps the st
     assert.ok(!tail[2]!.redacted,'generic later bread talk is not redacted by a common-noun phrase');
   }finally{done();}
 });
+
+// Review regressions: every matching primitive must also prove what it must
+// NOT match — a substring of one number is not that number, one shared
+// bigram of a retired name is not an echo, a model reason repeating the
+// erased value is not a safe descriptor, and a marker row never carries the
+// plaintext it suppresses on.
+test('review F1: a numeral echo binds token-exact, never by substring',async()=>{
+  const {store,done}=await fixture([
+    [{role:'user',content:'My access code is 1240.'}],
+    [{role:'user',content:'My salary is $240 per year.'}],
+    [{role:'user',content:'Forget my access code. Forget my salary 240.'}],
+  ]);
+  try{
+    assert.equal(store.facts().find(f=>f.predicate==='access_code')?.state,'erased','the first command erases the access code');
+    assert.equal(store.facts().find(f=>f.predicate==='salary')?.state,'erased','the second command still erases the salary, not the access code again');
+  }finally{done();}
+});
+
+test('review F2: a new record sharing only one bigram with a retired name survives',async()=>{
+  const {store,done}=await fixture([
+    [{role:'user',content:'My manager is Alice Van Smith.'}],
+    [{role:'user',content:'Please forget my manager Alice Van Smith.'}],
+    [{role:'user',content:'My new manager is Alice Van Jones.'}],
+  ]);
+  try{
+    const jones=store.facts().find(f=>f.predicate==='manager'&&/jones/i.test(f.value));
+    assert.ok(jones,'the new manager record is stored');
+    assert.equal(jones!.state,'active','the new manager record stays active');
+    const tail=store.snapshot('s').tail;
+    assert.ok(!tail[2]!.redacted,'the new manager message is not redacted');
+    assert.ok(tail[2]!.content.includes('Alice Van Jones'),'the new manager message keeps its content');
+  }finally{done();}
+});
+
+test('review F3: a model reason echoing the erased value never becomes the trace descriptor',async()=>{
+  const d=dir();const store=new TenantStore(d,'u');
+  try{
+    const r1=req('f3a',[{role:'user',content:'My access code is 593842.'}]);
+    store.commit(r1,hash(JSON.stringify(r1)),await extractor.prepare(r1,store.snapshot('s'),AbortSignal.timeout(1000)),store.revision());
+    const r2=req('f3b',[{role:'user',content:'Please forget my access code.'}]);
+    const prepared=await extractor.prepare(r2,store.snapshot('s'),AbortSignal.timeout(1000));
+    prepared.operations[0]!.reason='Remove code 593842'; // simulated model output
+    store.commit(r2,hash(JSON.stringify(r2)),prepared,store.revision());
+    assert.equal(store.facts().find(f=>f.predicate==='access_code')?.state,'erased','the access code is erased');
+    assert.ok(store.events().filter(e=>e.type==='forget').every(e=>!e.descriptor||!/593842/.test(e.descriptor)),'no trace descriptor carries the erased value');
+  }finally{store.close();rmSync(d,{recursive:true,force:true});}
+});
+
+test('review F4: marker rows carry no plaintext of the erased value while echo suppression still works',async()=>{
+  const {store,done}=await fixture([
+    [{role:'user',content:'My access code is 593842.'}],
+    [{role:'user',content:'Please forget my access code 593842.'}],
+    [{role:'user',content:'As I mentioned, the 593842 code opens the door.'}],
+  ]);
+  try{
+    const rows=(store.db.prepare('SELECT body FROM markers').all() as {body:string}[]).map(r=>r.body).join('\n');
+    assert.ok(!rows.includes('593842'),'no marker row stores the plaintext value');
+    const tail=store.snapshot('s').tail;
+    assert.equal(tail[2]!.redacted,true,'the hashed echo index still suppresses a verbatim replay');
+  }finally{done();}
+});

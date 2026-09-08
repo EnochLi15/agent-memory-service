@@ -262,7 +262,9 @@ function anaphoricMirror(span:{start:number;quote:string},body:string,index:numb
     const pos=body.indexOf(o.source.quote);
     if(pos<0||pos+o.source.quote.length>span.start)continue;
     const targetText=o.target_ids.map(id=>facts.find(f=>f.id===id)).map(f=>f?`${f.content} ${f.value}`:'').join(' ');
-    const echoed=spanNumbers.some(n=>`${o.value??''} ${o.source.quote} ${targetText}`.includes(n));
+    // Token-exact only: "240" must never echo a "1240" target — a substring
+    // of one number is not the same number as the command named.
+    const echoed=spanNumbers.some(n=>valueWords(`${o.value??''} ${o.source.quote} ${targetText}`).includes(n));
     if(!pure&&!echoed)continue;
     const key=`${echoed?1:0}${String(pos).padStart(6,'0')}`;
     if(key>bestKey){best=o;bestKey=key;}

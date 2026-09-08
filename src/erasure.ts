@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {canonical,sameSlot,sameScope,scopeKey,ServiceError,type AddRequest,type Fact,type Operation,type ErasureBoundary,type ErasurePlan,type StoredMessage} from './types.js';
+import {canonical,sameSlot,sameScope,scopeKey,ServiceError,type AddRequest,type Fact,type Operation,type ErasureBoundary,type ErasurePlan,type StoredMessage,type PhraseEchoIndex} from './types.js';
 
 const digest=(s:string)=>createHash('sha256').update(s).digest('hex');
 export const valueWords=(s:string):string[]=>canonical(s).match(/[\p{L}\p{N}]+/gu)??[];
@@ -25,18 +25,33 @@ export function mentionsTokens(text:string,phrase:string[]):boolean{
 }
 /** Title words that mark a retired phrase as a titled person name. */
 const TITLE_TOKENS=new Set(['professor','prof','doctor','dr','mr','mrs','ms','coach','manager','supervisor','advisor','mentor','director','president','captain','teacher','nurse','officer','colleague']);
-/** Suppression-only echo semantics: a later message may carry just the
- * surname of a retired titled name — "the Mehta stuff" after "Professor
- * Anil Mehta" was erased — and the strict bigram window misses it. A single
- * token may relax the match only for name phrases carrying a title; a
- * common-noun phrase ("salary information") must keep the strict window so
- * ordinary later talk of "salary" is never redacted. */
-export function echoMentions(text:string,phrase:string[]):boolean{
- if(mentionsTokens(text,phrase))return true;
- if(phrase.length<2||phrase.length>5)return false;
- if(!phrase.some(t=>TITLE_TOKENS.has(t)))return false;
- const words=valueWords(text);
- return phrase.some(t=>!TITLE_TOKENS.has(t)&&t.length>=3&&words.includes(t));
+/** Build the hashed echo index persisted on a marker. Digests only: the row
+ * never carries the plaintext tokens it suppresses on. */
+export function buildPhraseEcho(phrase:string[]):PhraseEchoIndex{
+ return {t:phrase.map(w=>digest(w)),p:phrase.slice(0,-1).map((w,i)=>digest(`${w} ${phrase[i+1]}`)),titles:phrase.map(w=>TITLE_TOKENS.has(w)),lengths:phrase.map(w=>w.length)};
+}
+/** Suppression-only echo semantics against a marker's hashed phrase index.
+ * A reworded replay of a three-plus-token phrase shares several consecutive
+ * bigrams ("added three new hires last quarter"), while one shared bigram is
+ * usually coincidence — a new "Alice Van Jones" after "Alice Van Smith" was
+ * retired must survive with its record and message intact. One- and
+ * two-token phrases can only ever share one bigram and keep the
+ * single-match rule. A later message may also carry just the surname of a
+ * retired titled name — "the Mehta stuff" after "Professor Anil Mehta" —
+ * which no bigram reaches; that relaxation fires only for phrases carrying
+ * a title, so common-noun phrases ("salary information") never redact
+ * ordinary later talk of "salary". */
+export function echoMentions(text:string,echo:PhraseEchoIndex|undefined):boolean{
+ if(!echo||!echo.t.length)return false;
+ const words=valueWords(text),tokenSet=new Set(words.map(w=>digest(w)));
+ if(echo.t.length===1)return tokenSet.has(echo.t[0]!);
+ const pairSet=new Set(words.slice(0,-1).map((w,i)=>digest(`${w} ${words[i+1]!}`)));
+ const shared=echo.p.filter(h=>pairSet.has(h)).length;
+ if(echo.t.length===2)return shared>0;
+ if(shared>=2)return true;
+ if(echo.t.length>5)return false;
+ if(!echo.titles.some(Boolean))return false;
+ return echo.t.some((h,i)=>!echo.titles[i]&&(echo.lengths[i]??0)>=3&&tokenSet.has(h));
 }
 type ErasureFact=Pick<Fact,'id'|'content'|'subject'|'predicate'|'scope'|'scopeHash'|'value'|'source_ids'|'source_quotes'|'depends_on'>;
 /** A generated participant label is not a literal occurrence in human evidence.
