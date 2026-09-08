@@ -7,6 +7,8 @@ const retirement=/\b(?:I (?:do not|don't) need .{1,160}(?:stored|remembered|kept
 // The negative applies to retaining the information, not to forgetting it.
 // Sentence-level quotation, reporting and conditional guards still apply.
 const secondPersonRetirement=/\byou (?:do not|don't) need to (?:keep track of|track|retain|store|remember|keep) .{1,160} anymore\b/iu;
+const emphasizedSecondPersonRetirement=/\byou (?:do not|don't) really need to (?:keep track of|track|retain|store|remember|keep(?!\s+(?:forgetting|deleting|erasing|removing))) .{1,160} anymore\b/iu;
+const nonDirectEmphasis=/\b(?:maybe|perhaps|possibly|probably|necessarily)\b|\bnot (?:sure|certain|saying|asking|telling)\b/iu;
 const noStore=/^(?:(?:no|okay|ok|actually|well)\s*[,，:]\s*)?(?:please\s+)?(?:do not|don't|never)\s+(?:store|retain|save|keep(?!\s+(?:forgetting|deleting|erasing|removing))|remember|track|log)\b|^(?:请)?(?:不要|别)(?:保存|存储|记住)/iu;
 const negative=new RegExp(String.raw`\b(?:(?:do not|don't|never|must not|mustn't|won't)\s+(?:(?:want|need)\s+(?:you\s+)?to\s+)?${verb}|(?:should not|shouldn't)\s+${verb})\b|别忘|不要忘|不想.*忘|不要(?:删除|移除)|别(?:删除|移除)`,'iu');
 const request=new RegExp(String.raw`^(?:(?:now|okay|ok|also|then|actually|and)\s*[,，:]?\s*)?(?:(?:please|kindly|can you|could you|would you|you can|you may|you should|you must|I want you to|I need you to|let's)\s+)?${verb}\b|^(?:请|帮我|麻烦你|你可以|你应该)?(?:忘掉|忘记|删除|移除|不要再记)`,'iu');
@@ -43,7 +45,10 @@ export function instructionSpans(text:string):InstructionSpan[]{
   // task in hand, not the memory: an object-less imperative before a
   // preposition is never a retirement command.
   const procedural=/^\s*(?:just\s+|simply\s+|please\s+)?(?:remove|delete|erase|discard)\s+(?:from|into|onto|out|with|to)\b/iu.test(body);
-  const direct=!blocked&&!procedural&&(retirement.test(body)||secondPersonRetirement.test(body)||noStore.test(body)||request.test(body)||(!/[?？]\s*$/.test(clause)&&imperativeMid.test(body)));
+  // Keep tentative cues and confirmation questions out of this new matching
+  // branch. Existing non-emphasized recognition is unchanged.
+  const emphasized=emphasizedSecondPersonRetirement.test(body)&&!/[?？]\s*$/.test(clause)&&!nonDirectEmphasis.test(body);
+  const direct=!blocked&&!procedural&&(retirement.test(body)||secondPersonRetirement.test(body)||emphasized||noStore.test(body)||request.test(body)||(!/[?？]\s*$/.test(clause)&&imperativeMid.test(body)));
   spans.push({start,end,quote:text.slice(start,end).trim(),intent:direct?'forget':blocked&&mention.test(body)?'blocked':'none'});
  }
  return spans;
