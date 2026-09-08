@@ -12,6 +12,7 @@ export interface Config {
   embeddingBase: string; embeddingModel: string; embeddingDigest: string | null; embeddingDimensions: number; embeddingSpace: string;
   addTimeout: number; searchTimeout: number; maxEvidence: number; tokenBudget: number; retrieval: 'hybrid' | 'lexical' | 'mem0';
   rerank: boolean; rawFallback: boolean;incrementalVerification:boolean;
+  queryFocus:boolean;queryFocusTimeout:number;
   relationMode:'off'|'cooccurrence'|'conditional';rerankPolicy:'always'|'selective';rerankFormat:'ids'|'indices';
   candidateLimit:number;rerankCandidates:number;coveragePacking:boolean;sourceIndex:boolean;eventView:boolean;
   experimental: {rawOnly:boolean;lifecycle:boolean;temporal:boolean;multiHop:boolean;reflection:boolean;aggregate:boolean;corroboration:boolean};
@@ -46,6 +47,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   if(env.MEMORY_WRITE_CONTINUATION==='true'&&(env.MEMORY_MODE!=='enhanced'||env.MEMORY_EXPERIMENT_RAW_ONLY==='true'))throw new Error('Write continuation requires enhanced structured extraction');
   const modelTransportAttempts=num('MEMORY_MODEL_TRANSPORT_ATTEMPTS',2);
   const modelMinIntervalMs=num('MEMORY_MODEL_MIN_INTERVAL_MS',0);
+  const queryFocusTimeout=num('MEMORY_QUERY_FOCUS_TIMEOUT_MS',8000);
+  if(!Number.isInteger(queryFocusTimeout)||queryFocusTimeout<100||queryFocusTimeout>8000)throw new Error('Invalid MEMORY_QUERY_FOCUS_TIMEOUT_MS');
   if(!Number.isInteger(modelMinIntervalMs)||modelMinIntervalMs>60000)throw new Error('Invalid MEMORY_MODEL_MIN_INTERVAL_MS');
   if(modelTransportAttempts!==1&&modelTransportAttempts!==2&&modelTransportAttempts!==3)throw new Error('Invalid MEMORY_MODEL_TRANSPORT_ATTEMPTS');
   const maxRepairRounds=num('MEMORY_MAX_REPAIR_ROUNDS',1);
@@ -80,6 +83,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     maxEvidence: num('MEMORY_MAX_EVIDENCE', 32), tokenBudget: num('MEMORY_TOKEN_BUDGET', 6000),
     retrieval: env.MEMORY_RETRIEVAL === 'lexical' ? 'lexical' : env.MEMORY_RETRIEVAL === 'mem0' ? 'mem0' : 'hybrid',
     rerank: env.MEMORY_RERANK === 'true', rawFallback: env.MEMORY_RAW_FALLBACK !== 'false',incrementalVerification:env.MEMORY_INCREMENTAL_VERIFICATION!=='false',
+    queryFocus:env.MEMORY_QUERY_FOCUS==='true',queryFocusTimeout,
     candidateLimit:Math.min(500,Math.max(1,Math.floor(num('MEMORY_CANDIDATE_LIMIT',200)))),
     rerankCandidates:Math.min(200,Math.max(1,Math.floor(num('MEMORY_RERANK_CANDIDATES',80)))),
     coveragePacking:env.MEMORY_COVERAGE_PACKING!=='false',sourceIndex:env.MEMORY_SOURCE_INDEX!=='false',

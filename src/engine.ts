@@ -8,13 +8,15 @@ import type { Config } from './config.js';
 import type {RerankDecision} from './retrieval-policy.js';
 import {appendFileSync} from 'node:fs';
 import {rerankPayload,decodeRerank} from './reranking.js';
+import {QueryFocusClassifier} from './query-focus.js';
 
 export class Engine {
   private continuations=new ContinuationCache();private continuationOwner=randomUUID();
   private worker:Worker; private counter=0; private pending=new Map<number,{resolve:(v:unknown)=>void;reject:(e:Error)=>void}>();
   private queues=new Map<string,Promise<unknown>>();private models:Models;private extractor:Extractor;ready:Promise<void>;private healthy=true;
+  private queryFocus:QueryFocusClassifier;
   constructor(readonly config:Config){
-    this.models=new Models(config);this.extractor=new Extractor(config,this.models);
+    this.models=new Models(config);this.extractor=new Extractor(config,this.models);this.queryFocus=new QueryFocusClassifier(config,this.models);
     this.worker=new Worker(new URL('./db-worker.js',import.meta.url),{workerData:config});
     this.ready=new Promise((resolve,reject)=>{
       this.worker.on('message',(m:{ready?:boolean;id:number;result:unknown;error?:{code:string;message:string;status:number}})=>{
@@ -105,13 +107,17 @@ export class Engine {
     return new Promise<SearchResponse>((resolve,reject)=>{const abort=()=>reject(new ServiceError('DEADLINE','Search deadline exceeded'));signal.addEventListener('abort',abort,{once:true});void task.then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));});
   }
   private async searchImpl(req:SearchRequest,signal:AbortSignal):Promise<SearchResponse>{
-    signal.throwIfAborted();if(req.top_k<1)return {data:[]};let vector:number[]|null=null;
-    if(this.config.mode==='enhanced'&&this.config.retrieval!=='lexical'){
-      try{vector=(await this.models.embedBatch([req.query],'search',signal))[0]??null;}catch(error){if(signal.aborted)throw error;}
-    }
+    signal.throwIfAborted();if(req.top_k<1)return {data:[]};
+    const embedding=async():Promise<number[]|null>=>{
+      if(this.config.mode==='enhanced'&&this.config.retrieval!=='lexical'){
+        try{return (await this.models.embedBatch([req.query],'search',signal))[0]??null;}catch(error){if(signal.aborted)throw error;}
+      }
+      return null;
+    };
+    const [vector,queryFocus]=await Promise.all([embedding(),this.queryFocus.classify(req.query,signal,{user_id:req.user_id,request_id:`search:${hash(req.query)}`})]);
     signal.throwIfAborted();
     const rerank=this.config.rerank&&this.config.mode==='enhanced';
-    let result=await this.call<{response:SearchResponse;revision:number;rerankDecision?:RerankDecision}>(rerank?'candidates':'search',req.user_id,[req,vector]);
+    let result=await this.call<{response:SearchResponse;revision:number;rerankDecision?:RerankDecision}>(rerank?'candidates':'search',req.user_id,[req,vector,queryFocus.focus]);
     const decision=result.rerankDecision,initialRevision=result.revision;let rerankOutcome='skipped';const rerankStart=performance.now();
     let scores:{id:string;score:number}[]|undefined;
     if(rerank && result.response.data.length>1&&decision?.enabled!==false){
@@ -122,12 +128,12 @@ export class Engine {
       }catch{rerankOutcome=signal.aborted?'cancelled':'fallback'; /* Bounded rerank failure preserves deterministic retrieval. */ }
     }
     signal.throwIfAborted();
-    if(rerank)result=await this.call<{response:SearchResponse;revision:number}>('pack',req.user_id,[req,vector,result.revision,scores]);
-    if(process.env.MEMORY_RETRIEVAL_AUDIT)appendFileSync(process.env.MEMORY_RETRIEVAL_AUDIT,JSON.stringify({event:'retrieval_policy',query_sha256:hash(req.query),tenant_sha256:hash(req.user_id),revision:result.revision,initial_revision:initialRevision,rerank_policy:this.config.rerankPolicy,rerank_format:this.config.rerankFormat,decision:decision??{enabled:false,reason:'disabled'},rerank_outcome:rerankOutcome,elapsed_ms:performance.now()-rerankStart,scores_discarded:!!scores&&result.revision!==initialRevision})+'\n');
+    if(rerank)result=await this.call<{response:SearchResponse;revision:number}>('pack',req.user_id,[req,vector,result.revision,scores,queryFocus.focus]);
+    if(process.env.MEMORY_RETRIEVAL_AUDIT)appendFileSync(process.env.MEMORY_RETRIEVAL_AUDIT,JSON.stringify({event:'retrieval_policy',query_sha256:hash(req.query),tenant_sha256:hash(req.user_id),revision:result.revision,initial_revision:initialRevision,rerank_policy:this.config.rerankPolicy,rerank_format:this.config.rerankFormat,decision:decision??{enabled:false,reason:'disabled'},rerank_outcome:rerankOutcome,elapsed_ms:performance.now()-rerankStart,scores_discarded:!!scores&&result.revision!==initialRevision,...(this.config.queryFocus?{query_focus:{focus:queryFocus.focus,outcome:queryFocus.outcome,evidence_spans:queryFocus.evidence.map(({start,end})=>({start,end}))}}:{})})+'\n');
     signal.throwIfAborted();return result.response;
   }
   private continuationAudit(req:AddRequest,attempt:ContinuationAttempt,number:number,outcome:string):void{
     try{if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),kind:'write_continuation',tenant_sha256:hash(req.user_id),request_sha256:hash(req.request_id),attempt:number,outcome,replayed_packets:attempt.replayed,fresh_calls:attempt.fresh})+'\n');}catch{/* Optional metrics cannot turn a committed write into a failure. */}
   }
-  async close():Promise<void>{this.continuations.clear();await this.worker.terminate();}
+  async close():Promise<void>{this.queryFocus.clear();this.continuations.clear();await this.worker.terminate();}
 }

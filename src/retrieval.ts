@@ -9,12 +9,13 @@ import {appendFileSync} from 'node:fs';
 import {projectEvents} from './events.js';
 import {temporalEvidenceText} from './temporal.js';
 import {relationDecision,expandTypedRelations,type RelationDecision,type RelationExpansion} from './retrieval-policy.js';
+import type {QueryFocus} from './query-focus.js';
 
 // Cosine computation derived from mem0 MemoryVectorStore; vectors are normalized at ingress.
 export function cosine(a:number[],b:number[]):number {if(a.length!==b.length)return -1;let sum=0,aa=0,bb=0;for(let i=0;i<a.length;i++){sum+=a[i]!*b[i]!;aa+=a[i]!**2;bb+=b[i]!**2;}return aa&&bb?sum/Math.sqrt(aa*bb):-1;}
 export type RetrievalFrame={ranked:Candidate[];allFacts:Fact[];visibleIds:Set<string>;qi:QueryIntent;allPassages:Passage[];trace:{eligible:string[];filtered:string[];routes:Record<string,string[]>;candidate_ids:string[];source_indexed_ids:string[];source_filtered_ids:string[];relation_plan?:RelationDecision;relation_expansion?:RelationExpansion}};
 export type RankedEvidence={id:string;score:number};
-export function collectCandidates(store:TenantStore,req:SearchRequest,vector:number[]|null,config:Config):RetrievalFrame {
+export function collectCandidates(store:TenantStore,req:SearchRequest,vector:number[]|null,config:Config,focus:QueryFocus='unknown'):RetrievalFrame {
   const qi=intent(req.query);if(config.experimental?.temporal===false){qi.historical=false;qi.trajectory=false;qi.asOf=null;}
   const allFacts=store.facts();const allPassages=config.sourceIndex?store.passages():[];let eligible=allFacts.filter(f=>allowed(f,qi));
   // Derived evidence cannot remain current after a supporting state expires or
@@ -107,7 +108,7 @@ export function collectCandidates(store:TenantStore,req:SearchRequest,vector:num
     }
   }
   const initial=[...candidates.values()].sort((a,b)=>b.score-a.score||a.fact.id.localeCompare(b.fact.id));
-  applySubjectDemotion(candidates,req.query,qi);
+  applySubjectDemotion(candidates,req.query,qi,!!config.queryFocus&&config.mode==='enhanced'&&config.retrieval==='hybrid'&&!config.experimental?.rawOnly&&focus==='other_people');
   boostCandidateWinner(candidates,facts,req.query,req.options??[]);
   const relationPlan=relationDecision(req.query,qi,initial,config);
   let relationExpansion:RelationExpansion|undefined;
@@ -168,7 +169,7 @@ function arbitrationPlan(chains:Map<string,Fact[]>,allFacts:Fact[],qi:QueryInten
 /** Third-party subject demotion: a named participant's facts must not float
  * above the user's own state on self-referential queries (near-miss decoys are
  * the largest MemOps distractor family). */
-function applySubjectDemotion(candidates:Map<string,Candidate>,query:string,qi:QueryIntent):void{
+function applySubjectDemotion(candidates:Map<string,Candidate>,query:string,qi:QueryIntent,otherPeople=false):void{
   const self=/\b(?:i|my|me|mine|we|our|us)\b|我|我的|我们/i.test(query);
   const named=qi.entities.map(e=>canonical(e)).filter(Boolean);
   if(!named.length&&!self)return;
@@ -176,6 +177,9 @@ function applySubjectDemotion(candidates:Map<string,Candidate>,query:string,qi:Q
     const subject=canonical(c.fact.subject);
     if(subject==='user'){if(named.length&&!self)c.score*=.3;continue;}
     if(subject==='assistant'){if(self)c.score*=.3;continue;}
+    // A query-only scope decision removes this prior, not candidate relevance
+    // or lifecycle checks. Original sources and projected events keep theirs.
+    if(otherPeople&&c.fact.predicate!=='raw_evidence'&&!c.signals.includes('operation-event'))continue;
     if(named.length){if(!named.includes(subject))c.score*=.3;}
     else if(self)c.score*=.3;
   }
@@ -299,6 +303,6 @@ export function packEvidence(store:TenantStore,req:SearchRequest,config:Config,f
   }
   return {data};
 }
-export function retrieve(store:TenantStore,req:SearchRequest,vector:number[]|null,config:Config):SearchResponse {
- return packEvidence(store,req,config,collectCandidates(store,req,vector,config));
+export function retrieve(store:TenantStore,req:SearchRequest,vector:number[]|null,config:Config,focus:QueryFocus='unknown'):SearchResponse {
+ return packEvidence(store,req,config,collectCandidates(store,req,vector,config,focus));
 }

@@ -7,6 +7,7 @@ import { retrieve,collectCandidates,compactCandidates,packEvidence,type RankedEv
 import { ServiceError, type AddRequest, type Prepared, type SearchRequest } from './types.js';
 import {sourceFormatFor,type Config} from './config.js';
 import {rerankDecision} from './retrieval-policy.js';
+import type {QueryFocus} from './query-focus.js';
 
 const config=workerData as Config;const stores=new Map<string,TenantStore>();
 function store(id:string):TenantStore {let s=stores.get(id);if(s){stores.delete(id);stores.set(id,s);return s;}if(stores.size>=32){const old=stores.keys().next().value!;stores.get(old)!.close();stores.delete(old);}s=new TenantStore(config.dataDir,id,sourceFormatFor(config));stores.set(id,s);return s;}
@@ -22,9 +23,9 @@ parentPort!.on('message',(job:{id:number;method:string;userId:string;args:unknow
       case 'receipt':result=s.receipt(job.args[0] as string,job.args[1] as string);break;
       case 'revision':result=s.revision();break;
       case 'commit':result=s.commit(job.args[0] as AddRequest,job.args[1] as string,job.args[2] as Prepared,job.args[3] as number,job.args[4] as string|undefined);break;
-      case 'search':result={response:retrieve(s,job.args[0] as SearchRequest,job.args[1] as number[]|null,config),revision:s.revision()};break;
+      case 'search':result={response:retrieve(s,job.args[0] as SearchRequest,job.args[1] as number[]|null,config,job.args[2] as QueryFocus|undefined),revision:s.revision()};break;
       case 'candidates':{
-        const req=job.args[0] as SearchRequest,frame=collectCandidates(s,req,job.args[1] as number[]|null,config),response=compactCandidates(frame,config.rerankCandidates);
+        const req=job.args[0] as SearchRequest,frame=collectCandidates(s,req,job.args[1] as number[]|null,config,job.args[2] as QueryFocus|undefined),response=compactCandidates(frame,config.rerankCandidates);
         result={response,revision:s.revision(),rerankDecision:rerankDecision(req,frame.qi,frame.ranked,response,config)};break;
       }
       case 'pack':{
@@ -32,7 +33,7 @@ parentPort!.on('message',(job:{id:number;method:string;userId:string;args:unknow
         // Revision comparison and final visibility/packing happen in one worker
         // job, with no model wait or interleaved mutation between them.
         const scores=job.args[2]===s.revision()?job.args[3] as RankedEvidence[]|undefined:undefined;
-        result={response:packEvidence(s,req,config,collectCandidates(s,req,vector,config),scores),revision:s.revision()};break;
+        result={response:packEvidence(s,req,config,collectCandidates(s,req,vector,config,job.args[4] as QueryFocus|undefined),scores),revision:s.revision()};break;
       }
       default:throw new ServiceError('WORKER_METHOD','Unknown worker method');
     }

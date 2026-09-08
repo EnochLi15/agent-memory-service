@@ -25,7 +25,7 @@ class VerificationJsonError extends ServiceError {constructor(){super('EVIDENCE_
 function audit(record:Record<string,unknown>):void {
   if(process.env.MEMORY_MODEL_AUDIT)appendFileSync(process.env.MEMORY_MODEL_AUDIT,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
 }
-type GenerationPurpose='extraction'|'verification'|'repair'|'rerank'|'erasure_binding'|'source_erasure'|'source_erasure_repair'|'state_transition'|'source_operation'|'source_operation_screen'|'source_operation_closure'|'source_operation_route';
+type GenerationPurpose='extraction'|'verification'|'repair'|'rerank'|'query_focus'|'erasure_binding'|'source_erasure'|'source_erasure_repair'|'state_transition'|'source_operation'|'source_operation_screen'|'source_operation_closure'|'source_operation_route';
 type GenerationContext={source_erasure_batch?:import('./source-erasure-execution.js').SourceErasureBatchContext;extraction_shard?:{index:number;count:number;participants:number[]};purpose?:GenerationPurpose;verification_format?:string;verification_scope?:{facts:number;operations:number;replacements:number;messages:number;reused:number};trace?:{user_id:string;request_id:string}};
 
 export class Models {
@@ -35,7 +35,7 @@ export class Models {
     this.gate=sharedModelGate(config.llmBase,config.llmKey,config.modelMinIntervalMs);
     this.client = new OpenAI({ apiKey: config.llmKey || 'local', baseURL: config.llmBase, maxRetries: 0, timeout: config.addTimeout });
   }
-  private stageModel(purpose:GenerationPurpose):string{return purpose==='rerank'?this.config.llmModel:this.config.llmStageModels[purpose==='erasure_binding'||purpose==='source_erasure'||purpose==='source_erasure_repair'||purpose==='state_transition'||purpose==='source_operation'||purpose==='source_operation_screen'||purpose==='source_operation_closure'||purpose==='source_operation_route'?'verification':purpose]??this.config.llmModel;}
+  private stageModel(purpose:GenerationPurpose):string{return purpose==='rerank'||purpose==='query_focus'?this.config.llmModel:this.config.llmStageModels[purpose==='erasure_binding'||purpose==='source_erasure'||purpose==='source_erasure_repair'||purpose==='state_transition'||purpose==='source_operation'||purpose==='source_operation_screen'||purpose==='source_operation_closure'||purpose==='source_operation_route'?'verification':purpose]??this.config.llmModel;}
   async verify(proposal:Extraction,req:AddRequest,facts:Fact[],omitted:number[],signal:AbortSignal,session=new VerificationSession(),resolvedSourceActions:unknown[]=[]):Promise<string[]>{
     const invalidRestores=proposal.operations.flatMap((o,index)=>o.type==='restore'&&!hasRestoreWording(o.source.quote)?[`operation ${index}: Restore needs an explicit instruction to remember again. Keeping an existing active fact unchanged is not restoration. Remove this unsupported operation; do not invent reauthorization or alter unrelated facts.`]:[]);
     if(invalidRestores.length)return invalidRestores;
@@ -128,6 +128,8 @@ export class Models {
     // Nothing is published until the entire JSON object is validated and committed.
     const purpose=context?.purpose??(system.startsWith('Rank evidence')?'rerank':system.startsWith('Validate memory evidence')?'verification':system.includes('PATCH_SCHEMA')?'repair':'extraction');
     const {trace:identity,...auditContext}=context??{};
+    const queryFocus=purpose==='query_focus',attempts=queryFocus?1:this.config.modelTransportAttempts,maxTokens=queryFocus?512:10000,maxChars=queryFocus?4096:200000;
+    if(queryFocus)Object.assign(auditContext,{transport_attempt_limit:attempts,max_completion_tokens:maxTokens,output_char_limit:maxChars});
     const traceFile=process.env.MEMORY_MODEL_TRACE,traceId=traceFile?randomUUID():undefined;
     const saveTrace=(record:Record<string,unknown>):void=>{
       if(!traceFile)return;
@@ -136,22 +138,22 @@ export class Models {
     };
     const model=this.stageModel(purpose),structured=['verification','erasure_binding','source_erasure','source_erasure_repair','state_transition'].includes(purpose)&&this.config.verificationResponseFormat==='json_schema';
     const formatAudit=['verification','erasure_binding','source_erasure','source_erasure_repair','state_transition'].includes(purpose)?{verification_response_format:structured?'json_schema':'json_object'}:{};let last:unknown;
-    for(let attempt=0;attempt<this.config.modelTransportAttempts;attempt++){
+    for(let attempt=0;attempt<attempts;attempt++){
       await this.gate.startAttempt(signal);
       const started=performance.now();let usage:unknown=null,content='',finish:string|null=null,streamStarted=false,refusalDetected=false;
       try{
         const stream=await this.client.chat.completions.create({
           model,...(this.config.llmReasoningEffort?{reasoning_effort:this.config.llmReasoningEffort}:{}),messages:[{role:'system',content:system},{role:'user',content:user}],
-          response_format:structured?(purpose==='source_erasure_repair'?SOURCE_QUOTE_REPAIR_RESPONSE_FORMAT:purpose==='state_transition'?TRANSITION_RESPONSE_FORMAT:purpose==='source_erasure'?SOURCE_ERASURE_RESPONSE_FORMAT:purpose==='erasure_binding'?ERASURE_RESPONSE_FORMAT:this.config.verificationFormat==='named'?NAMED_VERIFICATION_RESPONSE_FORMAT:COMPACT_VERIFICATION_RESPONSE_FORMAT):{type:'json_object'},max_completion_tokens:10000,stream:true,stream_options:{include_usage:true},
+          response_format:structured?(purpose==='source_erasure_repair'?SOURCE_QUOTE_REPAIR_RESPONSE_FORMAT:purpose==='state_transition'?TRANSITION_RESPONSE_FORMAT:purpose==='source_erasure'?SOURCE_ERASURE_RESPONSE_FORMAT:purpose==='erasure_binding'?ERASURE_RESPONSE_FORMAT:this.config.verificationFormat==='named'?NAMED_VERIFICATION_RESPONSE_FORMAT:COMPACT_VERIFICATION_RESPONSE_FORMAT):{type:'json_object'},max_completion_tokens:maxTokens,stream:true,stream_options:{include_usage:true},
         },{signal});
         streamStarted=true;
-        for await(const chunk of stream){refusalDetected ||= !!chunk.choices[0]?.delta?.refusal;content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>200000)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
+        for await(const chunk of stream){refusalDetected ||= !!chunk.choices[0]?.delta?.refusal;content+=chunk.choices[0]?.delta?.content??'';finish=chunk.choices[0]?.finish_reason??finish;usage=chunk.usage??usage;if(content.length>maxChars)throw new ServiceError('MODEL_OUTPUT','Model output too large');}
         if(!content||finish!=='stop'){signal.throwIfAborted();throw new ServiceError('MODEL_OUTPUT','Incomplete model output');}
         const {value:parsed,trailingCommas,keyQuotes=0}=parseModelJson(content.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));
         const syntax=keyQuotes?{syntax_normalization:trailingCommas?'key_quotes_and_trailing_commas':'typographic_key_quotes_only',repaired_key_quotes:keyQuotes,removed_commas:trailingCommas}:trailingCommas?{syntax_normalization:'trailing_commas_only',removed_commas:trailingCommas}:{};
         saveTrace({attempt,outcome:'ok',output:parsed,...syntax,...(trailingCommas||keyQuotes?{output_text:content}:{})});
         audit({kind:'generation',...auditContext,...formatAudit,...syntax,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'ok',elapsed_ms:performance.now()-started,usage,output_chars:content.length});return parsed;
-      }catch(caught){const error=classifyStreamError(caught,streamStarted,finish,refusalDetected);const failure=modelFailure(error,signal,streamStarted,finish,refusalDetected);const cooldown=modelRateLimitDelay(error,Date.now(),attempt);if(cooldown!==null){this.gate.defer(cooldown);audit({kind:"generation_cooldown",purpose,model,delay_ms:cooldown,scope:"provider_credential_process",reason:"http_429"});}saveTrace({attempt,outcome:'error',output_text:content,...failure});audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,...failure});last=error;if(attempt+1===this.config.modelTransportAttempts)throw error;const delay=modelRetryDelay(error,signal,Date.now(),attempt);if(delay===null)throw error;audit({kind:'generation_retry',purpose,model,after_attempt:attempt,delay_ms:delay,reason:failure.error_category});await retryWait(delay,undefined,{signal});}
+      }catch(caught){const error=classifyStreamError(caught,streamStarted,finish,refusalDetected);const failure=modelFailure(error,signal,streamStarted,finish,refusalDetected);const cooldown=modelRateLimitDelay(error,Date.now(),attempt);if(cooldown!==null){this.gate.defer(cooldown);audit({kind:"generation_cooldown",purpose,model,delay_ms:cooldown,scope:"provider_credential_process",reason:"http_429"});}saveTrace({attempt,outcome:'error',output_text:content,...failure});audit({kind:'generation',...auditContext,...formatAudit,...(traceId?{trace_id:traceId}:{}),purpose,model,attempt,outcome:'error',elapsed_ms:performance.now()-started,usage,...failure});last=error;if(attempt+1===attempts)throw error;const delay=modelRetryDelay(error,signal,Date.now(),attempt);if(delay===null)throw error;audit({kind:'generation_retry',purpose,model,after_attempt:attempt,delay_ms:delay,reason:failure.error_category});await retryWait(delay,undefined,{signal});}
     }
     throw last;
   }
