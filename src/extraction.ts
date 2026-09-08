@@ -17,7 +17,7 @@ import {forgetScopeContext,humanQuote,participantIndices} from './verification.j
 import {SOURCE_REFERENCE_PROTOCOL,SOURCE_REFERENCE_PROMPT,sourceReferenceMessages,decodeSourceReferences} from './source-references.js';
 import {GROUPED_EXTRACTION_PROTOCOL,GROUPED_EXTRACTION_PROMPT,decodeGroupedExtraction} from './extraction-groups.js';
 import {VerificationSession} from './verification-session.js';
-import {PATCH_PROMPT,SEMANTIC_RETIREMENT_REPAIR_PROMPT,SOURCE_AUTHORIZATION_REPAIR_PROMPT,sourceAuthorizationCandidates,applyRepair,scopeForFindings,retirementInstructionsAtRisk,replacementTargetGroups,replacementBindingProblems,operationBindingProblems,RepairScopeError,type RepairScope} from './repair.js';
+import {PATCH_PROMPT,SEMANTIC_RETIREMENT_REPAIR_PROMPT,SOURCE_AUTHORIZATION_REPAIR_PROMPT,sourceAuthorizationCandidates,uniqueSourceOnlyProposal,applyRepair,scopeForFindings,retirementInstructionsAtRisk,replacementTargetGroups,replacementBindingProblems,operationBindingProblems,RepairScopeError,type RepairScope} from './repair.js';
 import {sourceErasureWork} from './source-erasure.js';
 import {conservativeSourceErasureFallback} from './source-erasure-fallback.js';
 import {executeSourceErasure} from './source-erasure-execution.js';
@@ -385,7 +385,7 @@ export class Extractor {
     normalizeMissingTimestamps(req,snapshot);
     const traceIdentity={user_id:req.user_id,request_id:req.request_id};
     if(this.config.sourceErasure&&!this.config.experimental?.rawOnly&&snapshot.revision>0&&!snapshot.erasureSources)throw new ServiceError('SOURCE_FORMAT','Source erasure requires a fresh v4 directory');
-    const degraded: string[] = [];const partialSources=new Set<number>();
+    const degraded: string[] = [];const partialSources=new Set<number>();let sourceOnlyProposalUsed=false;
     const modelSignal=AbortSignal.any([signal,AbortSignal.timeout(Math.min(95000,Math.max(500,this.config.addTimeout-25000)))]);
     const sourceHistory=this.config.sourceOperationHistory?(snapshot.erasureSources??[]):[];
     let sourceOperationPlan:Prepared['sourceOperationPlan'];
@@ -503,6 +503,7 @@ export class Extractor {
           }
           const valid=extractionSchema.safeParse(raw);
           if(!valid.success){issue='Return the complete schema. '+valid.error.issues.slice(0,4).map(x=>x.path.join('.')+': '+x.message).join('; ');continue;}
+          const originalOperationSources=valid.data.operations.map(o=>({...o.source}));
           for(const f of valid.data.facts)for(const source of f.sources)resolveSource(source,req);
           for(const o of valid.data.operations){resolveSource(o.source,req);const statement=req.messages[o.source.index]?.content??'';if(o.type==='retract'&&realControl(statement)&&/\b(?:forget|erase|delete)\b|remove .{0,100} entirely|彻底删除|完全移除/i.test(o.source.quote)&&!/current (?:colleague|contact)|当前同事|当前联系人/i.test(statement))o.type='forget';}
           failedProposal=structuredClone(valid.data);
@@ -539,6 +540,25 @@ export class Extractor {
             const operation_details=operationBindingProblems(valid.data,bindingPool,id=>labels.get(id)??id,id=>valid.data.facts.findIndex((_,i)=>factId(req,i)===id));
             const replacement_details=replacementBindingProblems(valid.data,bindingPool,id=>labels.get(id)??id);
             issue='Operation target binding: subject, property or scope does not match its selected targets. '+JSON.stringify({operations:operation_details,selector_issues:selectorIssues,replacement_facts:badReplacements,replacement_details})+sourceFeedback+'. Reuse matching existing fields only if that record is actually the requested target. For unresolved selectors, select actual targets from EXISTING_FACTS or earlier new:N facts; a missing target is not an executed operation. For same-chunk transient targets, proposal_index identifies the editable fact slot. If the user forgets multiple properties of one concrete entity, give those transient facts that same entity scope when their original statements support it; preserve unrelated devices. Alternatively split operations only when the source actually authorizes each distinct scope. Changing sources alone does not fix a scope mismatch. Never rename an existing or unrelated record to pass validation. If correcting an assistant claim that was never stored, keep the grounded USER facts but emit no operation or supersedes reference against an unrelated record. Cite the user correction itself, not the assistant restatement. Return the corrected object.';continue;}
+          const unchangedOperationSources=unauthorized.every(i=>originalOperationSources[i]?.index===valid.data.operations[i]!.source.index&&originalOperationSources[i]?.quote===valid.data.operations[i]!.source.quote);
+          if(unauthorized.length&&unchangedOperationSources&&!invalid.length&&!badOps.length&&!degraded.length&&!modelSignal.aborted&&this.config.mode==='enhanced'&&!this.config.experimental?.rawOnly&&this.config.experimental?.lifecycle!==false&&this.models instanceof Models&&this.models.verify===Models.prototype.verify){
+            const proposalScope=scopeForFindings(valid.data,unauthorized.map(i=>`operation ${i}: Source authorization`));
+            const sourceOnly=uniqueSourceOnlyProposal(req,valid.data,proposalScope);
+            if(sourceOnly){
+              let usable=false;
+              try{
+                bindNewFactHandles(sourceOnly.candidate,req);
+                usable=!bindOperationSelectors(sourceOnly.candidate,req,snapshot).length&&sourceOnly.candidate.operations.every((o,i)=>JSON.stringify(o.target_ids)===JSON.stringify(valid.data.operations[i]!.target_ids));
+              }catch{ /* A source edit cannot bypass same-chunk chronology. */ }
+              if(usable){
+                // Keep model aliases in the next repair while synchronizing the
+                // exact proposal whose new witness is about to be checked.
+                const previous=extractionSchema.parse(failedProposal);
+                for(const i of sourceOnly.indices)previous.operations[i]!.source={...sourceOnly.candidate.operations[i]!.source};
+                failedProposal=previous;valid.data=sourceOnly.candidate;unauthorized.length=0;sourceOnlyProposalUsed=true;
+              }
+            }
+          }
           if(unauthorized.length){
             unresolvedOperationIntent=true;
             const findings=unauthorized.map(index=>`operation ${index}: The cited source is not an authorizing user deletion instruction.`);
@@ -597,6 +617,7 @@ export class Extractor {
         // and the evaluator does not replay failed adds, so ordinary mode
         // commits the deterministic offline plan with an auditable marker.
         if (error instanceof ServiceError && ['OPERATION_TARGET','OPERATION_SCOPE','OPERATION_INTENT','EVIDENCE_VALIDATION'].includes(error.code)) throw error;
+        if(sourceOnlyProposalUsed)throw new ServiceError('EVIDENCE_VALIDATION','Source-only operation proposal could not complete independent verification');
         if(unresolvedOperationIntent)throw new ServiceError('OPERATION_INTENT','Unresolved retirement instruction or unauthorized operation could not be repaired');
         if(semanticallyRejected)throw new ServiceError('EVIDENCE_VALIDATION',modelSignal.aborted?'A rejected proposal could not be repaired before the request deadline':'A rejected proposal could not be repaired after a model or protocol failure');
         // Source-first (v10) commits additionally require independently verified
@@ -720,6 +741,7 @@ export class Extractor {
         if (facts.some(f=>f.content.length>=3500)) degraded.push('long_evidence_lexical');
       } catch(error) { if (signal.aborted) throw error; degraded.push('embedding_lexical'); }
     }
+    if(sourceOnlyProposalUsed&&degraded.length)throw new ServiceError('EVIDENCE_VALIDATION','Source-only operation proposal cannot use degraded preparation');
     const sourceFormat=sourceFormatFor(this.config);
     const prepared:Prepared={ ...(sourceOperationPlan?{sourceOperationPlan}:{}),facts,operations:parsed.operations,messages,passages,sourceFormat,...(erasurePlan?{erasurePlan}:{}),...(sourceErasurePlan?{sourceErasurePlan}:{}),...(transitionPlan?{transitionPlan}:{}),anchor,degraded,embeddingSpace:this.config.embeddingSpace };
     if(this.config.sourceFirst){if(!sourceCoverageRows)throw new ServiceError('EVIDENCE_VALIDATION','Source-first write lacks independent coverage');prepared.sourceCoveragePlan=makeSourceCoveragePlan(req,prepared,sourceCoverageRows);}

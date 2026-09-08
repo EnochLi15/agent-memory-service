@@ -29,6 +29,23 @@ export function sourceAuthorizationCandidates(req:AddRequest,proposal:Extraction
  }
  return candidates;
 }
+/** A bounded proposal, never an authorization certificate. The caller must
+ * recheck chronology/binding and obtain independent semantic acceptance. */
+export function uniqueSourceOnlyProposal(req:AddRequest,proposal:Extraction,scope:RepairScope){
+ const hints=sourceAuthorizationCandidates(req,proposal,scope);
+ const indices=scope.operation_indices.filter(i=>proposal.operations[i]?.type==='forget'&&!authorizesForget(proposal.operations[i]!,req));
+ if(!indices.length)return null;
+ const candidate=structuredClone(proposal);
+ for(const index of indices){
+  const op=proposal.operations[index]!,originalSource=op.source as {index:number;quote:string;start?:number},text=req.messages[op.source.index]?.content??'',start=text.indexOf(op.source.quote);
+  const matches=hints.filter(h=>h.operation_index===index);
+  if(!op.target_ids.length||start<0||text.lastIndexOf(op.source.quote)!==start||(originalSource.start!==undefined&&originalSource.start!==start)||matches.length!==1)return null;
+  const source=matches[0]!.source,at=text.indexOf(source.quote);
+  if(at<0||text.lastIndexOf(source.quote)!==at)return null;
+  candidate.operations[index]!.source={...source}; // Never retain the old quote's offset.
+ }
+ return {candidate,indices};
+}
 /** Counterfactual coverage only: do not change the proposal or select targets.
  * A general message/fact finding does not declare its scoped operations invalid. */
 export function retirementInstructionsAtRisk(req:AddRequest,proposal:Extraction,findings:string[],scope:RepairScope,resolved:{message:number;start:number;end:number}[]=[]){

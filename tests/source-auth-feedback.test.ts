@@ -25,6 +25,9 @@ async function run(targetId:string,mode='same'){
  const config={...configFromEnv({MEMORY_MODE:'enhanced',MEMORY_VERIFICATION_FORMAT:'compact'}),extractionFormat:'flat' as const,maxRepairRounds:1};
  const proposal={facts:[],operations:[...(mode==='same'||mode==='different'?[operation(facts[0]!,command,mode==='different'?1:0)]:[]),operation(target,state)]};
  const rejected=proposal.operations.length-1,models=new Models(config);let repairs=0,checks=0;
+ // Keep exercising the model-driven hint path with a custom verification
+ // wrapper; automatic proposals require the unmodified standard method.
+ const standardVerify=models.verify.bind(models);models.verify=(...args)=>standardVerify(...args);
  models.json=async(system,input,_signal,context)=>{
   const d=JSON.parse(input);
   if(context?.purpose==='extraction')return structuredClone(proposal);
