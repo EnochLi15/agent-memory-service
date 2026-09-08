@@ -19,7 +19,9 @@ function fixture(work:(store:TenantStore,config:any,base:any)=>void){
 }
 
 test('historical operation evidence retains a corrected statement without making it a current fact or reviving erased values',()=>fixture((store,config,base)=>{
- const old={...base,id:'old',content:'Alex salary was reported as $90K.',value:'$90K',state:'retracted'};
+ // The recorded failure was a user's report of another person's offer: quoted
+ // modality must remain available as a corrected statement in a message trace.
+ const old={...base,id:'old',content:'Alex salary was reported as $90K.',value:'$90K',state:'retracted',modality:'quoted'};
  const current={...base,id:'new',content:'Alex corrected the salary to $95K.',value:'$95K'};
  for(const f of [old,current])store.db.prepare('INSERT INTO facts VALUES (?,?)').run(f.id,JSON.stringify(f));
  const event={id:'event-correction',type:'correct',actor:'user',category:'salary',slot_hash:'salary',source_ids:[],before_ids:['old'],after_ids:['new'],ordinal:2,observed_at:base.observed_at,time_basis:'source',revision:1};

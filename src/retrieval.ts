@@ -49,7 +49,9 @@ export function collectCandidates(store:TenantStore,req:SearchRequest,vector:num
     // Corrections are statements in an audit trail, never valid historical
     // facts. Keep them out of facts/raw routes and expose them only wrapped
     // in operation events. Erased values and invalid dependencies stay hidden.
-    const correctedStatements=new Set(qi.statementTrace&&!qi.asOf?allFacts.filter(f=>f.state==='retracted'&&f.modality!=='quoted'&&f.modality!=='hypothetical'&&f.depends_on.every(id=>historyIds.has(id))).map(f=>f.id):[]);
+    // A quoted report can establish what the user previously said even though
+    // it cannot establish a valid fact. The event wrapper preserves that limit.
+    const correctedStatements=new Set(qi.statementTrace&&!qi.asOf?allFacts.filter(f=>f.state==='retracted'&&f.modality!=='hypothetical'&&f.depends_on.every(id=>historyIds.has(id))).map(f=>f.id):[]);
     const projected=projectEvents(events,allFacts,historyIds,correctedStatements);
     for(const f of projected){
       const relevance=overlap(req.query,f.content.replace(/_/g,' '));
