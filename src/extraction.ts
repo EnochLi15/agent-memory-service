@@ -482,15 +482,15 @@ export class Extractor {
           if(patchMode){
             try{raw=applyRepair(prior.data!,output,scope);}
             catch(error){
-              if(issue.startsWith('Unknown target')||issue.startsWith('Operation target binding'))throw new ServiceError('OPERATION_TARGET','Invalid target/scope repair patch');
               if(error instanceof RepairScopeError&&attempt<this.config.maxRepairRounds){
                 // Discard the invalid patch. Preserve the rejected proposal and
                 // its exact scope, then spend only an already-allowed attempt.
                 repairScope=scope;
                 semanticRepairFindings=rejectedFindings;
-                issue+=' Patch rejected: '+error.message+'. Retry within the unchanged REPAIR_SCOPE; do not add sources outside that scope or the edited fact\'s original sources.';
+                issue+=' Patch rejected: '+error.message+'. Retry within the unchanged REPAIR_SCOPE; edit only its allowed fact/operation indexes and use only permitted sources or the edited item\'s original sources.';
                 continue;
               }
+              if(issue.startsWith('Unknown target')||issue.startsWith('Operation target binding'))throw new ServiceError('OPERATION_TARGET','Invalid target/scope repair patch');
               throw error;
             }
           }
