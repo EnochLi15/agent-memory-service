@@ -279,7 +279,11 @@ export class TenantStore {
         // the card here, and erasing a card never redacts its member-spanning
         // source union (each member's own lifecycle owns its sources).
         const card=f.kind==='reflection';
-        const leaked=!card&&markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value))&&factContainsValue(f,m));
+        // Without semantic binding the offline layer cannot adjudicate every
+        // same-literal record: only a same-slot record or an echo sharing a
+        // redacted source is a leak. An independent record in another slot
+        // survives the deletion (the semantic layer keeps exempting it).
+        const leaked=!card&&markers.some(m=>markerConcerns(m,f)&&!(m.allowedValueHashes??[]).includes(valueDigest(f.value))&&factContainsValue(f,m)&&(sameSlot(m,f)||f.source_ids.some(id=>redactedSources.has(id))));
         if(dependent||leaked||forcedErased.has(f.id)){erasedIds.add(f.id);rememberErasedQuotes(f);if(!card)for(const id of f.source_ids){suppressedSources.add(id);redactedSources.add(id);}f.state='erased';f.content='';f.value='';f.vector=null;f.source_quotes=[];f.entities=[];f.revision=revision;this.put(f);changed=true;}
       }}
       for(const m of inserted){if(markers.some(marker=>containsValue(m.content,marker))){suppressedSources.add(m.id);redactedSources.add(m.id);}}
