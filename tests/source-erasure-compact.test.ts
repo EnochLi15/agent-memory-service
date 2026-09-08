@@ -38,7 +38,7 @@ test('reference tables reconstruct every candidate including different boundarie
  const base=work('My backup is Iris. My colleague Iris stays.').candidates[0];
  const candidates=[{...base,boundary:{subject:'user',scope:'backup'},authorization:{source:{quote:'Forget my backup.'}},matching_words:['backup']},{...base,key:'other-boundary',boundary:{subject:'user',scope:'old note'},authorization:null,matching_words:['note']},{...base,id:'different-source',boundary:{subject:'user',scope:'backup'},authorization:{source:{quote:'Forget my backup.'}},matching_words:['backup']}];
  const packed=sourceErasureInput({candidates});assert.equal(packed.SOURCES.length,2);assert.equal(packed.BOUNDARIES.length,2);
- const restored=packed.CANDIDATES.map(c=>({...packed.SOURCES[c.source_slot],...packed.BOUNDARIES[c.boundary_slot],matching_words:c.matching_words}));assert.deepEqual(restored,candidates);assert.deepEqual(packed.CANDIDATES.map(c=>c.index),[0,1,2]);
+ const restored=packed.CANDIDATES.map(c=>{const {allowed_effects,...source}=packed.SOURCES[c.source_slot]!;assert.deepEqual(allowed_effects,['erase','retain','mixed','uncertain']);return {...source,...packed.BOUNDARIES[c.boundary_slot],matching_words:c.matching_words};});assert.deepEqual(restored,candidates);assert.deepEqual(packed.CANDIDATES.map(c=>c.index),[0,1,2]);
 });
 test('packed batch capacity is checked on transmitted JSON and never drops repeated source-boundary pairs',()=>{
  const base=work('Context '+('long detail '.repeat(250))).candidates[0];
