@@ -45,14 +45,30 @@ function namesDifferentEntity(text:string,echo:PhraseEchoIndex):boolean{
 }
 /** Exact identity is sufficient; partial overlap alone never erases an
  * ordinary new statement. Explicit replay/removal references may resolve a
- * shortened name or reworded phrase, unless they name a different entity. */
+ * shortened name or reworded phrase, unless they name a different entity.
+ * One partial match resolves without any reference wording: a
+ * possessive-anchored restatement repeating the phrase's opening possessive
+ * bigram AND its head noun — "Sarah's annual salary at Meridian" after
+ * "Sarah's salary" — is the same subject's same category under different
+ * wording. A different entity shares neither: "Alice Van Jones" lacks the
+ * head noun, and another team's "L6 band floor" lacks the opening "L6 comp"
+ * bigram. A later message may also carry just the surname of a retired
+ * titled name — "the Mehta stuff" after "Professor Anil Mehta" — which no
+ * bigram reaches; that relaxation fires only for phrases carrying a title,
+ * so common-noun phrases ("salary information") never redact ordinary later
+ * talk of "salary". */
 export function echoMentions(text:string,echo:PhraseEchoIndex|undefined):boolean{
  if(!echo||!echo.t.length)return false;
  const words=valueWords(text),hashed=words.map(digest),tokenSet=new Set(hashed);
  for(let i=0;i+echo.t.length<=hashed.length;i++)if(echo.t.every((h,j)=>hashed[i+j]===h))return true;
- if(!PRIOR_REFERENCE.test(text)||namesDifferentEntity(text,echo))return false;
  const pairSet=new Set(words.slice(0,-1).map((w,i)=>digest(`${w} ${words[i+1]!}`)));
  const shared=echo.p.filter(h=>pairSet.has(h)).length;
+ // The possessive-anchored restatement resolves before the reference gate:
+ // an assistant confirmation ("I've noted Sarah's annual salary…") carries
+ // no replay wording yet restates the retired property itself. Two-token
+ // phrases keep the gated single-match rule below.
+ if(echo.t.length>2&&shared===1&&pairSet.has(echo.p[0]!)&&tokenSet.has(echo.t[echo.t.length-1]!))return true;
+ if(!PRIOR_REFERENCE.test(text)||namesDifferentEntity(text,echo))return false;
  if(echo.t.length===2)return shared>0;
  if(shared>=2)return true;
  if(echo.t.length>5)return false;
