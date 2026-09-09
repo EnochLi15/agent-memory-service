@@ -38,28 +38,21 @@
 
 部署前须预置相应模型，核对 `/api/tags` 返回的名称及 digest。若部署不同权重，应同时修改模型名、维度和 digest，并使用新数据目录。digest 留空可以关闭权重校验，维度检查仍生效。Embedding 接口采用 Ollama 协议，不能直接将地址替换为 OpenAI `/embeddings` 地址。
 
-## 3. 配置并启动模型模式
+## 3. 从源码启动模型模式
 
-模型资源模板只包含地址、凭据和模型参数：
-
-```sh
-cp configs/models.env.example .env.models
-# 在 .env.models 中填写可达地址、模型名及凭据。
-docker compose -f docker-compose.enhanced.yml up -d --build --wait --wait-timeout 120
-curl --fail --silent --show-error http://127.0.0.1:8091/health
-```
-
-该 Compose 文件先读取 `release-enhanced.env`，再由 `.env.models` 覆盖模型参数。默认宿主机端口为 8091，数据卷为独立的 `memory-enhanced`。容器内的 `127.0.0.1` 指向容器自身；模型运行在宿主机时，可将地址设为 `http://host.docker.internal:8080/v1` 与 `http://host.docker.internal:11434`。Compose 已提供该主机名到宿主机网关的映射。
-
-原生运行使用完整模板：
+在服务工程根安装依赖、编译，并准备模型资源文件：
 
 ```sh
-cp .env.example .env
-# 在 .env 中填写可达的模型资源。
 npm ci
 npm run build
-npm start
+cp configs/models.env.example .env.models
+# 在 .env.models 中填写模型服务地址、模型名及凭据。
+HOST=0.0.0.0 PORT=8080 npm run start:enhanced
 ```
+
+`start:enhanced` 先读取 `configs/release-enhanced.env`，再读取 `.env.models`；后者覆盖模型资源参数。操作系统环境变量优先级最高。模型运行在同机时，地址可用 `http://127.0.0.1:8080/v1` 与 `http://127.0.0.1:11434`；如果 LLM 已占用 8080，记忆服务应改用 `PORT=8091` 或其它空闲端口。远程模型填写服务可达的内网地址。
+
+也可以复制完整 `.env.example` 为 `.env`，填写参数后执行 `npm start`。两种方式均运行编译后的 `dist/server.js`，停止服务使用 Ctrl+C。
 
 实际模型名必须能被所配置的服务识别。LLM 端点需支持流式 Chat Completions 以及配置使用的 `json_schema` / reasoning 参数。模型模式的降级更新存在已知限制，见 [VALIDATION.md](VALIDATION.md)。
 
@@ -67,8 +60,8 @@ npm start
 
 | 参数 | offline / enhanced 默认值 |
 | --- | --- |
-| `HOST` / `PORT` | 原生 `127.0.0.1:8088`；容器 `0.0.0.0:8088` |
-| `MEMORY_DATA_DIR` | 原生 `.data-offline` / `.data-enhanced`；容器 `/data` |
+| `HOST` / `PORT` | 配置文件默认 `127.0.0.1:8088`；执行说明书通过环境变量设置为 `0.0.0.0:8080` |
+| `MEMORY_DATA_DIR` | `.data-offline` / `.data-enhanced`，可指定绝对路径 |
 | `MEMORY_ADD_TIMEOUT_MS` / `MEMORY_SEARCH_TIMEOUT_MS` | `115000` / `55000` |
 | `MEMORY_MAX_EVIDENCE` / `MEMORY_TOKEN_BUDGET` | `32` / `6000` |
 | `MEMORY_RETRIEVAL` | `lexical` / `hybrid` |

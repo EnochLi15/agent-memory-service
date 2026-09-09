@@ -13,22 +13,26 @@
 | [交付清单](docs/DELIVERY-CHECKLIST.md) | 提交文件与验收要求的对应关系 |
 | [开源来源](UPSTREAM.md) | 复用模块、改造范围与许可证 |
 
-## 启动
+## 源码启动
 
-```sh
-docker compose up -d --build --wait --wait-timeout 120
-curl --fail --silent --show-error http://127.0.0.1:8080/health
-```
+源码启动为推荐方式。受内网条件限制，当前仅以源码启动结果作为交付验证依据；Docker 作为备选，尚未完成评测内网的构建与启动验证。
 
-默认配置 `configs/release-offline.env` 使用规则提取和词法检索，运行时不调用 LLM 或 Embedding。容器内监听 `0.0.0.0:8088`，宿主机访问端口为 8080。模型模式的调用条件和配置方法见[模型与运行配置](docs/CONFIGURATION.md)。
-
-原生运行需要 Node.js 24.18.0：
+在 Node.js **24.18.0** 环境执行：
 
 ```sh
 npm ci
 npm run build
 HOST=0.0.0.0 PORT=8080 npm run start:offline
 ```
+
+服务启动后，在另一个终端检查：
+
+```sh
+curl --fail --silent --show-error http://127.0.0.1:8080/health
+node scripts/smoke.mjs --url http://127.0.0.1:8080
+```
+
+默认配置 `configs/release-offline.env` 使用规则提取和词法检索，运行时不调用 LLM 或 Embedding。模型模式使用 `npm run start:enhanced`，模型地址、凭据和启用条件见[模型与运行配置](docs/CONFIGURATION.md)。
 
 ## 工程结构
 
