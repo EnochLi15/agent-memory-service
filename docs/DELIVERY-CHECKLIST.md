@@ -13,7 +13,8 @@
 | 同步 Add、隔离 Search、无鉴权 Health | 服务实现与 HTTP smoke |
 | top_k 和时限约束 | 输出不超过请求 top_k 与 100；默认 32 条，Add/Search 截止 115s/55s |
 | 冷启动与回归 | 新目录安装构建、源码进程启动与重启、回归及 HTTP 检查 |
-| 开源来源和许可 | UPSTREAM、upstream/manifest.json、upstream/reference/ |
+| 数据位置与评测初始化 | INSTRUCTION §5：两种模式的 SQLite 路径、新轮次空目录、停服清库及回执重置 |
+| 第三方许可 | licenses/ 中的许可原文及必要声明 |
 | Docker 备选 | 保留构建文件；受内网条件限制，尚未完成评测内网验证 |
 | 文件完整性 | solution.zip.sha256 与 MANIFEST 的逐文件 SHA-256 |
 

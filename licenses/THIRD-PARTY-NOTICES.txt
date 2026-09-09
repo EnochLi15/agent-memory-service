@@ -1,0 +1,18 @@
+Third-party notices
+
+Portions of this service are derived from Mem0 TypeScript:
+https://github.com/mem0ai/mem0
+Revision: dae67f74f5cc7bf138c7d7d6f9cec5ce4b4373b3
+
+Affected service files include src/text/entity-extraction.ts,
+src/text/lemmatization.ts, src/retrieval/scoring.ts, src/models.ts,
+src/extraction.ts, src/prompts.ts, src/engine.ts, src/storage.ts,
+src/db-worker.ts and src/retrieval.ts. Adapted files retain their existing
+source comments; original reference copies are not required at runtime.
+
+The original repository license, including its copyright notice, is
+reproduced unchanged in mem0/LICENSE. The selected package metadata declares
+MIT; that original declaration is retained unchanged in mem0/source-package.json.
+These notices concern the derived portions and do not relicense other code.
+
+Dependency licenses are also distributed with the respective npm packages.

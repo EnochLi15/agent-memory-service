@@ -10,10 +10,10 @@ from datetime import datetime, timezone
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-FILES = ['INSTRUCTION.md', 'SDD.md', 'README.md', 'UPSTREAM.md', 'Dockerfile',
+FILES = ['INSTRUCTION.md', 'SDD.md', 'README.md', 'Dockerfile',
          'docker-compose.yml', 'docker-compose.enhanced.yml', '.dockerignore', '.gitignore', '.env.example',
          '.node-version', 'package.json', 'package-lock.json', 'tsconfig.json']
-TREES = ['src', 'tests', 'contracts', 'upstream', '.github']
+TREES = ['src', 'tests', 'contracts', 'licenses', '.github']
 DOCUMENTS = ['docs/VALIDATION.md', 'docs/CONFIGURATION.md', 'docs/DELIVERY-CHECKLIST.md']
 SCRIPTS = ['scripts/build.mjs', 'scripts/dev.mjs', 'scripts/smoke.mjs',
            'scripts/package-solution.py', 'scripts/verify-solution.py']
@@ -61,8 +61,7 @@ def main():
     # Root documents retain working links in both repository and archive forms.
     for name in ('INSTRUCTION.md', 'SDD.md'):
         payload[name] = (payload['code/' + name].decode()
-                         .replace('](docs/', '](code/docs/')
-                         .replace('](UPSTREAM.md)', '](code/UPSTREAM.md)')).encode()
+                         .replace('](docs/', '](code/docs/')).encode()
     dockerfile = payload['code/Dockerfile'].decode()
     if dockerfile.count('ARG SOURCE_DIR=.') != 2:
         raise ValueError('Dockerfile source-directory declarations changed; review archive layout')

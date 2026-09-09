@@ -17,10 +17,10 @@
 | --- | --- | --- |
 | `MEMORY_LLM_BASE_URL` | OpenAI 兼容地址，包含 `/v1` | LLM 服务入口 |
 | `MEMORY_LLM_API_KEY` | 部署环境提供；本地免鉴权服务可留空 | LLM 鉴权 |
-| `MEMORY_LLM_MODEL` | `gpt-5.4-mini` | 通用默认模型；可选重排/查询焦点模型 |
-| `MEMORY_EXTRACTION_MODEL` | `gpt-5.5` | 事实与操作提取 |
-| `MEMORY_VERIFICATION_MODEL` | `gpt-5.5` | 来源、授权、擦除及状态转移核验 |
-| `MEMORY_REPAIR_MODEL` | `gpt-5.5` | 定向修复 |
+| `MEMORY_LLM_MODEL` | `glm-5.2` | 通用默认模型；可选重排/查询焦点模型 |
+| `MEMORY_EXTRACTION_MODEL` | `glm-5.2` | 事实与操作提取 |
+| `MEMORY_VERIFICATION_MODEL` | `glm-5.2` | 来源、授权、擦除及状态转移核验 |
+| `MEMORY_REPAIR_MODEL` | `glm-5.2` | 定向修复 |
 | `MEMORY_LLM_REASONING_EFFORT` | `low` | 推理参数，须由所选端点支持 |
 | `MEMORY_EMBEDDING_BASE_URL` | Ollama 服务地址，不带 `/v1` | `/api/tags`、`/api/embed` 入口 |
 | `MEMORY_EMBEDDING_API_KEY` | 可选；不为空时使用 Bearer 鉴权 | Embedding 网关凭据 |
@@ -72,3 +72,9 @@ HOST=0.0.0.0 PORT=8080 npm run start:enhanced
 | `MEMORY_MODEL_TRACE` | 默认留空；启用后包含模型输入输出，应按数据敏感性管理 |
 
 聚合、佐证、事件视图和覆盖打包在两种随包配置中开启；重排、多跳、查询焦点、source-first 与写入续传关闭。完整取值见 `configs/` 和 `src/config.ts`。环境变量优先于 Node env 文件；启用新配置时应检查现有环境变量，避免参数残留。
+
+## 5. 数据存储与评测轮次
+
+无论是否生成 Embedding，记忆均保存在 `MEMORY_DATA_DIR/<sha256(user_id)>/memory.sqlite`。offline 默认 `.data-offline/`，enhanced 默认 `.data-enhanced/`；模型不可达不会切换数据目录。有向量时，向量与对应事实、原文共同存入 SQLite，没有额外向量数据库需要清理。
+
+每轮完整评测使用独立空目录；同一轮中断后恢复则继续使用原目录。更换模型权重、维度、digest 或运行模式时使用新目录并重放 Add。首次评测、重新评测和停服清库的完整命令见 [INSTRUCTION.md 第 5 节](../INSTRUCTION.md#5-数据与评测初始化)。

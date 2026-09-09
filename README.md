@@ -11,7 +11,6 @@
 | [模型与运行配置](docs/CONFIGURATION.md) | 各模型用途、地址、凭据、参数及启用条件 |
 | [验证结果](docs/VALIDATION.md) | 构建、回归测试、HTTP 检查与已知问题 |
 | [交付清单](docs/DELIVERY-CHECKLIST.md) | 提交文件与验收要求的对应关系 |
-| [开源来源](UPSTREAM.md) | 复用模块、改造范围与许可证 |
 
 ## 源码启动
 
@@ -34,13 +33,15 @@ node scripts/smoke.mjs --url http://127.0.0.1:8080
 
 默认配置 `configs/release-offline.env` 使用规则提取和词法检索，运行时不调用 LLM 或 Embedding。模型模式使用 `npm run start:enhanced`，模型地址、凭据和启用条件见[模型与运行配置](docs/CONFIGURATION.md)。
 
+首次评测和重新评测应使用独立空数据目录。两种模式的数据位置、停服清库命令和检查方法见 [INSTRUCTION.md 第 5 节](INSTRUCTION.md#5-数据与评测初始化)。
+
 ## 工程结构
 
 - `src/`：服务入口、记忆处理、存储、检索和模型适配。
 - `configs/`：两种运行配置及模型资源模板。
 - `contracts/`：接口定义；`tests/`：回归测试。
 - `scripts/`：构建、开发、HTTP 检查和打包验证。
-- `upstream/`：使用的上游源码、文件摘要及许可。
+- `licenses/`：第三方许可与必要的来源声明。
 
 生产构建编译 `src/`，SQLite Worker 与主服务一同输出至 `dist/`。`npm run dev` 支持源码变更重启，`npm run debug` 使用本机 9229 调试端口。
 
