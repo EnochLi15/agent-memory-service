@@ -220,4 +220,13 @@ curl --fail --silent --show-error http://127.0.0.1:8080/health
 
 默认使用 offline 配置，端口仅绑定宿主机 `127.0.0.1:8080`。远程评测需调整 Compose 的端口绑定地址。数据保存在 `memory-offline` 卷中；停止使用 `docker compose down`，保留数据时不要添加 `-v`。
 
+模型模式先按[模型与运行配置](docs/CONFIGURATION.md)准备服务工程根的 `.env.models`；提交包中对应 `solution/code/.env.models`。容器访问宿主机上的模型服务时，应将该文件中的 `127.0.0.1` 改为 `host.docker.internal`，远程模型则使用容器可达的地址。然后在仓库根或 `solution/` 执行：
+
+```sh
+docker compose -f docker-compose.enhanced.yml up --build -d --wait --wait-timeout 120
+curl --fail --silent --show-error http://127.0.0.1:8091/health
+```
+
+两种 Compose 配置共用服务名，切换前先停止另一种配置。模型模式默认使用 `memory-enhanced` 数据卷；该方式同样尚未完成评测内网验证。
+
 Docker 备选方式若需整轮清库，应停止该 Compose 项目并删除其数据卷：默认配置执行 `docker compose down --volumes`，模型配置执行 `docker compose -f docker-compose.enhanced.yml down --volumes`。这会删除对应项目的数据卷；再次启动会创建空卷，操作仍未纳入评测内网验证。

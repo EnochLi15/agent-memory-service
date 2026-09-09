@@ -15,9 +15,11 @@
 | 默认配置 HTTP 检查 | 13 项通过，包括重开引擎后的持久化检查 |
 | 源码命令启动 | `start:offline` 启动后 Health 200，12 项外部 HTTP 检查通过；HOST、PORT 和数据目录覆盖生效 |
 | 源码进程停止与重启 | SIGTERM 停止后重新启动，当前城市和经理保留，旧城市及已遗忘门禁码不返回 |
-| 模型模式启动 | `start:enhanced` 无交互启动；不可达模型在 Health 中标记为 degraded |
+| 模型模式启动 | 解压包内 `start:enhanced` 注入实际 GLM-5.2 与本地 Embedding 后启动，12 项外部 HTTP 检查通过；不可达模型在 Health 中标记为 degraded |
 | 评测初始化 | offline/enhanced 均验证新目录隔离、停服清空原目录及相同请求 ID 的新载荷重写；文本、向量、索引与回执一并重置 |
 | 归档完整性 | ZIP CRC、SHA-256、文件清单和路径检查通过 |
+| 归档自包含 | 从解压后的 code/ 再次打包，除 MANIFEST 元数据外的文件清单和内容一致 |
+| Docker 备选配置路径 | 根目录及 code/ 内构建文件的 COPY 来源齐全；根目录两种 Compose 配置可解析，模型资源文件位于 code/.env.models；未执行评测内网容器冷启动 |
 | Embedding 资源配置 | 本机协议测试验证地址、模型、维度、查询/文档前缀；有/无 Bearer Key 两种方式通过 |
 | 本机实际 Embedding | service 适配器调用 nomic-embed-text:latest，2 条写入文本和 1 条查询均返回 768 维归一化向量，digest 与配置一致 |
 | 模型资源注入 | Node 两个 env 文件加载顺序、各阶段模型和 Embedding 资源覆盖通过；操作系统环境变量优先 |

@@ -69,7 +69,9 @@ def main():
         raise ValueError('Dockerfile source-directory declarations changed; review archive layout')
     payload['Dockerfile'] = dockerfile.replace('ARG SOURCE_DIR=.', 'ARG SOURCE_DIR=code').encode()
     for name in ('docker-compose.yml', 'docker-compose.enhanced.yml'):
-        payload[name] = payload['code/' + name].replace(b'- configs/', b'- code/configs/')
+        payload[name] = (payload['code/' + name]
+                         .replace(b'- configs/', b'- code/configs/')
+                         .replace(b'- .env.models', b'- code/.env.models'))
     payload['.dockerignore'] = payload['code/.dockerignore']
     # Block recognizable private keys/tokens without ever printing matched values.
     credential = re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}|\bgh[pousr]_[A-Za-z0-9]{30,}')
