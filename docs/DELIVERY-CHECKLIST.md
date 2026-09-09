@@ -13,7 +13,7 @@
 | 完整源码及依赖声明 | src、scripts、tests、contracts、package.json、package-lock.json、tsconfig.json |
 | 非交互启动 | Node.js 源码启动命令，默认无需模型凭据 |
 | 同步 Add、隔离 Search、无鉴权 Health | 服务实现与 HTTP smoke |
-| top_k 和时限约束 | 输出不超过请求 top_k 与 100；默认 32 条，Add/Search 截止 115s/55s |
+| top_k 和时限约束 | 默认最多 100 条，不超过请求 top_k；token 预算独立配置；Add/Search 截止 115s/55s |
 | 冷启动与回归 | 新目录安装构建、源码进程启动与重启、回归及 HTTP 检查 |
 | 数据位置与评测初始化 | INSTRUCTION §5：两种模式的 SQLite 路径、新轮次空目录、停服清库及回执重置 |
 | 第三方许可 | licenses/ 中的许可原文及必要声明 |

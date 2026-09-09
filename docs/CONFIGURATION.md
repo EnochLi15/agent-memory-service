@@ -63,13 +63,18 @@ HOST=0.0.0.0 PORT=8080 npm run start:enhanced
 | `HOST` / `PORT` | 配置文件默认 `127.0.0.1:8088`；执行说明书通过环境变量设置为 `0.0.0.0:8080` |
 | `MEMORY_DATA_DIR` | `.data-offline` / `.data-enhanced`，可指定绝对路径 |
 | `MEMORY_ADD_TIMEOUT_MS` / `MEMORY_SEARCH_TIMEOUT_MS` | `115000` / `55000` |
-| `MEMORY_MAX_EVIDENCE` / `MEMORY_TOKEN_BUDGET` | `32` / `6000` |
+| `MEMORY_MAX_EVIDENCE` | `100`；返回仍不超过请求 top_k 和硬上限 100 |
+| `MEMORY_TOKEN_BUDGET` | `6000` 个估算 token；服务侧可调预算，赛题未指定此值 |
 | `MEMORY_RETRIEVAL` | `lexical` / `hybrid` |
 | `MEMORY_MODEL_TRANSPORT_ATTEMPTS` | 模型配置为 `3`，受请求总时限约束 |
 | `MEMORY_MODEL_MIN_INTERVAL_MS` | `0`；可按模型服务限流要求增加间隔 |
 | `MEMORY_MAX_REPAIR_ROUNDS` | 模型配置为 `2` |
 | `MEMORY_MODEL_AUDIT` | 默认留空；填写文件路径后记录模型阶段与用量 |
 | `MEMORY_MODEL_TRACE` | 默认留空；启用后包含模型输入输出，应按数据敏感性管理 |
+
+token 预算覆盖所有返回证据的 content，包括来源、状态和时间说明，使用字符规则估算。当前实现中，省略 `MEMORY_TOKEN_BUDGET` 会回退为 6000；留空或设为 0 表示零预算，会返回空证据；`-1` 和 `Infinity` 不被接受，尚无关闭预算的配置。提高条数上限不会自动提高 token 预算。
+
+赛题材料未给出作答模型的上下文容量和固定提示词长度，因而不能据此确定新的预算值。部署时应从作答模型的上下文容量中扣除提示词、问题、其它输入和输出预留，再通过对照评测确定证据预算。6000 为现有默认值，未被验证为最优。
 
 聚合、佐证、事件视图和覆盖打包在两种随包配置中开启；重排、多跳、查询焦点、source-first 与写入续传关闭。完整取值见 `configs/` 和 `src/config.ts`。环境变量优先于 Node env 文件；启用新配置时应检查现有环境变量，避免参数残留。
 

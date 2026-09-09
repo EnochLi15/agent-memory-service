@@ -82,7 +82,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     embeddingBase: (env.MEMORY_EMBEDDING_BASE_URL ?? 'http://127.0.0.1:11434').replace(/\/$/, ''), embeddingKey: env.MEMORY_EMBEDDING_API_KEY ?? '', embeddingModel: model, embeddingDigest: env.MEMORY_EMBEDDING_DIGEST??null,
     embeddingDimensions: dimensions, embeddingSpace: `${model}:${env.MEMORY_EMBEDDING_DIGEST ?? 'configured'}:${dimensions}:${model.startsWith('nomic-embed-text')?'nomic-prefix-v1':'none'}`,
     addTimeout: num('MEMORY_ADD_TIMEOUT_MS', 115000), searchTimeout: num('MEMORY_SEARCH_TIMEOUT_MS', 55000),
-    maxEvidence: num('MEMORY_MAX_EVIDENCE', 32), tokenBudget: num('MEMORY_TOKEN_BUDGET', 6000),
+    maxEvidence: num('MEMORY_MAX_EVIDENCE', 100), tokenBudget: num('MEMORY_TOKEN_BUDGET', 6000),
     retrieval: retrieval as Config['retrieval'],
     rerank: env.MEMORY_RERANK === 'true', rawFallback: env.MEMORY_RAW_FALLBACK !== 'false',incrementalVerification:env.MEMORY_INCREMENTAL_VERIFICATION!=='false',
     queryFocus:env.MEMORY_QUERY_FOCUS==='true',queryFocusTimeout,

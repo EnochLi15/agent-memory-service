@@ -86,7 +86,7 @@ curl --fail --silent --show-error http://127.0.0.1:8080/search \
 {"data":[{"id":"memory-id","content":"user: I live in Oslo.","score":0.02,"created_at":"2026-01-01T00:00:00Z"}]}
 ```
 
-`query`、`user_id`、`top_k` 必填，正式请求传 `top_k:100`。可选 `options` 为数组，其中字符串元素用于匹配已有证据。返回最多 `min(floor(top_k),100,32)` 条，并受 6000 估算 token 预算限制。top_k=0 或没有匹配时返回 `{"data":[]}`。结果为该用户的记忆证据，最终作答由评测平台执行。
+`query`、`user_id`、`top_k` 必填，正式请求传 `top_k:100`。可选 `options` 为数组，其中字符串元素用于匹配已有证据。默认返回最多 `min(floor(top_k),100)` 条，并受服务配置的 6000 估算 token 预算限制；实际条数可能因相关性、去重和预算而减少。赛题要求的是不超过 top_k，6000 是本方案可调的默认预算。top_k=0 或没有匹配时返回 `{"data":[]}`。结果为该用户的记忆证据，最终作答由评测平台执行。预算配置规则见[模型与运行配置](docs/CONFIGURATION.md#4-运行参数)。
 
 ### 失败与时限
 

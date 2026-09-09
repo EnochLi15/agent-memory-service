@@ -19,6 +19,20 @@ async function fixture(fn:any){
  const add=async(id:string,content:string)=>{const r=req(id,content);const p=await x.prepare(r,store.snapshot('s'),AbortSignal.timeout(1000));store.commit(r,hash(JSON.stringify(r)),p,store.revision());return p;};
  try{await fn({dir,store,config,add});}finally{store.close();rmSync(dir,{recursive:true,force:true});}
 }
+test('default evidence count can reach 100 while request and token limits remain independent',()=>fixture(async({store,config,add}:any)=>{
+ for(let i=0;i<105;i++)await add('limit-'+i,`I like activity${i}.`);
+ const c={...config,rawFallback:false,sourceIndex:false,eventView:false,tokenBudget:100000};
+ const q={user_id:'u',query:'List every hobby',top_k:100};
+ const full=retrieve(store,q,null,c).data;
+ assert.equal(full.length,100);
+ assert.equal(new Set(full.map((row:any)=>row.id)).size,100);
+ assert.equal(retrieve(store,{...q,top_k:200},null,{...c,maxEvidence:200}).data.length,100);
+ assert.equal(retrieve(store,{...q,top_k:17},null,c).data.length,17);
+ assert.deepEqual(retrieve(store,{...q,top_k:0},null,c).data,[]);
+ const bounded=retrieve(store,q,null,{...c,tokenBudget:6000}).data;
+ assert.ok(bounded.length>0&&bounded.length<full.length);
+ assert.ok(bounded.reduce((sum:number,row:any)=>sum+estimateTokens(row.content),0)<=6000);
+}));
 test('source vectors recover an unextracted detail with no lexical query overlap',()=>fixture(async({store,config}:any)=>{
  const r=req('raw','I carried a cerulean umbrella through the monsoon.');
  const x=new Extractor({...config,mode:'enhanced'},{verify:async()=>[],json:async()=>({facts:[],operations:[]}),embedBatch:async(texts:string[])=>texts.map(()=>[1,0])} as any);
