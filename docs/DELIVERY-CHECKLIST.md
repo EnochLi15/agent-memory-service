@@ -7,6 +7,7 @@
 | 记忆提取、存储与召回设计 | SDD §2.1–2.3 |
 | 更新、遗忘与短期记忆边界 | SDD §2.4–2.5 |
 | 模型及用途披露 | SDD §3.1、docs/CONFIGURATION、configs/models.env.example |
+| 方案亮点与价值 | SDD §4：设计机制、接入与应用价值、验证依据及扩展方向 |
 | 已知限制 | SDD §5、docs/VALIDATION |
 | 完整源码及依赖声明 | src、scripts、tests、contracts、package.json、package-lock.json、tsconfig.json |
 | 非交互启动 | Node.js 源码启动命令，默认无需模型凭据 |
