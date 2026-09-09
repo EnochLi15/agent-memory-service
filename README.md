@@ -1,8 +1,30 @@
 # Agent Memory Service
 
-从固定版本 Mem0 TypeScript 源码改造的独立记忆服务，包含自己的准备、核验、生命周期、原子提交和恢复机制。只开放 `POST /add`、`POST /search`、`GET /health`；不生成最终答案，不导入 eval，也不读取问题答案或 rubric。Mem0来源、修改范围和许可见 [UPSTREAM.md](UPSTREAM.md)。
+可独立部署的 TypeScript 记忆服务，包含写入准备、核验、生命周期、原子提交和恢复机制。只开放 `POST /add`、`POST /search`、`GET /health`；不生成最终答案，不导入 eval，也不读取问题答案或 rubric。复用代码的来源、修改范围和许可见 [UPSTREAM.md](UPSTREAM.md)。
 
 当前为 V1 候选，正式发布仍需完整小集、全量评测和交付归档验收。工作区 README 和 V1交付计划是交付入口；[历史研发记录](docs/EXPERIMENTAL-HISTORY.md) 中的实验开关不代表发布默认值。
+
+## 代码目录
+
+```text
+src/
+├── server.ts、config.ts                 # HTTP 入口与配置校验
+├── engine.ts                           # 写入与检索流程编排
+├── extraction*.ts、verification*.ts     # 抽取、核验与有界修复
+├── source-*.ts                         # 来源引用、覆盖与操作授权
+├── binding.ts、transitions.ts、erasure.ts # 目标绑定、状态转移与遗忘
+├── storage.ts、db-worker.ts             # 租户存储与 SQLite 原子提交
+├── retrieval.ts、retrieval-policy.ts    # 混合召回与查询策略
+├── retrieval/scoring.ts                 # 经典评分组件
+├── text.ts、text/                       # 文本入口、实体抽取与词法归一化
+└── models.ts、model-*.ts                # 模型适配与调用恢复
+tests/                                  # 服务回归测试
+contracts/                              # HTTP 契约快照
+upstream/reference/                     # 原始来源与许可留档
+baseline/                               # 隔离运行的固定版本对照
+```
+
+`src/` 以业务职责命名；生产构建只编译服务源码。`baseline/` 的独立依赖和原始代码用于对照验证，来源映射统一记在 `upstream/manifest.json` 与 [UPSTREAM.md](UPSTREAM.md)。
 
 ## 启动
 
@@ -17,9 +39,11 @@ cp -n .env.example .env
 node --env-file=.env dist/server.js
 ```
 
-也可使用 `npm start`（已编译运行）、`npm run dev`（源码变化自动编译重启）、`npm run debug`（自动重启并开放本机9229调试端口）。三个命令自动读取本仓库 `.env`，不需要 Docker 或 eval。调试支持 TypeScript source map；编译包含 SQLite Worker，失败时不会继续运行旧服务。Ctrl+C 停止并保留数据。
+也可使用 `npm start`（已编译运行）、`npm run dev`（源码变化自动编译重启）、`npm run debug`（自动重启并开放本机9229调试端口）。三个命令自动读取本仓库 `.env`，不需要 Docker 或 eval。调试支持 TypeScript source map；`build`、`dev`、`debug` 统一通过 `scripts/build.mjs` 清理 `dist/` 后编译，包含 SQLite Worker，避免移动源码后遗留旧模块；编译失败时不会继续运行旧服务。Ctrl+C 停止并保留数据。
 
 `.env.example` 与工作区 `configs/release-enhanced.env` 保持一致。增强写入使用gpt-5.5，默认辅助模型gpt-5.4-mini；本地Ollama的nomic-embed-text为768维，digest固定在配置中。服务不自动下载模型。离线部署使用工作区独立的 `configs/release-offline.env`，能力与增强模式不同，数据卷也分开。
+
+`MEMORY_RETRIEVAL` 仅接受 `hybrid`、`lexical`、`classic`。原评分对照配置统一迁移为 `classic`；其它值在启动时被拒绝，不会静默切换检索方式。
 
 ## 稳定边界
 

@@ -1,4 +1,4 @@
-// Derived from mem0's additive extraction pipeline and prompt organization (pinned upstream/).
+// Derived from the upstream additive extraction pipeline and prompt organization; see UPSTREAM.md.
 // Competition adaptations: source spans, lifecycle proposals, original time precision,
 // multiple named participants, no unrestricted assistant recommendation memorization.
 export const EVIDENCE_BOUNDARIES = `Evidence boundaries shared by extraction and verification:

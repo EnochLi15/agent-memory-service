@@ -32,7 +32,7 @@ async function rebuild(){
    pending=false;
    // Do not mix newly emitted worker code with an old running server.
    await stop(server);if(closing)break;
-   compiler=launch(['node_modules/typescript/bin/tsc','-p','tsconfig.json']);
+   compiler=launch(['scripts/build.mjs']);
    const code=await compiler.done;compiler=undefined;
    if(closing)break;
    if(code!==0){console.error('Build failed; fix the source to retry. Service is stopped.');continue;}

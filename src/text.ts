@@ -1,5 +1,5 @@
-import { lemmatizeForBm25 } from './mem0/lemmatization.js';
-import { extractEntities } from './mem0/entity_extraction.js';
+import { lemmatizeForBm25 } from './text/lemmatization.js';
+import { extractEntities } from './text/entity-extraction.js';
 import type { QueryIntent } from './types.js';
 
 export function speakerPrefix(text:string):RegExpMatchArray|null{

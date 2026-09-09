@@ -3,7 +3,7 @@ import {setTimeout as retryWait} from 'node:timers/promises';
 import {modelRetryDelay,modelRateLimitDelay,classifyStreamError} from './model-retry.js';
 import {sharedModelGate,ModelGate} from './model-gate.js';
 import {sourceCoverageWork,SOURCE_COVERAGE_PROMPT} from './source-coverage.js';
-// Adapted from mem0 TS llms/openai.ts and embeddings/ollama.ts at dae67f7.
+// Adapted from upstream model and embedding adapters; provenance is recorded in UPSTREAM.md.
 // Changes: bounded cancellation, explicit model, no automatic downloads, true batch embed,
 // strict vector validation, no tool calls or SDK retry hidden outside the request deadline.
 import OpenAI from 'openai';

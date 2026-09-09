@@ -1,7 +1,7 @@
 import type { Config } from './config.js';
 import { TenantStore, allowed } from './storage.js';
 import { intent, overlap, estimateTokens, tokens } from './text.js';
-import { scoreAndRank, normalizeBm25, getBm25Params } from './mem0/scoring.js';
+import { scoreAndRank, normalizeBm25, getBm25Params } from './retrieval/scoring.js';
 import { canonical, propertyFamily } from './types.js';
 import type { Fact, SearchRequest, SearchResponse, Candidate, QueryIntent, Passage } from './types.js';
 import {createHash} from 'node:crypto';
@@ -11,7 +11,7 @@ import {temporalEvidenceText} from './temporal.js';
 import {relationDecision,expandTypedRelations,type RelationDecision,type RelationExpansion} from './retrieval-policy.js';
 import type {QueryFocus} from './query-focus.js';
 
-// Cosine computation derived from mem0 MemoryVectorStore; vectors are normalized at ingress.
+// Cosine computation follows the upstream vector store (see UPSTREAM.md); vectors are normalized at ingress.
 export function cosine(a:number[],b:number[]):number {if(a.length!==b.length)return -1;let sum=0,aa=0,bb=0;for(let i=0;i<a.length;i++){sum+=a[i]!*b[i]!;aa+=a[i]!**2;bb+=b[i]!**2;}return aa&&bb?sum/Math.sqrt(aa*bb):-1;}
 export type RetrievalFrame={ranked:Candidate[];allFacts:Fact[];visibleIds:Set<string>;qi:QueryIntent;allPassages:Passage[];trace:{eligible:string[];filtered:string[];routes:Record<string,string[]>;candidate_ids:string[];source_indexed_ids:string[];source_filtered_ids:string[];relation_plan?:RelationDecision;relation_expansion?:RelationExpansion}};
 export type RankedEvidence={id:string;score:number};
@@ -32,11 +32,11 @@ export function collectCandidates(store:TenantStore,req:SearchRequest,vector:num
   const entity=facts.map(f=>({id:f.id,score:qi.entities.reduce((s,e)=>s+(f.content.toLowerCase().includes(e.toLowerCase())?1:0),0)})).filter(x=>x.score>0).sort((a,b)=>b.score-a.score);
   const candidates=new Map<string,Candidate>();
   const add=(id:string,score:number,signal:string):void=>{const f=byId.get(id);if(!f)return;const c=candidates.get(id)??{fact:f,score:0,signals:[]};c.score+=score;c.signals.push(signal);candidates.set(id,c);};
-  if(config.retrieval==='mem0'&&vector){
+  if(config.retrieval==='classic'&&vector){
     const [mid,steep]=getBm25Params(req.query);const bm=Object.fromEntries(lexicalAll.map(x=>[x.id,normalizeBm25(x.score,mid,steep)]));
     const ent=Object.fromEntries(entity.map(x=>[x.id,.5]));
     const scored=scoreAndRank(semantic.map(x=>({...x,payload:{data:byId.get(x.id)!.content}})),bm,ent,.1,150,false);
-    for(const x of scored)add(x.id,x.score,'mem0');
+    for(const x of scored)add(x.id,x.score,'classic');
   }else{
     if(config.retrieval!=='lexical')semantic.forEach((x,i)=>add(x.id,1/(60+i+1),'semantic'));
     lexicalAll.forEach((x,i)=>add(x.id,1/(60+i+1),'lexical'));

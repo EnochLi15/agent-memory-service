@@ -4,7 +4,7 @@ import {validateSourceRoutePlan} from './source-operation-routing.js';
 import {validateSourceBatchPlan} from './source-operation-batches.js';
 import {hasRestoreWording} from './types.js';
 import {validateSourceOperations} from './source-operations.js';
-// Transactional evolution of mem0 vector_stores/memory.ts and storage/SQLiteManager.ts.
+// Transactional evolution of upstream vector and SQLite storage; see UPSTREAM.md.
 // One tenant owns one connection; history, facts, vectors, FTS, sources and receipts commit together.
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';

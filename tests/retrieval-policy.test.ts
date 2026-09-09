@@ -51,7 +51,35 @@ test('engine skips model rerank for direct evidence, reranks complex evidence an
  (engine as any).models={embedBatch:async()=>{throw Error('no embedding in deterministic test');},json:async(_p:string,input:string)=>{calls++;return {ranked:JSON.parse(input).evidence.map((x:any)=>({id:x.id,score:1}))};}};
  try{const direct=await engine.search({user_id:'u',query:'What is my browser?',top_k:32},AbortSignal.timeout(3000));assert.equal(calls,0);assert.equal(direct.data.length,2);const list=await engine.search({user_id:'u',query:'List all my browser preferences',top_k:32},AbortSignal.timeout(3000));assert.equal(calls,1);assert.ok(list.data.reduce((n,x)=>n+estimateTokens(x.content),0)<=c.tokenBudget);const logs=readFileSync(trace,'utf8');assert.doesNotMatch(logs,/Firefox|Safari|What is my browser/);const decisions=logs.trim().split('\n').map(JSON.parse).filter(x=>x.event==='retrieval_policy');assert.deepEqual(decisions.map(x=>x.rerank_outcome),['skipped','ok']);}finally{await engine.close();if(old===undefined)delete process.env.MEMORY_RETRIEVAL_AUDIT;else process.env.MEMORY_RETRIEVAL_AUDIT=old;}
 }));
-test('unsupported query policy configurations fail at startup',()=>{assert.throws(()=>configFromEnv({MEMORY_RELATION_MODE:'magic'}),/MEMORY_RELATION_MODE/);assert.throws(()=>configFromEnv({MEMORY_RERANK_POLICY:'sometimes'}),/MEMORY_RERANK_POLICY/);});
+test('unsupported query policy configurations fail at startup',()=>{
+ assert.throws(()=>configFromEnv({MEMORY_RELATION_MODE:'magic'}),/MEMORY_RELATION_MODE/);assert.throws(()=>configFromEnv({MEMORY_RERANK_POLICY:'sometimes'}),/MEMORY_RERANK_POLICY/);
+ assert.equal(configFromEnv({}).retrieval,'hybrid');
+ for(const retrieval of ['hybrid','lexical','classic'])assert.equal(configFromEnv({MEMORY_RETRIEVAL:retrieval}).retrieval,retrieval);
+ for(const retrieval of ['unknown','clasisc',''])assert.throws(()=>configFromEnv({MEMORY_RETRIEVAL:retrieval}),/Invalid MEMORY_RETRIEVAL/);
+});
+test('classic retrieval boosts matching semantic evidence while excluding lexical-only and erased facts',()=>fixture(async(s,c)=>{
+ const classic={...c,retrieval:configFromEnv({MEMORY_RETRIEVAL:'classic'}).retrieval};
+ s.setMeta('embedding_space',classic.embeddingSpace);
+ s.put(fact('semantic','user','color','blue',{vector:[1,0]}));
+ s.put(fact('matching','user','browser','Firefox',{vector:[.99995,.01]}));
+ s.put(fact('lexical-only','user','browser','Safari',{vector:[0,1]}));
+ s.put(fact('erased','user','browser','SecretBrowser',{vector:[1,0],state:'erased'}));
+ const q={user_id:'u',query:'browser',top_k:10},frame=collectCandidates(s,q,[1,0],classic);
+ assert.deepEqual(frame.ranked.map(row=>row.fact.id),['matching','semantic']);
+ assert.ok(frame.ranked[0]!.score>frame.ranked[1]!.score);
+ assert.ok(frame.ranked.every(row=>row.signals.includes('classic')));
+ assert.equal(frame.trace.relation_plan?.enabled,false);
+ const hybrid=collectCandidates(s,q,[1,0],{...c,relationMode:'off'});
+ assert.ok(hybrid.ranked.some(row=>row.fact.id==='lexical-only'));
+ assert.ok(!hybrid.ranked.some(row=>row.fact.id==='erased'));
+}));
+test('classic retrieval retains lexical fallback when query embeddings are unavailable',()=>fixture(async(s,c)=>{
+ s.put(fact('browser','user','browser','Firefox',{vector:[1,0]}));
+ s.put(fact('unrelated','user','color','blue',{vector:[1,0]}));
+ const frame=collectCandidates(s,{user_id:'u',query:'browser',top_k:10},null,{...c,retrieval:'classic'});
+ assert.deepEqual(frame.ranked.map(row=>row.fact.id),['browser']);
+ assert.ok(frame.ranked[0]!.signals.includes('lexical'));
+}));
 test('selective rerank malformed output falls back without exposing a foreign or erased ID',()=>fixture(async(s,c)=>{
  s.put(fact('a','user','browser','Firefox'));s.put(fact('b','user','browser','Safari'));s.put(fact('old','user','browser','SecretBrowser',{state:'erased'}));const engine=new Engine(c);let calls=0;
  (engine as any).models={embedBatch:async()=>{throw Error('no embedding');},json:async()=>{calls++;return {ranked:[{id:'foreign-tenant',score:1},{id:'old',score:1}]};}};

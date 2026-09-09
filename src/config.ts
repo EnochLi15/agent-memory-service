@@ -10,7 +10,7 @@ export interface Config {
   verificationResponseFormat:'json_object'|'json_schema';
   erasureBinding:boolean;sourceErasure:boolean;semanticTransitions:boolean;sourceOperations:boolean;sourceOperationHistory:boolean;sourceOperationBatches:boolean;sourceOperationRouting:boolean;sourceFirst:boolean;
   embeddingBase: string; embeddingModel: string; embeddingDigest: string | null; embeddingDimensions: number; embeddingSpace: string;
-  addTimeout: number; searchTimeout: number; maxEvidence: number; tokenBudget: number; retrieval: 'hybrid' | 'lexical' | 'mem0';
+  addTimeout: number; searchTimeout: number; maxEvidence: number; tokenBudget: number; retrieval: 'hybrid' | 'lexical' | 'classic';
   rerank: boolean; rawFallback: boolean;incrementalVerification:boolean;
   queryFocus:boolean;queryFocusTimeout:number;
   relationMode:'off'|'cooccurrence'|'conditional';rerankPolicy:'always'|'selective';rerankFormat:'ids'|'indices';
@@ -19,6 +19,8 @@ export interface Config {
 }
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   if(env.MEMORY_MODE!==undefined&&!['offline','enhanced'].includes(env.MEMORY_MODE))throw new Error('Invalid MEMORY_MODE');
+  const retrieval=env.MEMORY_RETRIEVAL??'hybrid';
+  if(!['hybrid','lexical','classic'].includes(retrieval))throw new Error('Invalid MEMORY_RETRIEVAL; expected hybrid, lexical or classic');
   const num = (k: string, n: number): number => { const v = Number(env[k] ?? n); if (!Number.isFinite(v) || v < 0) throw new Error(`Invalid ${k}`); return v; };
   const model = env.MEMORY_EMBEDDING_MODEL ?? 'nomic-embed-text:latest';
   const dimensions = num('MEMORY_EMBEDDING_DIMENSIONS', 768);
@@ -35,7 +37,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
   if(env.MEMORY_SOURCE_OPERATION_HISTORY==='true'&&env.MEMORY_SOURCE_OPERATIONS!=='true')throw new Error('Historical source operations require source operations');
   if(env.MEMORY_SOURCE_OPERATION_BATCHES==='true'&&env.MEMORY_SOURCE_OPERATION_HISTORY!=='true')throw new Error('Batched source operations require source history');
   if(env.MEMORY_SOURCE_OPERATION_ROUTING==='true'&&env.MEMORY_SOURCE_OPERATION_BATCHES!=='true')throw new Error('Source routing requires batched source history');
-  if(env.MEMORY_SOURCE_FIRST==='true'&&(env.MEMORY_SOURCE_OPERATION_ROUTING!=='true'||env.MEMORY_SOURCE_INDEX==='false'||env.MEMORY_RAW_FALLBACK==='false'||env.MEMORY_EXTRACTION_FORMAT!=='source_refs'||!['compact','named'].includes(env.MEMORY_VERIFICATION_FORMAT??'')||['lexical','mem0'].includes(env.MEMORY_RETRIEVAL??'')))throw new Error('Source-first requires v9 routing, source references, compact verification and hybrid raw retrieval');
+  if(env.MEMORY_SOURCE_FIRST==='true'&&(env.MEMORY_SOURCE_OPERATION_ROUTING!=='true'||env.MEMORY_SOURCE_INDEX==='false'||env.MEMORY_RAW_FALLBACK==='false'||env.MEMORY_EXTRACTION_FORMAT!=='source_refs'||!['compact','named'].includes(env.MEMORY_VERIFICATION_FORMAT??'')||retrieval!=='hybrid'))throw new Error('Source-first requires v9 routing, source references, compact verification and hybrid raw retrieval');
   const stageModels:Config['llmStageModels']={};
   if(env.MEMORY_SOURCE_ERASURE_GROUPED==='true'&&(env.MEMORY_SOURCE_ERASURE!=='true'||env.MEMORY_MODE!=='enhanced'))throw new Error('Grouped source erasure requires enhanced source erasure');
   const sourceErasureWorkers=num('MEMORY_SOURCE_ERASURE_WORKERS',1);
@@ -81,7 +83,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     embeddingDimensions: dimensions, embeddingSpace: `${model}:${env.MEMORY_EMBEDDING_DIGEST ?? 'configured'}:${dimensions}:${model.startsWith('nomic-embed-text')?'nomic-prefix-v1':'none'}`,
     addTimeout: num('MEMORY_ADD_TIMEOUT_MS', 115000), searchTimeout: num('MEMORY_SEARCH_TIMEOUT_MS', 55000),
     maxEvidence: num('MEMORY_MAX_EVIDENCE', 32), tokenBudget: num('MEMORY_TOKEN_BUDGET', 6000),
-    retrieval: env.MEMORY_RETRIEVAL === 'lexical' ? 'lexical' : env.MEMORY_RETRIEVAL === 'mem0' ? 'mem0' : 'hybrid',
+    retrieval: retrieval as Config['retrieval'],
     rerank: env.MEMORY_RERANK === 'true', rawFallback: env.MEMORY_RAW_FALLBACK !== 'false',incrementalVerification:env.MEMORY_INCREMENTAL_VERIFICATION!=='false',
     queryFocus:env.MEMORY_QUERY_FOCUS==='true',queryFocusTimeout,
     candidateLimit:Math.min(500,Math.max(1,Math.floor(num('MEMORY_CANDIDATE_LIMIT',200)))),

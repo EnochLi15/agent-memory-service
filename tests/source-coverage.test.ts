@@ -28,7 +28,7 @@ test('coverage certificates bind candidate changes and cannot survive a rejected
 });
 test('source-first configuration requires indexed hybrid raw evidence and the coverage protocol',()=>{
  assert.equal(configFromEnv({}).sourceFirst,false);assert.equal(configFromEnv(env).sourceFirst,true);
- for(const override of [{MEMORY_RAW_FALLBACK:'false'},{MEMORY_SOURCE_INDEX:'false'},{MEMORY_RETRIEVAL:'mem0'},{MEMORY_VERIFICATION_FORMAT:'verbose'},{MEMORY_EXTRACTION_FORMAT:'flat'}])assert.throws(()=>configFromEnv({...env,...override}),/Source-first requires/);
+ for(const override of [{MEMORY_RAW_FALLBACK:'false'},{MEMORY_SOURCE_INDEX:'false'},{MEMORY_RETRIEVAL:'classic'},{MEMORY_RETRIEVAL:'lexical'},{MEMORY_VERIFICATION_FORMAT:'verbose'},{MEMORY_EXTRACTION_FORMAT:'flat'}])assert.throws(()=>configFromEnv({...env,...override}),/Source-first requires/);
 });
 test('v10 real preparation flow requires independent raw coverage and atomic indexed witnesses',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'source-first-')),store=new TenantStore(dir,'u'),config=configFromEnv(env),models=new Models(config);let sawPrompt=false;
