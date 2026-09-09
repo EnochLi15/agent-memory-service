@@ -1,0 +1,24 @@
+services:
+  memory-service:
+    image: agent-memory:submission
+    build: .
+    init: true
+    ports:
+      - "127.0.0.1:${MEMORY_PORT:-8080}:8088"
+    env_file:
+      - configs/release-offline.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8088
+      MEMORY_DATA_DIR: /data
+    volumes:
+      - memory-offline:/data
+    restart: unless-stopped
+    stop_grace_period: 125s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  memory-offline:

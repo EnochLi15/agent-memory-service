@@ -12,4 +12,21 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - run: docker build -t memory-service:test .
+      - run: npm run smoke:self
+      - run: npm run package:solution
+      - run: npm run verify:solution
+      - name: Build the submitted root Dockerfile
+        run: |
+          unzip -q delivery-output/solution.zip -d delivery-output/extracted
+          docker build -t memory-service:test delivery-output/extracted/solution
+      - name: Cold start and HTTP contract smoke
+        run: |
+          docker run -d --name memory-delivery-test --init -p 127.0.0.1:8097:8088 memory-service:test
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8097/health; then break; fi
+            sleep 2
+          done
+          node scripts/smoke.mjs --url http://127.0.0.1:8097
+      - name: Remove test container and its anonymous volume
+        if: always()
+        run: docker rm -fv memory-delivery-test || true

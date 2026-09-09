@@ -12,7 +12,12 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "start": "node --env-file-if-exists=.env --enable-source-maps dist/server.js",
     "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
-    "debug": "node --env-file-if-exists=.env scripts/dev.mjs --debug"
+    "debug": "node --env-file-if-exists=.env scripts/dev.mjs --debug",
+    "start:offline": "node --env-file=configs/release-offline.env --enable-source-maps dist/server.js",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:self": "node scripts/smoke.mjs --self",
+    "package:solution": "python3 scripts/package-solution.py",
+    "verify:solution": "python3 scripts/verify-solution.py"
   },
   "dependencies": {
     "fastify": "5.12.3",

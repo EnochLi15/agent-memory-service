@@ -4,6 +4,9 @@
 node_modules/
 dist/
 .data/
+.data-*/
+delivery-output/
+__pycache__/
 artifacts/
 .coverage/
 *.log

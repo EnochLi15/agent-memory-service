@@ -8,3 +8,8 @@ artifacts
 tests
 *.log
 baseline
+.data-*
+delivery-output
+**/node_modules
+**/.git
+**/*.sqlite*
