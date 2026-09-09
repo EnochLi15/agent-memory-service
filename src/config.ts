@@ -9,7 +9,7 @@ export interface Config {
   verificationFormat:'verbose'|'compact'|'named';
   verificationResponseFormat:'json_object'|'json_schema';
   erasureBinding:boolean;sourceErasure:boolean;semanticTransitions:boolean;sourceOperations:boolean;sourceOperationHistory:boolean;sourceOperationBatches:boolean;sourceOperationRouting:boolean;sourceFirst:boolean;
-  embeddingBase: string; embeddingModel: string; embeddingDigest: string | null; embeddingDimensions: number; embeddingSpace: string;
+  embeddingBase: string; embeddingKey?: string; embeddingModel: string; embeddingDigest: string | null; embeddingDimensions: number; embeddingSpace: string;
   addTimeout: number; searchTimeout: number; maxEvidence: number; tokenBudget: number; retrieval: 'hybrid' | 'lexical' | 'classic';
   rerank: boolean; rawFallback: boolean;incrementalVerification:boolean;
   queryFocus:boolean;queryFocusTimeout:number;
@@ -79,7 +79,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
     verificationResponseFormat:verificationResponseFormat as Config['verificationResponseFormat'],
     sourceFirst:env.MEMORY_SOURCE_FIRST==='true',sourceOperationRouting:env.MEMORY_SOURCE_OPERATION_ROUTING==='true',sourceOperations:env.MEMORY_SOURCE_OPERATIONS==='true',sourceOperationHistory:env.MEMORY_SOURCE_OPERATION_HISTORY==='true',sourceOperationBatches:env.MEMORY_SOURCE_OPERATION_BATCHES==='true',
     erasureBinding:env.MEMORY_ERASURE_BINDING==='true',sourceErasure:env.MEMORY_SOURCE_ERASURE==='true',semanticTransitions:env.MEMORY_SEMANTIC_TRANSITIONS==='true',
-    embeddingBase: (env.MEMORY_EMBEDDING_BASE_URL ?? 'http://127.0.0.1:11434').replace(/\/$/, ''), embeddingModel: model, embeddingDigest: env.MEMORY_EMBEDDING_DIGEST??null,
+    embeddingBase: (env.MEMORY_EMBEDDING_BASE_URL ?? 'http://127.0.0.1:11434').replace(/\/$/, ''), embeddingKey: env.MEMORY_EMBEDDING_API_KEY ?? '', embeddingModel: model, embeddingDigest: env.MEMORY_EMBEDDING_DIGEST??null,
     embeddingDimensions: dimensions, embeddingSpace: `${model}:${env.MEMORY_EMBEDDING_DIGEST ?? 'configured'}:${dimensions}:${model.startsWith('nomic-embed-text')?'nomic-prefix-v1':'none'}`,
     addTimeout: num('MEMORY_ADD_TIMEOUT_MS', 115000), searchTimeout: num('MEMORY_SEARCH_TIMEOUT_MS', 55000),
     maxEvidence: num('MEMORY_MAX_EVIDENCE', 32), tokenBudget: num('MEMORY_TOKEN_BUDGET', 6000),

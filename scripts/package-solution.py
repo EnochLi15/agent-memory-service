@@ -11,9 +11,12 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ['INSTRUCTION.md', 'SDD.md', 'README.md', 'UPSTREAM.md', 'Dockerfile',
-         'docker-compose.yml', '.dockerignore', '.gitignore', '.env.example',
+         'docker-compose.yml', 'docker-compose.enhanced.yml', '.dockerignore', '.gitignore', '.env.example',
          '.node-version', 'package.json', 'package-lock.json', 'tsconfig.json']
-TREES = ['src', 'scripts', 'tests', 'tools', 'contracts', 'upstream', 'baseline', 'docs', '.github']
+TREES = ['src', 'tests', 'contracts', 'upstream', '.github']
+DOCUMENTS = ['docs/VALIDATION.md', 'docs/CONFIGURATION.md', 'docs/DELIVERY-CHECKLIST.md']
+SCRIPTS = ['scripts/build.mjs', 'scripts/dev.mjs', 'scripts/smoke.mjs',
+           'scripts/package-solution.py', 'scripts/verify-solution.py']
 EXCLUDED = {'.git', 'node_modules', 'dist', '.data', 'artifacts', 'delivery-output',
             '__pycache__', '.coverage', '.DS_Store'}
 
@@ -40,8 +43,9 @@ def main():
     output = args.output.resolve()
     if output.suffix != '.zip':
         parser.error('--output must end with .zip')
-    paths = [ROOT / name for name in FILES]
+    paths = [ROOT / name for name in FILES + DOCUMENTS + SCRIPTS]
     paths += [ROOT / 'configs' / f'release-{mode}.env' for mode in ('offline', 'enhanced')]
+    paths.append(ROOT / 'configs/models.env.example')
     for tree in TREES:
         for path in (ROOT / tree).rglob('*'):
             relative = path.relative_to(ROOT)
@@ -63,8 +67,8 @@ def main():
     if dockerfile.count('ARG SOURCE_DIR=.') != 2:
         raise ValueError('Dockerfile source-directory declarations changed; review archive layout')
     payload['Dockerfile'] = dockerfile.replace('ARG SOURCE_DIR=.', 'ARG SOURCE_DIR=code').encode()
-    payload['docker-compose.yml'] = payload['code/docker-compose.yml'].replace(
-        b'- configs/release-offline.env', b'- code/configs/release-offline.env')
+    for name in ('docker-compose.yml', 'docker-compose.enhanced.yml'):
+        payload[name] = payload['code/' + name].replace(b'- configs/', b'- code/configs/')
     payload['.dockerignore'] = payload['code/.dockerignore']
     # Block recognizable private keys/tokens without ever printing matched values.
     credential = re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}|\bgh[pousr]_[A-Za-z0-9]{30,}')
@@ -76,7 +80,7 @@ def main():
         'created_at': datetime.now(timezone.utc).isoformat(),
         'source_commit': git('rev-parse', 'HEAD'),
         'source_dirty': bool(git('status', '--porcelain')),
-        'source_identity': 'Current allowed working-tree files; file hashes are authoritative, not commit alone.',
+        'source_identity': 'SHA-256 file manifest',
         'default_profile': 'code/configs/release-offline.env',
         'files': [{'path': name, 'bytes': len(data), 'sha256': sha(data)} for name, data in sorted(payload.items())],
     }

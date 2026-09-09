@@ -8,7 +8,8 @@
       "source_sha256": "05029afde477a934a6bade880780efe0ff7c4f30fa8fbc9c8227b2680bf96dfb",
       "modifications": [
         "ESM createRequire; safe indexed reads under noUncheckedIndexedAccess"
-      ]
+      ],
+      "reference": "upstream/reference/utils/entity_extraction.ts"
     },
     {
       "source": "mem0-ts/src/oss/src/utils/lemmatization.ts",
@@ -16,13 +17,15 @@
       "source_sha256": "fadcf1037665227f25d2898c10a331468dba5341ae56ea6ef61c3183107c1dfa",
       "modifications": [
         "ESM createRequire for optional Porter stemmer"
-      ]
+      ],
+      "reference": "upstream/reference/utils/lemmatization.ts"
     },
     {
       "source": "mem0-ts/src/oss/src/utils/scoring.ts",
       "destination": "src/retrieval/scoring.ts",
       "source_sha256": "213931081b967a199f7bae9459cbbd6b4115c186fc5ddf6e76f65dee1b3ad96b",
-      "modifications": []
+      "modifications": [],
+      "reference": "upstream/reference/utils/scoring.ts"
     },
     {
       "source": "mem0-ts/src/oss/src/memory/index.ts",

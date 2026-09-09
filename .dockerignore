@@ -13,3 +13,5 @@ delivery-output
 **/node_modules
 **/.git
 **/*.sqlite*
+docs/internal
+**/docs/internal
