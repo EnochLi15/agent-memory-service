@@ -24,6 +24,7 @@ COPY ${SOURCE_DIR}/contracts ./contracts
 COPY ${SOURCE_DIR}/licenses ./licenses
 COPY ${SOURCE_DIR}/README.md ${SOURCE_DIR}/INSTRUCTION.md ${SOURCE_DIR}/SDD.md ./
 COPY ${SOURCE_DIR}/docs/CONFIGURATION.md ${SOURCE_DIR}/docs/VALIDATION.md ${SOURCE_DIR}/docs/DELIVERY-CHECKLIST.md ./docs/
+COPY ${SOURCE_DIR}/docs/images ./docs/images
 COPY ${SOURCE_DIR}/configs ./configs
 RUN mkdir -p /data && chown node:node /data
 USER node

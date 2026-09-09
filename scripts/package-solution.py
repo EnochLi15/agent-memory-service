@@ -15,6 +15,8 @@ FILES = ['INSTRUCTION.md', 'SDD.md', 'README.md', 'Dockerfile',
          '.node-version', 'package.json', 'package-lock.json', 'tsconfig.json']
 TREES = ['src', 'tests', 'contracts', 'licenses', '.github']
 DOCUMENTS = ['docs/VALIDATION.md', 'docs/CONFIGURATION.md', 'docs/DELIVERY-CHECKLIST.md']
+ASSETS = ['docs/images/system-architecture.png', 'docs/images/memory-lifecycle.png',
+          'docs/images/evidence-retrieval.png']
 SCRIPTS = ['scripts/build.mjs', 'scripts/dev.mjs', 'scripts/smoke.mjs',
            'scripts/package-solution.py', 'scripts/verify-solution.py']
 EXCLUDED = {'.git', 'node_modules', 'dist', '.data', 'artifacts', 'delivery-output',
@@ -43,7 +45,7 @@ def main():
     output = args.output.resolve()
     if output.suffix != '.zip':
         parser.error('--output must end with .zip')
-    paths = [ROOT / name for name in FILES + DOCUMENTS + SCRIPTS]
+    paths = [ROOT / name for name in FILES + DOCUMENTS + ASSETS + SCRIPTS]
     paths += [ROOT / 'configs' / f'release-{mode}.env' for mode in ('offline', 'enhanced')]
     paths.append(ROOT / 'configs/models.env.example')
     for tree in TREES:
